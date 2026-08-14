@@ -111,6 +111,7 @@ jobs:
         run: |
           terraform -chdir=infra/terraform/envs/${{ env.ENVIRONMENT }} plan \
             -input=false -detailed-exitcode \
+            -var-file="${{ env.ENVIRONMENT }}.tfvars" \
             -var="image=${{ steps.build.outputs.image }}" \
             -out=tfplan || [ $? -eq 2 ]
 

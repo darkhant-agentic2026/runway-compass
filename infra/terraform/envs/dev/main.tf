@@ -33,6 +33,16 @@ resource "google_project_service" "enabled" {
   disable_on_destroy = false
 }
 
+# Enabling an API and using it in the same apply is a race: `google_project_service`
+# returns as soon as the enablement is *accepted*, and the API can still reject calls for
+# up to a minute afterwards with "has not been used in project X before or it is
+# disabled". Everything below waits this out, so `terraform apply` works from zero on a
+# brand-new project instead of only on the second attempt.
+resource "time_sleep" "api_enablement" {
+  depends_on      = [google_project_service.enabled]
+  create_duration = "60s"
+}
+
 resource "google_artifact_registry_repository" "images" {
   project       = var.project_id
   location      = var.region
@@ -40,11 +50,32 @@ resource "google_artifact_registry_repository" "images" {
   format        = "DOCKER"
   description   = "coach-api images, tagged with the commit SHA."
 
-  depends_on = [google_project_service.enabled]
+  depends_on = [time_sleep.api_enablement]
 }
 
 # --- Secrets ----------------------------------------------------------------------------
-# Values are set out of band; Terraform owns the container, not the contents.
+#
+# Terraform owns each container AND a placeholder first version; the real values are added
+# afterwards with `gcloud secrets versions add` (RUNBOOK.md step 3).
+#
+# The placeholder is not tidiness, it is what makes a first apply possible at all. Two
+# things here read a secret *version*, not just a container:
+#
+#   * `data.google_secret_manager_secret_version_access` below, which feeds the Identity
+#     Platform Google provider, and
+#   * Cloud Run's `secret_key_ref { version = "latest" }`, which fails to create a
+#     revision when the secret it names has no versions.
+#
+# So a container with no version makes the first apply fail, while the runbook step that
+# adds the version was documented as running *after* that apply — a cycle. A placeholder
+# version breaks it: apply once, replace the values, apply again (which the URL
+# reconciliation already requires).
+
+locals {
+  # Deliberately not a plausible-looking value: if this ever reaches a real API call, the
+  # failure should be obviously "nobody seeded this secret" rather than a puzzling 401.
+  secret_placeholder = "REPLACE_ME_VIA_GCLOUD_SEE_RUNBOOK"
+}
 
 resource "google_secret_manager_secret" "youtube_api_key" {
   project   = var.project_id
@@ -54,7 +85,7 @@ resource "google_secret_manager_secret" "youtube_api_key" {
     auto {}
   }
 
-  depends_on = [google_project_service.enabled]
+  depends_on = [time_sleep.api_enablement]
 }
 
 # Dev only: local development uses the Gemini API with a developer key, production uses
@@ -67,7 +98,7 @@ resource "google_secret_manager_secret" "gemini_api_key" {
     auto {}
   }
 
-  depends_on = [google_project_service.enabled]
+  depends_on = [time_sleep.api_enablement]
 }
 
 resource "google_secret_manager_secret" "oauth_client_secret" {
@@ -78,12 +109,47 @@ resource "google_secret_manager_secret" "oauth_client_secret" {
     auto {}
   }
 
-  depends_on = [google_project_service.enabled]
+  depends_on = [time_sleep.api_enablement]
 }
 
+# `ignore_changes` on `secret_data` so that re-applying after the real value has been
+# added does not try to reinstate the placeholder. Terraform manages only this first
+# version; `gcloud secrets versions add` creates later ones it never looks at.
+resource "google_secret_manager_secret_version" "youtube_api_key_placeholder" {
+  secret      = google_secret_manager_secret.youtube_api_key.id
+  secret_data = local.secret_placeholder
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
+resource "google_secret_manager_secret_version" "gemini_api_key_placeholder" {
+  secret      = google_secret_manager_secret.gemini_api_key.id
+  secret_data = local.secret_placeholder
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
+resource "google_secret_manager_secret_version" "oauth_client_secret_placeholder" {
+  secret      = google_secret_manager_secret.oauth_client_secret.id
+  secret_data = local.secret_placeholder
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
+# Reads `latest`: the placeholder on the first apply, the real client secret on every
+# apply after RUNBOOK.md step 3. `depends_on` defers the read to apply time, so it cannot
+# run before the version it needs exists.
 data "google_secret_manager_secret_version_access" "oauth_client_secret" {
   project = var.project_id
   secret  = google_secret_manager_secret.oauth_client_secret.secret_id
+
+  depends_on = [google_secret_manager_secret_version.oauth_client_secret_placeholder]
 }
 
 # --- Modules ------------------------------------------------------------------------------
@@ -101,7 +167,7 @@ module "identity" {
   oauth_client_id     = var.oauth_client_id
   oauth_client_secret = data.google_secret_manager_secret_version_access.oauth_client_secret.secret_data
 
-  depends_on = [google_project_service.enabled]
+  depends_on = [time_sleep.api_enablement]
 }
 
 module "firestore" {
@@ -112,7 +178,7 @@ module "firestore" {
   enable_pitr              = false
   enable_delete_protection = false
 
-  depends_on = [google_project_service.enabled]
+  depends_on = [time_sleep.api_enablement]
 }
 
 module "storage" {
@@ -184,7 +250,7 @@ module "scheduler_tasks" {
   service_url                     = module.cloud_run.service_url
   scheduler_service_account_email = module.identity.scheduler_service_account_email
 
-  depends_on = [google_project_service.enabled]
+  depends_on = [time_sleep.api_enablement]
 }
 
 module "observability" {

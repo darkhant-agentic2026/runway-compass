@@ -22,6 +22,25 @@ Do this once per environment (`coach-dev`, then `coach-prod`).
 - `gcloud auth login` and `gcloud auth application-default login` as a principal with
   Owner (or at least Project IAM Admin + Service Account Admin + the service-specific
   admin roles) on that project.
+- **A quota project on those credentials.** User-based Application Default Credentials
+  carry no project, and `identitytoolkit.googleapis.com` refuses requests without one:
+
+  ```
+  Error 403: Your application is authenticating by using local Application Default
+  Credentials. The identitytoolkit.googleapis.com API requires a quota project, which is
+  not set by default.
+  ```
+
+  `envs/*/versions.tf` sets `user_project_override = true` and `billing_project` on the
+  provider, which makes Terraform send the `X-Goog-User-Project` header and is normally
+  enough on its own. If a `gcloud` command outside Terraform hits the same error, set it
+  on the credentials too:
+
+  ```bash
+  gcloud auth application-default set-quota-project coach-dev
+  ```
+
+  Either route needs `serviceusage.services.use` on the project; Owner has it.
 - A GCS state bucket, created by hand — a state bucket cannot be managed by the state it
   holds:
 
@@ -66,38 +85,30 @@ whether it has before accepting this permanently.
    in step 5.
 4. Copy the **client ID** into `envs/<env>/<env>.tfvars` as `oauth_client_id`. It is a
    public value and is committed on purpose.
-5. Put the **client secret** into Secret Manager. It never goes in a tfvars file:
+5. Keep the **client secret** somewhere safe for step 4. It never goes in a tfvars file.
+
+   **Do not run `gcloud secrets create` for it here.** Terraform owns the container
+   (`google_secret_manager_secret.oauth_client_secret`), so creating it by hand first
+   makes the apply fail with `AlreadyExists`. Step 4 adds the *value* to the container
+   Terraform made.
+
+   Terraform reads the value back with `data.google_secret_manager_secret_version_access`,
+   so the secret is never in the configuration — only in state.
+
+   If you already created it by hand, either delete it
+   (`gcloud secrets delete oauth-client-secret --project=coach-dev`) or adopt it:
 
    ```bash
-   gcloud secrets create oauth-client-secret --project=coach-dev --replication-policy=automatic
-   printf '%s' 'THE_SECRET' | gcloud secrets versions add oauth-client-secret \
-     --project=coach-dev --data-file=-
+   terraform import -var-file=dev.tfvars \
+     google_secret_manager_secret.oauth_client_secret \
+     projects/coach-dev/secrets/oauth-client-secret
    ```
 
-   Terraform reads it back with `data.google_secret_manager_secret_version_access`, so the
-   secret is never in the configuration and only ever in state.
+   The same applies to `youtube-api-key` and `gemini-api-key`.
 
 ---
 
-## 3. Seed the other secrets (HUMAN, one command each)
-
-Terraform owns the secret *containers*; the values are set out of band.
-
-```bash
-printf '%s' "$YOUTUBE_API_KEY" | gcloud secrets versions add youtube-api-key \
-  --project=coach-dev --data-file=-
-
-# dev only — production authenticates to Vertex AI as the service account and has no key
-printf '%s' "$GEMINI_API_KEY" | gcloud secrets versions add gemini-api-key \
-  --project=coach-dev --data-file=-
-```
-
-If the secret does not exist yet, run `terraform apply` once first: it creates the
-containers, and `gcloud secrets versions add` then has something to add to.
-
----
-
-## 4. First apply
+## 3. First apply
 
 ```bash
 cd infra/terraform/envs/dev
@@ -105,10 +116,50 @@ terraform init
 terraform apply -var-file=dev.tfvars
 ```
 
-**Expect to run this twice on a brand-new project.** The Identity Platform
-`authorized_domains` list and `TASKS_TARGET_URL` need the Cloud Run URL, which does not
-exist until the service is created. The `.tfvars` file ships with placeholder values for
-exactly this reason.
+**Expect to run this twice on a brand-new project**, for two independent reasons:
+
+- The Identity Platform `authorized_domains` list and `TASKS_TARGET_URL` need the Cloud
+  Run URL, which does not exist until the service is created. The `.tfvars` file ships
+  with placeholder values for exactly this reason.
+- Every secret is created with a **placeholder version**, because the things that consume
+  them — the Identity Platform provider config, and Cloud Run's
+  `secret_key_ref { version = "latest" }` — fail outright against a secret that has no
+  versions. Step 4 replaces the placeholders, and the second apply picks them up.
+
+The apply also sleeps 60 s after enabling APIs, because an API can still reject calls for
+up to a minute after enablement is accepted. That wait is why the first apply is slower
+than later ones.
+
+---
+
+## 4. Replace the placeholder secret values (HUMAN, one command each)
+
+Terraform creates each container and a placeholder first version; the real values are set
+out of band and Terraform never reads them back into the configuration.
+
+```bash
+printf '%s' "$YOUTUBE_API_KEY" | gcloud secrets versions add youtube-api-key \
+  --project=coach-dev --data-file=-
+
+# The client secret from step 2. Identity Platform's Google provider needs the real value.
+printf '%s' "$OAUTH_CLIENT_SECRET" | gcloud secrets versions add oauth-client-secret \
+  --project=coach-dev --data-file=-
+
+# dev only — production authenticates to Vertex AI as the service account and has no key
+printf '%s' "$GEMINI_API_KEY" | gcloud secrets versions add gemini-api-key \
+  --project=coach-dev --data-file=-
+```
+
+Check that none of them is still the placeholder before moving on:
+
+```bash
+for s in youtube-api-key oauth-client-secret gemini-api-key; do
+  printf '%-22s %s\n' "$s" \
+    "$(gcloud secrets versions access latest --secret="$s" --project=coach-dev | head -c 12)"
+done
+```
+
+Anything printing `REPLACE_ME_V` has not been seeded.
 
 ---
 
