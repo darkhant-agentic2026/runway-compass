@@ -7,10 +7,20 @@ tribal memory.
 
 Do this once per environment (`coach-dev`, then `coach-prod`).
 
-> **Nothing in this file has been executed.** The Terraform in this directory is authored
-> and validated locally — `terraform fmt -check`, `terraform validate`, and `tflint` all
-> pass — but no `apply` has ever run against a GCP project, and no `gcloud auth` has been
-> performed. Treat the step ordering below as carefully reasoned, not as battle-tested.
+> **Nothing in this file was executed before it was written.** The Terraform in this
+> directory is authored and checked locally — `terraform fmt -check`, `terraform
+> validate`, and `tflint` all pass — but those are weaker than they look.
+>
+> In particular **`terraform validate` is not a substitute for `terraform plan`.** Several
+> failure modes are invisible to it and only appear when the graph is walked: a root
+> output carrying a value the provider marks sensitive, a resource that already exists
+> and needs importing, and an API that is enabled but not yet propagated. Every one of
+> those was hit on the first real run through this runbook. `plan` needs credentials and
+> a state backend, so PR CI cannot run it — which is what the nightly Terraform drift
+> check in [docs/08-testing.md](../../docs/08-testing.md#ci-wiring) is for.
+>
+> Treat the step ordering below as reasoned and now partly exercised, not as
+> battle-tested end to end.
 
 ---
 
@@ -271,11 +281,14 @@ Then, with that value:
 ## 6. Wire up GitHub Actions
 
 ```bash
-terraform output workload_identity_provider
-terraform output deployer_service_account
-terraform output identity_api_key
-terraform output identity_auth_domain
+terraform output -raw workload_identity_provider; echo
+terraform output -raw deployer_service_account;   echo
+terraform output -raw identity_api_key;           echo
+terraform output -raw identity_auth_domain;       echo
 ```
+
+`-raw` prints the bare string with no quotes, which is what these fields want pasted
+into them.
 
 Set these as **repository variables** (not secrets — all four are public values, and the
 deploy workflow reads them from `vars.*`):
@@ -283,10 +296,10 @@ deploy workflow reads them from `vars.*`):
 | Variable | From |
 | --- | --- |
 | `GCP_PROJECT_ID` | `coach-dev` |
-| `WIF_PROVIDER` | `terraform output workload_identity_provider` |
-| `DEPLOYER_SERVICE_ACCOUNT` | `terraform output deployer_service_account` |
-| `IDENTITY_API_KEY` | `terraform output identity_api_key` |
-| `IDENTITY_AUTH_DOMAIN` | `terraform output identity_auth_domain` |
+| `WIF_PROVIDER` | `terraform output -raw workload_identity_provider` |
+| `DEPLOYER_SERVICE_ACCOUNT` | `terraform output -raw deployer_service_account` |
+| `IDENTITY_API_KEY` | `terraform output -raw identity_api_key` |
+| `IDENTITY_AUTH_DOMAIN` | `terraform output -raw identity_auth_domain` |
 
 Create a GitHub Environment named `prod` with a required-reviewer protection rule; the
 deploy workflow's `environment:` key is what makes it take effect.
