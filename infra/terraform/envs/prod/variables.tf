@@ -1,6 +1,6 @@
 variable "project_id" {
   type        = string
-  description = "coach-prod."
+  description = "The GCP project id for this environment (the design calls it coach-prod)."
 }
 
 variable "region" {
@@ -10,8 +10,17 @@ variable "region" {
 
 variable "image" {
   type        = string
-  description = "The image to deploy, tagged with a commit SHA. Supplied by the deploy workflow."
-  default     = "us-central1-docker.pkg.dev/coach-prod/coach/coach-api:bootstrap"
+  description = <<-EOT
+    The image to deploy, tagged with a commit SHA. Passed with `-var` by the deploy
+    workflow, and by hand on the first apply (RUNBOOK.md step 3).
+
+    Deliberately no default. The obvious one — a `:bootstrap` tag under
+    `us-central1-docker.pkg.dev/coach-dev/coach/` — hard-codes a project id, and in a
+    project not called `coach-dev` it silently points Cloud Run at *another* project's
+    registry. That surfaces as a 403 on `artifactregistry.repositories.downloadArtifacts`
+    naming a project you have never heard of, which is a poor way to learn that a default
+    was wrong. Being asked for the value is better than being given someone else's.
+  EOT
 }
 
 variable "model_name" {

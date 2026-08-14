@@ -42,6 +42,16 @@ Do this once per environment (`coach-dev`, then `coach-prod`).
 
   Either route needs `serviceusage.services.use` on the project; Owner has it.
 
+- A GCS state bucket, created by hand — a state bucket cannot be managed by the state it
+  holds:
+
+  ```bash
+  gsutil mb -p coach-dev -l us-central1 gs://coach-dev-tfstate
+  gsutil versioning set on gs://coach-dev-tfstate
+  ```
+
+  The bucket name is hard-coded in `envs/dev/backend.tf`; change both together.
+
 ### Enable the APIs up front (recommended)
 
 Terraform enables every API it needs, and waits 60 s afterwards for the enablement to
@@ -75,16 +85,6 @@ add it here.
 stack is idempotent, the enablement has been accepted by then, and the second run picks
 up where the first stopped. That is a normal part of a first apply, not a sign anything
 is broken.
-- A GCS state bucket, created by hand — a state bucket cannot be managed by the state it
-  holds:
-
-  ```bash
-  gsutil mb -p coach-dev -l us-central1 gs://coach-dev-tfstate
-  gsutil versioning set on gs://coach-dev-tfstate
-  ```
-
-  The bucket name is hard-coded in `envs/dev/backend.tf`; change both together.
-
 ---
 
 ## 1. Enable Identity Platform via the Cloud Marketplace (HUMAN)
@@ -96,12 +96,36 @@ in the marketplace before the resource can be used.
 1. Open <https://console.cloud.google.com/customer-identity> for the project.
 2. Click **Enable Identity Platform**.
 
-**Worth testing first:** it is possible that `google_project_service.identitytoolkit`,
-which this stack already enables, is sufficient on its own — in which case this step
-disappears. Try `terraform apply` without doing it; if
-`google_identity_platform_config.this` succeeds, delete this section and say so in
+**Then adopt the config it just created.** `google_identity_platform_config` is a
+singleton, and enabling the product *is* what creates it — so Terraform tries to create a
+thing that already exists and stops with:
+
+```
+Error 400: INVALID_PROJECT_ID : Identity Platform has already been enabled for this project.
+```
+
+This is not a failure so much as a handover. Import it once, before the first apply:
+
+```bash
+cd infra/terraform/envs/dev
+terraform init
+terraform import -var-file=dev.tfvars \
+  module.identity.google_identity_platform_config.this YOUR_PROJECT_ID
+```
+
+The import id for this resource is just the project id.
+
+After the import, Terraform manages the existing config and reconciles
+`authorized_domains` into it instead of trying to create a second one. If you hit the
+error before importing, nothing is damaged — import and re-apply.
+
+**Still worth testing on the next environment:** `google_project_service.identitytoolkit`,
+which this stack already enables, may be sufficient on its own — in which case the
+marketplace click goes away and the import with it, because Terraform would be creating
+the config rather than adopting one. On a fresh project, try the apply *before* doing any
+of the above; if `google_identity_platform_config.this` creates cleanly, delete this
+section and say so in
 [docs/07-infra-deploy.md](../../docs/07-infra-deploy.md#manual-bootstrap-steps-two-both-one-time-per-environment).
-That check is cheap and has never been run.
 
 ---
 
@@ -144,10 +168,39 @@ whether it has before accepting this permanently.
 
 ## 3. First apply
 
+### 3a. Create the registry, then put an image in it
+
+`var.image` has no default and Cloud Run cannot start without a real image, but the
+Artifact Registry repository that image lives in is created by this same stack. Break the
+loop with a targeted apply — this creates the repository and the API enablement it depends
+on, and nothing else:
+
 ```bash
 cd infra/terraform/envs/dev
 terraform init
-terraform apply -var-file=dev.tfvars
+terraform apply -var-file=dev.tfvars -target=google_artifact_registry_repository.images
+```
+
+Then build and push from the repo root:
+
+```bash
+PROJECT=YOUR_PROJECT_ID
+IMAGE="us-central1-docker.pkg.dev/$PROJECT/coach/coach-api:bootstrap"
+
+gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+docker build -t "$IMAGE" .
+docker push "$IMAGE"
+```
+
+The SPA in this bootstrap image is built without the Identity Platform values, which do
+not exist yet — sign-in will not work in it. That is fine and expected: it exists so the
+Cloud Run service can start and hand you a URL. The deploy workflow rebuilds the image
+properly with those values once step 6 has wired them up.
+
+### 3b. Apply the rest
+
+```bash
+terraform apply -var-file=dev.tfvars -var="image=$IMAGE"
 ```
 
 **Expect to run this twice on a brand-new project**, for two independent reasons:
@@ -210,7 +263,8 @@ Then, with that value:
    - `authorized_domains_urls` → `["https://coach-api-abc123-uc.a.run.app"]`
    - `service_url_hint` → `"https://coach-api-abc123-uc.a.run.app"`
 2. Add the same URL to the OAuth client's authorized origins and redirect URIs (step 2.3).
-3. `terraform apply -var-file=dev.tfvars` again.
+3. `terraform apply -var-file=dev.tfvars -var="image=$IMAGE"` again (the same
+   `$IMAGE` from step 3a; `var.image` has no default).
 
 ---
 
