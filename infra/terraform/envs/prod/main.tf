@@ -19,7 +19,26 @@ locals {
     "secretmanager.googleapis.com",
     "storage.googleapis.com",
     "identitytoolkit.googleapis.com",
+
+    # The IAM family, and the reason it is three entries rather than one. These are
+    # genuinely different APIs and enabling one does not enable the others:
+    #
+    #   iam                   service accounts, and the Workload Identity pool/provider
+    #   iamcredentials        SignBlob, for the V4 signed upload URLs
+    #   cloudresourcemanager  projects.setIamPolicy, which every google_project_iam_member
+    #                         goes through
+    #
+    # `iamcredentials` reads like it covers the first one and does not: without `iam`,
+    # the very first `google_service_account` fails with "Identity and Access Management
+    # (IAM) API has not been used in project X before or it is disabled".
+    "iam.googleapis.com",
     "iamcredentials.googleapis.com",
+    "cloudresourcemanager.googleapis.com",
+
+    # Not used by any resource here — it is what GitHub Actions calls at deploy time to
+    # exchange its OIDC token for a GCP one. Enabling it with everything else means the
+    # first deploy does not fail on a missing API long after this stack looked finished.
+    "sts.googleapis.com",
     "youtube.googleapis.com",
     "monitoring.googleapis.com",
     "logging.googleapis.com",

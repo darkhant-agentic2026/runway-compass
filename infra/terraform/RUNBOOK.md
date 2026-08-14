@@ -41,6 +41,40 @@ Do this once per environment (`coach-dev`, then `coach-prod`).
   ```
 
   Either route needs `serviceusage.services.use` on the project; Owner has it.
+
+### Enable the APIs up front (recommended)
+
+Terraform enables every API it needs, and waits 60 s afterwards for the enablement to
+propagate. That is usually enough, but API enablement is eventually consistent and a busy
+project can take longer, which shows up as:
+
+```
+Error 403: <Some> API has not been used in project X before or it is disabled.
+```
+
+Enabling them yourself first removes the race entirely — the `google_project_service`
+resources then just record state:
+
+```bash
+gcloud services enable \
+  run.googleapis.com firestore.googleapis.com cloudtasks.googleapis.com \
+  cloudscheduler.googleapis.com aiplatform.googleapis.com \
+  artifactregistry.googleapis.com secretmanager.googleapis.com \
+  storage.googleapis.com identitytoolkit.googleapis.com \
+  iam.googleapis.com iamcredentials.googleapis.com \
+  cloudresourcemanager.googleapis.com sts.googleapis.com \
+  youtube.googleapis.com monitoring.googleapis.com logging.googleapis.com \
+  cloudtrace.googleapis.com \
+  --project=coach-dev
+```
+
+That list is the `local.services` list in `envs/<env>/main.tf`; if you add an API there,
+add it here.
+
+**If you hit the error anyway, just run `terraform apply` again.** Everything in this
+stack is idempotent, the enablement has been accepted by then, and the second run picks
+up where the first stopped. That is a normal part of a first apply, not a sign anything
+is broken.
 - A GCS state bucket, created by hand — a state bucket cannot be managed by the state it
   holds:
 

@@ -29,7 +29,7 @@ infra/terraform/
 
 | Resource | Notes |
 | --- | --- |
-| `google_project_service` × N | `run`, `firestore`, `cloudtasks`, `cloudscheduler`, `aiplatform`, `artifactregistry`, `secretmanager`, `storage`, `identitytoolkit`, `iamcredentials` (SignBlob for upload URLs), and **`youtube.googleapis.com`** — the YouTube Data API is easy to forget because it is the one dependency reached with an API key rather than IAM, so nothing else in the stack references it |
+| `google_project_service` × N | `run`, `firestore`, `cloudtasks`, `cloudscheduler`, `aiplatform`, `artifactregistry`, `secretmanager`, `storage`, `identitytoolkit`, `monitoring`, `logging`, `cloudtrace`; the **three separate IAM-family APIs** (`iam` for service accounts and the WIF pool, `iamcredentials` for SignBlob on the upload URLs, `cloudresourcemanager` for `projects.setIamPolicy`) plus `sts` for the GitHub OIDC exchange; and **`youtube.googleapis.com`** — the YouTube Data API is easy to forget because it is the one dependency reached with an API key rather than IAM, so nothing else in the stack references it |
 | `google_cloud_run_v2_service.coach_api` | Settings below |
 | `google_firestore_database` | Native mode, `us-central1`, PITR on in prod |
 | `google_firestore_index` × N | From [02-data-model.md](02-data-model.md) |
