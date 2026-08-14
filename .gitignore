@@ -1,0 +1,68 @@
+# --- Claude Code ---
+.claude/settings.local.json
+
+# --- Secrets / local env ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+service-account*.json
+
+# --- Python (apps/api) ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# --- Node (apps/web) ---
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.tsbuildinfo
+coverage/
+
+# --- Playwright ---
+test-results/
+playwright-report/
+blob-report/
+.playwright/
+
+# --- Terraform ---
+# .terraform.lock.hcl is deliberately NOT ignored: it pins provider versions
+# and belongs in version control.
+# envs/*/{dev,prod}.tfvars are committed too (see docs/07-infra-deploy.md) —
+# they hold project IDs and the public OAuth client ID; the client *secret*
+# lives in Secret Manager, never here.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.auto.tfvars
+*secret*.tfvars
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# --- Local emulator / scratch data ---
+.firestore-emulator/
+emulator-debug.log
+firestore-debug.log
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

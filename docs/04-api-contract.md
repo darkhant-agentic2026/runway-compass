@@ -1,0 +1,257 @@
+# API Contract
+
+Base URL: same origin as the SPA — the Cloud Run service serves both the static SPA and
+these endpoints, so no rewrite layer is involved. All payloads JSON unless noted. Errors
+follow RFC 9457 `application/problem+json`.
+
+## Authentication
+
+- Frontend signs in with **Cloud Identity Platform**, Google provider.
+- REST: `Authorization: Bearer <id-token>`; verified with
+  `firebase_admin.auth.verify_id_token` — the Admin SDK for `identitytoolkit`, and the only
+  reason that dependency exists. Signature, audience, and expiry are checked **offline**
+  against cached Google public keys, so there is no network call on the request path.
+- **Revocation checking is selective, by decision.** `check_revoked=True` makes
+  `verify_id_token` fetch the user record from identitytoolkit — a network round-trip on
+  every call it is used for. It is therefore enabled on exactly two endpoints:
+
+  | Path | `check_revoked` | Why |
+  | --- | --- | --- |
+  | `POST /api/ws-ticket` | `True` | The ticket authorizes a socket that may live for the full 3600 s request timeout, so this one check covers a long-lived credential. |
+  | `DELETE /api/me` | `True` | Irreversible and cascading. |
+  | everything else | `False` | Offline, zero added latency. |
+
+  Accepted window: a revoked or disabled account keeps REST access until its current ID token
+  expires (≤ 1 hour), and keeps an established socket until that socket closes. Widening this
+  means paying a round-trip on every request — a poor trade for a single-role app where
+  `DELETE /api/me` already removes the underlying data. Enforced by test
+  ([08-testing.md](08-testing.md)).
+- Local only: when `ENV=local`, the auth dependency additionally accepts
+  `Authorization: Bearer dev:<uid>` and builds the `Principal` directly, since Identity
+  Platform has no local emulator. This path is inert for every other `ENV` value and has a
+  dedicated regression test asserting so ([08-testing.md](08-testing.md)).
+- WebSocket: browsers cannot set headers on `new WebSocket()`, so the client first calls
+  `POST /api/ws-ticket` (authenticated by ID token, with the revocation check above) to get a
+  **single-use, 60-second ticket**, then connects to `wss://…/ws?ticket=…`. The ticket is
+  redeemed and deleted server-side on connect. Query-string tickets are safe here because
+  they are one-shot and short-lived; long-lived tokens in URLs are not. This handshake is the
+  socket's *only* authorization point — nothing re-verifies mid-connection — which is why it
+  is one of the two endpoints that pays for a revocation check.
+- `/internal/*`: Google-signed OIDC bearer token, verified for issuer, audience (the
+  service URL), and `email` equal to the expected scheduler/tasks service account. Cloud
+  Run IAM additionally requires `roles/run.invoker`.
+
+## REST endpoints
+
+### Identity & preferences
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/api/me` | Profile, `globalPrefs`, `learnerProfile`, plan limits |
+| `PATCH` | `/api/me/prefs` | Partial update of `globalPrefs` |
+| `PATCH` | `/api/me/learner-profile` | User edits/resets agent beliefs; bumps `version` |
+| `DELETE` | `/api/me` | Account + data deletion (async cascade job) |
+| `POST` | `/api/ws-ticket` | `→ { ticket, expiresAt }` |
+
+### Projects
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/api/projects` | `?status=active` |
+| `POST` | `/api/projects` | `{ title, goal? }` — creates project + an intake session (a session with `taskId: null`) |
+| `GET` | `/api/projects/{id}` | Includes `counts`, `nextUpTaskId` |
+| `PATCH` | `/api/projects/{id}` | title, goal, status, `prefs` patch |
+| `GET` | `/api/projects/{id}/effective-prefs` | Resolved global ⊕ project — one source of truth for UI and agent |
+| `GET` | `/api/projects/{id}/tasks` | `?include_completed=false&include_discarded=false`; returns parents with nested `subtasks[]` and `rollup` |
+| `DELETE` | `/api/projects/{id}` | Soft-delete → `archived` |
+
+### Tasks
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/api/projects/{id}/tasks` | `{ title, description?, estimatedMinutes, parentTaskId?, afterTaskId? }` |
+| `GET` | `/api/tasks/{id}` | Task + subtasks + `latestReport` |
+| `PATCH` | `/api/tasks/{id}` | Fields; `estimatedMinutes` triggers parent rollup recompute |
+| `POST` | `/api/tasks/{id}/state` | `{ state, postponedUntil? }` — validated against state machine |
+| `POST` | `/api/tasks/{id}/reorder` | `{ afterTaskId } \| { beforeTaskId }` |
+| `POST` | `/api/tasks/{id}/split` | Manual split; agent uses the tool equivalent |
+| `GET` | `/api/tasks/{id}/reports` | Research reports for the task, newest first |
+| `PATCH` | `/api/reports/{reportId}/items/{itemId}` | `{ completed?: bool, feedback?: "up" \| "down" \| null }` — writes `progress` only, never the report body |
+
+`PATCH /api/reports/{reportId}/items/{itemId}` is what backs the per-item checkboxes on the
+required block and the thumbs-down control ([06-frontend.md](06-frontend.md),
+[10-risks.md](10-risks.md#r5--research-quality-and-link-rot)). It rejects `completed` on an
+item in `optional[]` — optional items have no completion affordance by design, and enforcing
+that server-side keeps the distinction from eroding through a future UI change.
+
+All mutating endpoints accept `Idempotency-Key`. Reorder and state changes return the
+full updated task (plus the affected parent) so the client can reconcile optimistically
+without a refetch.
+
+### Sessions & turns
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/api/tasks/{id}/session` | Get-or-create the task's session; returns `sessionId` |
+| `GET` | `/api/sessions/{sid}` | Metadata + linkage |
+| `GET` | `/api/sessions/{sid}/events` | Paginated by `seq` (`?after_seq=&limit=`), for transcript hydration |
+| `POST` | `/api/sessions/{sid}/turns` | Start a turn (below) |
+| `POST` | `/api/sessions/{sid}/turns/{turnId}/cancel` | Explicit user cancel — the *only* thing that stops generation |
+| `POST` | `/api/sessions/{sid}/research` | **Manual research trigger** (below) |
+
+#### `POST /api/sessions/{sid}/turns`
+
+```jsonc
+// request
+{ "text": "here's my attempt at the exercise",
+  "attachments": [ { "uploadId": "…", "mimeType": "image/png" } ],
+  "idempotencyKey": "…" }
+
+// 202 response — returns immediately, generation continues in background
+{ "turnId": "t_01J…", "sessionId": "…", "status": "running", "startSeq": 0 }
+```
+
+The handler creates `turns/{turnId}`, spawns a detached `asyncio.Task`, and returns. It
+does **not** await generation. Streaming is observed over the WebSocket.
+
+#### `POST /api/sessions/{sid}/research`
+
+```jsonc
+// request
+{ "reason": "I just added this task and want materials now",
+  "budgetMinutesOverride": 90,       // optional
+  "force": false }                   // re-run even if researchStatus == done
+
+// 202
+{ "runId": "r_01J…", "turnId": "t_01J…", "mode": "inline" }
+```
+
+Behaviour:
+- Resolves the task from the session, verifies ownership.
+- Acquires the project agent lease. If the lease is held by an autonomous run, returns
+  `409` with `{ runId }` of the in-flight run so the UI can attach to it instead of
+  starting a duplicate.
+- Creates `autonomous_runs/{runId}` with `trigger: "manual"`, `mode: "inline"`, and runs
+  the **same** `autonomous_workflow` — so manual and scheduled research cannot drift.
+- Streams progress over the WebSocket as the turn identified by `turnId`.
+
+### Runs
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/api/runs/{runId}` | Ledger status: `status`, `steps[]`, `cursor`, `taskId`, `turnId`. Backs the `['run', runId]` query ([06-frontend.md](06-frontend.md)) and the 409 attach path below |
+| `POST` | `/api/runs/{runId}/undo` | Reverses the run's writes; idempotent, returns the affected `taskIds` |
+| `GET` | `/api/projects/{id}/runs` | Recent runs for the project, newest first — backs the "Updated by your coach" banner |
+
+`POST /api/runs/{runId}/undo` is the endpoint behind the one-click undo in
+[05-autonomous-runs.md](05-autonomous-runs.md#what-the-run-is-allowed-to-change) and golden
+flow #6 ([08-testing.md](08-testing.md)). It deletes tasks the run created and restores the
+`order` / `nextUpTaskId` values the ledger recorded, in one transaction. It is refused with
+`409` while the run is still `running`, and is a no-op returning `200` if already undone —
+so a double-click cannot half-reverse a run.
+
+### Uploads
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/api/uploads` | `{ filename, mimeType, sizeBytes }` → `{ uploadId, signedUrl }` (V4 resumable PUT to GCS) |
+| `POST` | `/api/uploads/{id}/finalize` | Server verifies size/type, scans, registers ADK artifact |
+
+Accepted: `image/png`, `image/jpeg`, `image/webp`, `application/pdf`, `text/plain`,
+`text/markdown`. Cap 20 MB. MIME sniffed server-side, not trusted from the client.
+
+### Internal
+
+| Method | Path | Caller |
+| --- | --- | --- |
+| `POST` | `/internal/tick` | Cloud Scheduler |
+| `POST` | `/internal/runs/{runId}/execute` | Cloud Tasks |
+| `GET` | `/healthz`, `/readyz` | Cloud Run probes |
+
+## WebSocket protocol (`/ws`)
+
+One connection per browser tab, multiplexed across sessions. JSON frames, every frame has
+`type`. Server→client frames carrying stream content also carry `turnId` and `seq`.
+
+### Client → server
+
+```jsonc
+{ "type": "subscribe",   "turnId": "t_…" }
+{ "type": "subscribe",   "runId":  "r_…" }                       // run_status frames only
+{ "type": "resume",      "turnId": "t_…", "lastSeq": 42 }
+{ "type": "unsubscribe", "turnId": "t_…" }
+{ "type": "unsubscribe", "runId":  "r_…" }
+{ "type": "presence",    "projectId": "p_…", "taskId": "k_…" }   // every 30 s
+{ "type": "ping" }
+```
+
+`subscribe` takes exactly one of `turnId` or `runId`. Subscribing by `runId` is what makes
+the `409` from `POST /api/sessions/{sid}/research` actionable: the client attaches to the
+in-flight run's `run_status` frames instead of starting a duplicate. A scheduled run has no
+`turnId` at all, so run subscription is the only way to watch one — which golden flow #6
+depends on. Both are ownership-checked against the socket's principal at subscribe time.
+
+### Server → client
+
+```jsonc
+{ "type": "turn_start",    "turnId": "…", "sessionId": "…" }
+{ "type": "delta",         "turnId": "…", "seq": 43, "text": "…" }
+{ "type": "tool_call",     "turnId": "…", "seq": 44, "name": "youtube_find_by_duration",
+                           "argsPreview": {…} }        // rendered as a status chip
+{ "type": "tool_result",   "turnId": "…", "seq": 45, "name": "…", "ok": true }
+{ "type": "artifact",      "turnId": "…", "seq": 46, "kind": "research_report",
+                           "reportId": "…", "taskId": "…" }
+{ "type": "turn_complete", "turnId": "…", "seq": 47, "eventIds": ["…"] }
+{ "type": "turn_error",    "turnId": "…", "seq": 47, "code": "…", "message": "…", "retryable": true }
+{ "type": "board_update",  "projectId": "…", "taskIds": ["…"], "origin": "agent", "runId": "…" }
+{ "type": "run_status",    "runId": "…", "step": "research", "status": "running" }
+{ "type": "pong" }
+```
+
+`board_update` is the invalidation push that keeps the task board live while the
+autonomous agent works — the client turns it into a TanStack Query invalidation rather
+than trying to patch state from the message.
+
+## Surviving client disconnects
+
+The requirement: *generation must complete even if the client disconnects, so inference is
+not wasted.* Mechanism:
+
+1. **Ownership.** The generation coroutine is created with `asyncio.create_task` and held
+   in an app-level `TurnRegistry`, not in the WebSocket handler's scope. Closing a socket
+   drops a *subscriber*; nothing cancels the task. The only cancellation paths are the
+   explicit cancel endpoint and process shutdown.
+2. **Fan-out.** A `StreamBroker` maps `turnId → set[asyncio.Queue]`. Zero subscribers is a
+   normal state: chunks still increment `seq` and still get checkpointed.
+3. **Checkpointing.** Deltas accumulate in a buffer flushed to `turns/{turnId}.checkpoints`
+   every 400 ms or 512 characters, whichever first. On completion, finalized ADK events go
+   to `sessions/*/events` and `status` becomes `complete`.
+4. **Resume.** On reconnect the client sends `resume` with its `lastSeq`. The server:
+   - reads `turns/{turnId}`; if `complete`, replays checkpoints `> lastSeq`, then
+     `turn_complete`, then the client refetches the finalized event;
+   - if `running` **on this instance**, replays checkpoints `> lastSeq` and attaches to the
+     live broker — no gap, because replay and attach happen under the broker lock;
+   - if `running` **on another instance**, replays checkpoints and then follows the
+     Firestore document with a snapshot listener until `complete`. Coarser granularity
+     (400 ms chunks instead of token-level), still correct, still no wasted inference.
+5. **Graceful shutdown.** On `SIGTERM` Cloud Run gives a termination grace period. The app
+   stops accepting new turns, waits up to the grace period for in-flight turns, and marks
+   any survivors `failed` with `retryable: true`. Manual/autonomous runs are picked up by
+   the ledger sweep; interactive turns surface a retry affordance.
+6. **Cloud Run settings that make this real** (see [07-infra-deploy.md](07-infra-deploy.md)):
+   CPU always allocated (no request-based throttling — otherwise CPU is throttled to near
+   zero once the response is "done"), `min-instances ≥ 1`, request timeout 3600 s,
+   session affinity on, and per-instance concurrency tuned so background turns are not
+   starved.
+
+## Rate limits
+
+| Scope | Limit |
+| --- | --- |
+| Turns | 30/min/user, 5 concurrent per user |
+| Manual research | 10/hour/user |
+| Uploads | 50/hour/user, 20 MB each |
+| WebSocket | 3 connections/user, 100 frames/min |
+
+Enforced in Firestore counters with a token-bucket; exceeding returns `429` with
+`Retry-After`.

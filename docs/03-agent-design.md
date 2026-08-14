@@ -1,0 +1,303 @@
+# Agent Design (Google ADK)
+
+## Firestore session and memory services, extending ADK's shipped pair
+
+Sessions, events, and memory live in Firestore alongside the domain data, under one
+database and one authorization boundary.
+
+**The pinned version is `google-adk==2.7.0`.** It ships a Python Firestore implementation
+of both services:
+
+```python
+from google.adk.integrations.firestore.firestore_session_service import FirestoreSessionService
+from google.adk.integrations.firestore.firestore_memory_service import FirestoreMemoryService
+```
+
+Neither is re-exported from `google.adk.sessions` / `google.adk.memory`, so they must be
+imported from `google.adk.integrations.firestore.*` by full path.
+
+This project **subclasses that pair** in `apps/api/src/coach/adk_firestore/` rather than
+implementing `BaseSessionService` / `BaseMemoryService` from scratch. The shipped
+implementation already does the parts that are tedious and easy to get wrong — async client,
+state-delta scoping, optimistic concurrency — and what this project needs on top is small
+and additive.
+
+> **Important: the `google-adk` version is deliberately pinned. Do not bump it unless
+> absolutely necessary.** Subclassing couples this project to the shipped classes'
+> *internals*, not just to the abstract base classes, so the pin matters more here than it
+> would for a from-scratch implementation — see
+> [Bumping the ADK version](#bumping-the-adk-version) below.
+
+Note when consulting documentation: ADK ships SDKs for several languages, and
+`adk.dev/integrations/firestore-session-service/` documents the **Java** SDK
+(`com.google.adk.sessions.FirestoreSessionService`), whose shape differs from the Python
+class of the same name. The installed Python source is the reference for both.
+
+### What the shipped `FirestoreSessionService` already provides
+
+Verified against the installed 2.7.0 source:
+
+- **Async throughout.** Constructed as `FirestoreSessionService(client=AsyncClient(...),
+  root_collection=...)`; every path uses `firestore.AsyncClient`, so it never blocks the
+  event loop. (ADK Java's implementation blocks deliberately; the Python one does not.)
+- **State-delta scoping.** `append_event` runs a transaction that routes
+  `event.actions.state_delta` by prefix — session state onto the session doc, `user:` keys
+  onto `user_states/{app}/users/{uid}`, `app:` keys onto `app_states/{app}`, `temp:`
+  applied in memory then trimmed before persistence.
+- **Optimistic concurrency.** The session doc carries a `revision` integer. `append_event`
+  compares it against the loaded session's `_storage_update_marker` and raises
+  `StaleSessionError` on mismatch, so a session mutated by another writer cannot be
+  appended to blindly. `Runner` catches `StaleSessionError` and reloads.
+- **In-process serialization.** Per-`(app, user, session)` `asyncio.Lock` around
+  `append_event`, so concurrent appends within one instance queue rather than collide.
+- **Partial events are not persisted.** `append_event` returns early on `event.partial`,
+  matching ADK's own semantics and keeping write costs bounded.
+- **Bounded history.** `get_session` honours `GetSessionConfig.num_recent_events` (via
+  `limit_to_last`) and `after_timestamp`. `num_recent_events == 0` skips the events query
+  entirely.
+
+### What the subclass adds
+
+`CoachSessionService(FirestoreSessionService)` adds exactly four things:
+
+| Addition | Why | How |
+| --- | --- | --- |
+| `seq` on each event doc | `GET /api/sessions/{sid}/events?after_seq=` pages the transcript deterministically; `timestamp` ordering alone is not a stable cursor | Override `append_event`; the shipped transaction already computes `new_revision`, which increments once per appended event and is therefore already a gap-free per-session sequence. Persist it as `seq`. |
+| `projectId` / `taskId` linkage on the session doc | `GET /api/sessions/{sid}` returns linkage; the board resolves a session to its task | Set on `create_session`, merged into the session document |
+| `get_user_state()` | The shipped class does **not** override it, so it inherits `BaseSessionService`'s `NotImplementedError`. The prompt builder reads user-scoped state at session start without loading a session | Read `user_states/{app}/users/{uid}` directly and strip the `user:` prefix |
+| `flush()` | Inherited no-op is correct, but is overridden explicitly so the contract suite covers it | No-op, asserted |
+
+Overriding `append_event` means reimplementing the shipped transaction rather than hooking
+into it — there is no extension point inside it. The subclass keeps the shipped body's
+structure (including the `revision` check and `StaleSessionError`) and adds the `seq` and
+linkage writes. **That copied transaction body is the single most bump-sensitive thing in
+this project**; it is the first item on the bump checklist below.
+
+Contract tests run the same suite against `InMemorySessionService` and ours to catch
+behavioural drift ([08-testing.md](08-testing.md)).
+
+### `CoachMemoryService(FirestoreMemoryService)`
+
+The shipped `FirestoreMemoryService` already implements v1 exactly as this project wants it:
+keyword extraction with a stop-word list, storage with a `keywords[]` array, and
+`search_memory` as an `array_contains` fan-out over query terms. `add_session_to_memory` and
+`search_memory` are used as-is.
+
+The subclass adds only per-user collection placement (`users/{uid}/memories/{memoryId}`)
+and the `sourceSessionId` / `projectId` fields the UI attributes memories by.
+
+v2 upgrade path (M6+): add an `embedding` vector field and use Firestore's `find_nearest`
+KNN with `text-embedding-004`. The `BaseMemoryService` interface does not change, so this
+is a drop-in swap behind a config flag.
+
+### Two different `seq` spaces — do not conflate them
+
+The word `seq` appears in two unrelated places. Conflating them leads to the conclusion that
+turn resume depends on the session service's document layout. It does not:
+
+| Name | Scope | Lives in | Used for |
+| --- | --- | --- | --- |
+| Event `seq` | Per **session**, one per finalized ADK event | `…/events/{eventId}.seq` | Transcript pagination (`?after_seq=`) |
+| Delta `seq` | Per **turn**, one per streamed chunk | `turns/{turnId}.checkpoints` and WS frames | Disconnect/resume replay ([04-api-contract.md](04-api-contract.md)) |
+
+Turn resume reads `turns/*` and never touches the session service. This is why adopting the
+shipped session service costs nothing on the resume path.
+
+### Bumping the ADK version
+
+The pin exists because this project subclasses two concrete ADK classes, so the coupling is
+to their **internals**, not merely to the abstract base classes. Treat a bump as a scheduled
+task with its own verification pass, not as routine dependency maintenance.
+
+What to re-verify against the newly installed source, and re-test:
+
+| Surface | Why it matters here | Lands in |
+| --- | --- | --- |
+| **`FirestoreSessionService.append_event` transaction body** | We reimplement it to add `seq`. Any upstream change to the `revision` check, the state-delta split, or the event document shape must be mirrored by hand — this is the highest-risk item | `adk_firestore/session_service.py` |
+| `revision` semantics and `Session._storage_update_marker` | We derive event `seq` from `revision`; if it stops incrementing once per event, `seq` silently develops gaps or duplicates | same |
+| `StaleSessionError` — when it is raised, and that `Runner` still catches it | Our override must keep raising it or concurrent appends corrupt state | same |
+| Collection layout constants (`DEFAULT_ROOT_COLLECTION`, `app_states`, `user_states`) and `_get_sessions_ref` | We inherit the layout and read `user_states` directly in `get_user_state` | same, and [02-data-model.md](02-data-model.md) |
+| `create_session` / `get_session` / `list_sessions` / `delete_session` signatures | Inherited or lightly extended | same |
+| `GetSessionConfig` (`num_recent_events`, `after_timestamp`), `ListSessionsResponse` | Drives the bounded-history query that keeps long sessions cheap | same |
+| `Event` fields, and partial vs finalized semantics | We persist only finalized events; a change alters write volume | same |
+| `get_user_state`, `flush` | We override; upstream may start providing them | same |
+| `FirestoreMemoryService` keyword extraction, stop-word list, `search_memory` fan-out | Used as-is; a change moves retrieval quality | `adk_firestore/memory_service.py` |
+| `Runner` streaming event shape | Feeds delta `seq` assignment, checkpointing, and the resume path | `ws/`, `services/` |
+| `GcsArtifactService(bucket_name, **kwargs)` construction, `types.Part` file references | Upload and multimodal path | `integrations/` |
+| Tool and callback signatures | The tool catalogue below | `agents/` |
+
+**Order of work:** install the new version, run the contract suite
+([08-testing.md](08-testing.md)) — identical tests against `InMemorySessionService` and ours,
+so a moved semantic fails on the in-memory side first and names itself — then **diff the
+shipped `firestore_session_service.py` against the copy our override was derived from**,
+since that is the one surface the contract suite cannot see, then run the streaming and
+resume suites, which are where `Runner` changes surface.
+
+Two exits if the subclass ever stops earning its place: drop to the shipped class unmodified
+and page the transcript by `timestamp` instead of `seq`; or, if Firestore itself stops
+fitting, `DatabaseSessionService` against Cloud SQL Postgres — which costs a managed database
+and a connection pool on Cloud Run, and gives up the single-datastore property. Neither is
+right for v1, but both are real.
+
+### Artifacts
+
+`GcsArtifactService` from ADK, pointed at `gs://{project}-coach-artifacts`. User uploads
+(images, PDFs) land there and are referenced as `types.Part` file parts. No custom work.
+
+## Agent graph
+
+```
+                       ┌────────────────────────┐
+   interactive ───────▶│      coach_agent       │  LlmAgent, thinking_level=high
+                       │  (Socratic guide)      │
+                       └───────┬────────────────┘
+                               │ tools
+        ┌──────────────────────┼────────────────────────────┐
+        ▼                      ▼                            ▼
+  domain tools           memory tools               AgentTool(research_agent)
+  (task/project CRUD)    load_memory,
+                         update_learner_profile
+
+                       ┌────────────────────────┐
+   scheduled ─────────▶│  autonomous_workflow   │  SequentialAgent
+                       └───────┬────────────────┘
+                               │
+        ┌──────────┬───────────┼───────────┬──────────────┐
+        ▼          ▼           ▼           ▼              ▼
+  select_next_  research_agent  post_    propose_tasks  reprioritize
+  task          (LlmAgent)      report   (LlmAgent)     (code)
+  (code, not                    (code)
+   an LLM)
+
+                       ┌────────────────────────┐
+                       │     research_agent     │  LlmAgent, thinking_level=high
+                       │  tools: AgentTool(search_agent),
+                       │         fetch_url,
+                       │         youtube_find_by_duration,
+                       │         post_research_report
+                       └───────┬────────────────┘
+                               │
+                       ┌───────▼────────────────┐
+                       │      search_agent      │  LlmAgent with ONLY the
+                       │  tools: google_search   │  built-in google_search tool
+                       └────────────────────────┘
+```
+
+### Why `search_agent` is separate
+
+ADK/Gemini restricts mixing built-in tools (like `google_search`) with custom function
+tools in a single agent. The standard workaround is to isolate the built-in tool in its
+own `LlmAgent` and expose it to the parent via `AgentTool`. **Validate this constraint in
+M1 against the pinned ADK version** — if the restriction has been lifted for Gemini 3.x,
+collapse the two agents and delete a hop. The rest of the design is unaffected either way.
+
+### `coach_agent`
+
+Purpose: the conversation the learner has while working on a task.
+
+Behaviour encoded in the instruction:
+- Ask Socratic questions to elicit the project goal and constraints before proposing
+  tasks; do not produce a task list from a one-line prompt.
+- Respect `EffectivePrefs.defaultTaskMinutes` when sizing tasks; if a proposed task
+  exceeds it by >50 %, split it.
+- When the user uploads work, analyse it against the task's success criteria and respond
+  in the learner's `guidanceStyle`.
+- Never claim material was read that was not fetched; cite the tool result.
+
+Dynamic instruction is assembled per-invocation by a `before_agent_callback` that injects:
+project goal, effective prefs, current task + its subtasks, last N task outcomes, and the
+`learnerProfile` summary. Injected as state, not as a giant literal prompt, so ADK's
+`{state_key}` templating keeps the prompt cache-friendly.
+
+### `research_agent`
+
+Input: `{ taskId, budgetMinutes, projectGoal, prefs, learnerProfile }`.
+Output: exactly one `post_research_report` call.
+
+Workflow it is instructed to follow:
+1. `search_agent("…")` for authoritative material; note grounding citations.
+2. `fetch_url` on the 2–4 most promising results to confirm they actually cover the task
+   (title-based selection is how bad reading lists happen).
+3. If `prefs.allowVideos`, `youtube_find_by_duration(query, max_minutes=remaining_budget)`.
+4. Optionally author an exercise or `code_scaffold` item itself.
+5. Call `post_research_report` with `required[]` sized to fit `budgetMinutes` and
+   everything else in `optional[]`.
+
+### `autonomous_workflow` (SequentialAgent)
+
+Steps are individually checkpointed by the run ledger, so each is separately resumable:
+
+| # | Step | Kind | Notes |
+| --- | --- | --- | --- |
+| 1 | `select_next_task` | code | Deterministic: lowest `order` among `not_started`/`current`, skipping `completed`, `discarded`, `postponed`, and unexpired `postponed_until`. No LLM. |
+| 2 | `research` | `research_agent` | Skipped if `task.needsResearch == false`. |
+| 3 | `post_report` | code | Writes `research_reports/*`, appends a `research_report_ref` event to the task's session, sets `researchStatus = done`. |
+| 4 | `propose_tasks` | LlmAgent | May emit `add_task` / `split_task` calls if research revealed missing prerequisites. Bounded: ≤ 5 new tasks per run. |
+| 5 | `reprioritize` | code | Applies the agent's requested `set_next_up` / ordering via fractional index writes. |
+
+Step 1 and 5 are deliberately not LLM steps — ordering and selection are rules, and
+making them rules removes a whole class of nondeterminism from background behaviour.
+
+## Tool catalogue
+
+All tools are typed `FunctionTool`s with Pydantic argument models, wrapping `services/`.
+Every tool returns a compact structured result (not prose) so the model reasons over facts.
+
+### Domain tools (available to `coach_agent`, subset to `propose_tasks`)
+
+| Tool | Signature (abridged) | Guard |
+| --- | --- | --- |
+| `list_tasks` | `(project_id, include_completed=False)` | owner |
+| `add_task` | `(project_id, title, description, estimated_minutes, needs_research, after_task_id=None)` | ≤ 5/run; minutes ≤ 3× default |
+| `split_task` | `(task_id, subtasks: list[SubtaskDraft])` | parent must be leaf; 2–8 subtasks; each ≤ default minutes |
+| `update_task` | `(task_id, title?, description?, estimated_minutes?)` | owner |
+| `set_task_state` | `(task_id, state, postponed_until?)` | state machine validated server-side |
+| `set_next_up` | `(project_id, task_id)` | transactional single-`current` invariant |
+| `reorder_task` | `(task_id, after_task_id \| before_task_id)` | fractional index |
+| `discard_task` | `(task_id, reason)` | **requires user confirmation** in interactive mode; forbidden in autonomous mode |
+| `update_project_prefs` | `(project_id, prefs_patch)` | whitelist of keys |
+| `post_research_report` | `(task_id, required[], optional[], summary)` | validates `Σ required.minutes ≤ budget` |
+
+### Memory tools
+
+| Tool | Notes |
+| --- | --- |
+| `load_memory` | ADK's standard memory retrieval, backed by `FirestoreMemoryService`. |
+| `update_learner_profile` | Typed patch on `users/{uid}.learnerProfile`. Rate-limited to 1 call/turn; every write audited with the triggering session id. |
+| `remember` | Writes a single durable memory entry with text + tags. |
+
+### Integration tools
+
+| Tool | Notes |
+| --- | --- |
+| `google_search` | ADK built-in, inside `search_agent` only. Grounding citations captured into the report. |
+| `fetch_url` | Server-side fetch with SSRF guards (no private IP ranges, no redirects to them), 2 MB cap, 10 s timeout, HTML→markdown, robots-respecting. |
+| `youtube_find_by_duration` | `search.list` → `videos.list(part=contentDetails,statistics)` → parse ISO-8601 → filter `duration ≤ max_minutes` → rank by view/like ratio and recency. Returns ≤ 8 candidates with exact minutes. Quota-guarded and cached 24 h by query hash. |
+
+## The learner model, concretely
+
+Three layers, deliberately separated by durability:
+
+| Layer | Where | Written by | Used for |
+| --- | --- | --- | --- |
+| Session state | `sessions/{id}.state` | ADK state deltas | Within-conversation context |
+| User state | `user_states/{app}/users/{uid}` (ADK `user:` scope) | tools | Cross-session facts ADK needs at session start |
+| Learner profile | `users/{uid}.learnerProfile` | `update_learner_profile` only | Prompt construction, Settings UI, adaptation |
+| Episodic memory | `users/{uid}/memories/*` | `add_session_to_memory` on session close + `remember` | `load_memory` retrieval |
+
+**Adaptation loop.** At session close (or after N turns), an `after_agent_callback`
+summarizes the session into memory and, if warranted, proposes a profile patch. The
+patch is applied only through the typed tool, is versioned, and is shown to the user in
+Settings as "what the coach believes about how you learn," with per-field edit and reset.
+This makes the "evolving user model" inspectable rather than a black box — which also
+makes it debuggable when the coach starts behaving oddly.
+
+## Safety rails on autonomy
+
+- Autonomous mode runs with a **reduced tool set**: no `discard_task`, no
+  `update_learner_profile`, no `update_project_prefs`. Background work may add, research,
+  split, and reorder — it may not silently redefine the user's goals or delete their work.
+- Every autonomous mutation records `origin: "agent"` and `runId`, and the UI badges
+  agent-created tasks so the user can see what happened while they were away.
+- A per-run cap on tool calls and tokens; exceeding it fails the step cleanly and is
+  retried with a smaller scope rather than looping.
