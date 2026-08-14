@@ -1,0 +1,68 @@
+# The end-to-end harness: one app image plus the Firestore emulator.
+#
+# docs/07-infra-deploy.md's CI pipeline runs `e2e: docker compose (single app image +
+# Firestore emulator) -> playwright test`. Playwright itself runs on the host against
+# http://localhost:8080, so the browsers do not need to be in an image.
+#
+#   docker compose -f docker-compose.e2e.yml up --build -d
+#   npm --prefix apps/web run e2e
+#   docker compose -f docker-compose.e2e.yml down -v
+#
+# `./scripts/dev.sh test e2e` does all three.
+
+services:
+  firestore:
+    # The emulator is distributed with the Cloud SDK, and the SDK image already carries a
+    # JRE — which is what makes this harness independent of the host's Java situation
+    # (docs/07-infra-deploy.md#prerequisites).
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:580.0.0-emulators
+    command:
+      - gcloud
+      - beta
+      - emulators
+      - firestore
+      - start
+      - --host-port=0.0.0.0:8080
+      - --project=demo-coach-e2e
+    ports:
+      # 8181, not 8081: `./scripts/dev.sh test api` starts a local emulator on 8081 and
+      # leaves it running, so `dev.sh test all` would fail to bind here. The API container
+      # reaches this one over the compose network regardless; the host publish exists only
+      # so a developer can point a client at the e2e database while debugging a failure.
+      - '8181:8080'
+    healthcheck:
+      # The emulator answers on / once it is listening; that is enough to gate startup.
+      test: ['CMD', 'sh', '-c', 'curl -sf http://localhost:8080/ > /dev/null']
+      interval: 2s
+      timeout: 3s
+      retries: 45
+      start_period: 20s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # The e2e suite seeds sign-in with a `dev:<uid>` token rather than driving
+        # Google's popup (docs/08-testing.md), so the SPA is built in dev-auth mode and
+        # the API runs with ENV=local, which is the only ENV that accepts those tokens.
+        VITE_AUTH_MODE: dev
+    environment:
+      ENV: local
+      GOOGLE_CLOUD_PROJECT: demo-coach-e2e
+      FIRESTORE_EMULATOR_HOST: firestore:8080
+      FIRESTORE_DATABASE: '(default)'
+      ADK_FIRESTORE_ROOT_COLLECTION: adk-session
+      MODEL_BACKEND: vertex
+      LOG_LEVEL: INFO
+    ports:
+      - '8080:8080'
+    depends_on:
+      firestore:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'python', '-c', "import urllib.request;urllib.request.urlopen('http://localhost:8080/healthz')"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 10s

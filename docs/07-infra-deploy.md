@@ -256,7 +256,7 @@ numbered idempotent scripts run as a one-shot Cloud Run Job after deploy; a
 | `gcloud` | emulator, deploys | Cloud SDK |
 | `gcloud` component `beta` | `gcloud beta emulators firestore` | `gcloud components install beta` |
 | `gcloud` component `cloud-firestore-emulator` | every backend test | `gcloud components install cloud-firestore-emulator` |
-| **A JRE (21+)** | the Firestore emulator is a Java jar, and the Cloud SDK bundles Python but **no** JRE | a JRE 21+ on `PATH`; Temurin 21 or `openjdk-21-jre-headless` |
+| **A JRE (see the floor note below)** | the Firestore emulator is a Java jar, and the Cloud SDK bundles Python but **no** JRE | a JRE on `PATH`; Temurin is the usual choice |
 | `unzip` | Terraform and tflint ship as `.zip` | distro package |
 | `gh` | optional; only for repo/WIF setup | static binary |
 
@@ -264,9 +264,67 @@ numbered idempotent scripts run as a one-shot Cloud Run Job after deploy; a
 shell, so without the alias a new shell — or a restarted editor — silently reverts to
 whatever was default and you get a Node version that disagrees with the Dockerfile.
 
-**The emulator's minimum JRE tracks the Cloud SDK and rises over time** — the emulator
-refuses to start on an older JRE rather than degrading, and every backend test needs it. Re-check
-`java -version` against the emulator's current floor after a `gcloud components update`.
+**The emulator's minimum JRE tracks the Cloud SDK and rises over time**, and every backend
+test needs the emulator. Re-check `java -version` against the emulator's current floor after
+a `gcloud components update`.
+
+The floor as observed, so the next person can tell drift from breakage:
+
+| Date | Cloud SDK | Emulator's stated requirement | Installed JRE | Result |
+| --- | --- | --- | --- | --- |
+| 2026-08-14 | 580.0.0 | JRE 25+ (see the warning below) | Temurin 21.0.12 | **Warns, then starts and works.** All 177 backend tests pass. |
+
+The warning, verbatim, is what `./scripts/dev.sh` prints on a cold emulator start:
+
+```
+WARNING: Cloud Firestore Emulator support for Java JRE version 21 will be dropped after
+gcloud command-line tool release 576.0.0. Please upgrade to Java JRE version 25 or higher
+to continue using the latest Cloud Firestore Emulator.
+```
+
+Note the tense: support "will be dropped **after** 576.0.0", and this box is on 580.0.0
+and still works — so the emulator is warning ahead of enforcing, not describing something
+that has already happened. That gap is the window in which to upgrade.
+
+Two consequences of that row:
+
+- The warning is the emulator's own text, not ours. `./scripts/dev.sh` runs a `java -version`
+  preflight and **surfaces the emulator's warning rather than suppressing or gating on it** —
+  the point is to make the drift visible on the day it starts mattering, not to block work
+  today.
+- Treat "JRE 21+" as a snapshot, not a contract. The emulator has historically warned for a
+  while before it actually refuses to start; when it does refuse, it refuses outright rather
+  than degrading, so the failure mode is a hard stop on every backend test at once. Bumping
+  the dev-machine and CI-runner JRE is the fix, and it is cheap — it is only listed as a
+  prerequisite here because nothing else in the stack needs Java at all.
+
+### Python dependency pins that are not routine
+
+`apps/api/pyproject.toml` pins everything exactly (`==`) and `uv.lock` is committed. Three
+of those pins carry a reason beyond "reproducibility":
+
+| Dependency | Pin | Why it is called out |
+| --- | --- | --- |
+| `google-adk` | `==2.7.0` | Deliberate, and not routine to bump — `adk_firestore/` subclasses the shipped Firestore session/memory pair, so the coupling is to their internals. Checklist: [03-agent-design.md](03-agent-design.md#bumping-the-adk-version) |
+| **`google-cloud-firestore`** | `==2.28.1` | **A direct dependency of ours, not something `google-adk` drags in.** See below |
+| `firebase-admin` | `==7.5.0` | The Admin SDK for `identitytoolkit`; it is what `verify_id_token` lives in. Not a Firebase-project artifact and not removable as a leftover ([04-api-contract.md](04-api-contract.md#authentication)) |
+
+**`google-cloud-firestore` must be declared explicitly.** `google-adk==2.7.0` lists it only
+under the `all`, `extensions`, and `test` **extras** — the base install does not pull it in:
+
+```
+$ importlib.metadata.requires("google-adk") | grep firestore
+google-cloud-firestore>=2.11,<3 ; extra == "all"
+google-cloud-firestore>=2.11,<3 ; extra == "extensions"
+google-cloud-firestore>=2.11,<3 ; extra == "test"
+```
+
+So `pip install google-adk==2.7.0` alone gives an install where
+`from google.adk.integrations.firestore.firestore_session_service import FirestoreSessionService`
+raises `ImportError` — the exact import [03-agent-design.md](03-agent-design.md) is built on.
+Depending on `google-adk[extensions]` instead would work but would also pull the rest of that
+extra, and would leave the version of the one package this project subclasses against being
+chosen by someone else's range. An explicit `==` pin is the smaller surface.
 
 **Playwright browsers.** Chromium is enough through M1. WebKit is first needed at **M2**,
 where golden flow #4 (disconnect and resume) becomes an exit criterion. Install it with

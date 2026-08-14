@@ -1,0 +1,184 @@
+name: Deploy (Cloud Run)
+
+# docs/07-infra-deploy.md#deploy-cloudrunyml:
+#
+#   1. auth to GCP via Workload Identity Federation (no keys)
+#   2. docker build + push to Artifact Registry, tagged with the commit SHA
+#   3. terraform plan (fails the job on unexpected drift) -> terraform apply
+#   4. gcloud run deploy --image ...:$SHA --no-traffic --tag=candidate
+#   5. smoke test the candidate revision URL: /healthz, /readyz, one authenticated round-trip
+#   6. gcloud run services update-traffic --to-tags candidate=100  (or 10 -> 100 canary in prod)
+#   7. on smoke-test failure: leave traffic on the previous revision, fail loudly
+#
+# Rollback is `update-traffic --to-revisions <previous>=100`. Because the SPA lives in the
+# same image, a rollback reverts the frontend with it.
+#
+# NOTE: this workflow has never been executed. It is authored and syntax-checked only —
+# running it touches a real GCP project, which is out of scope for the milestone that
+# landed it. The two manual bootstrap steps in docs/07-infra-deploy.md and
+# `infra/terraform/RUNBOOK.md` must be done first, or step 3 fails on Identity Platform.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Which environment to deploy
+        required: true
+        default: dev
+        type: choice
+        options: [dev, prod]
+
+concurrency:
+  # Never two deploys to one environment at once: step 6 would race on traffic.
+  group: deploy-${{ inputs.environment || (startsWith(github.ref, 'refs/tags/v') && 'prod' || 'dev') }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  # Required for Workload Identity Federation. No service-account keys exist anywhere.
+  id-token: write
+
+jobs:
+  deploy:
+    name: Build, apply, deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # A GitHub Environment protection rule requires approval for prod
+    # (docs/07-infra-deploy.md#deploy-cloudrunyml).
+    environment: ${{ inputs.environment || (startsWith(github.ref, 'refs/tags/v') && 'prod' || 'dev') }}
+
+    env:
+      ENVIRONMENT: ${{ inputs.environment || (startsWith(github.ref, 'refs/tags/v') && 'prod' || 'dev') }}
+      REGION: us-central1
+      SERVICE: coach-api
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # --- 1. auth, keylessly -------------------------------------------------------
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOYER_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+        with:
+          version: '580.0.0'
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      # --- 2. build and push --------------------------------------------------------
+      #
+      # Vite needs the environment's Identity Platform configuration at build time, and
+      # these come from Terraform outputs rather than being copied by hand into CI. They
+      # are public values by design — the security boundary is the authorized-domains
+      # list and server-side token verification, not secrecy of the API key.
+      - name: Build and push the image
+        id: build
+        env:
+          IMAGE: ${{ env.REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/coach/${{ env.SERVICE }}
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg VITE_AUTH_MODE=identity-platform \
+            --build-arg VITE_IDENTITY_API_KEY="${{ vars.IDENTITY_API_KEY }}" \
+            --build-arg VITE_IDENTITY_AUTH_DOMAIN="${{ vars.IDENTITY_AUTH_DOMAIN }}" \
+            --build-arg VITE_IDENTITY_PROJECT_ID="${{ vars.GCP_PROJECT_ID }}" \
+            --tag "$IMAGE:${{ github.sha }}" \
+            .
+          docker push "$IMAGE:${{ github.sha }}"
+          echo "image=$IMAGE:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      # --- 3. terraform -------------------------------------------------------------
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.15.8'
+          terraform_wrapper: false
+
+      - name: terraform init
+        run: terraform -chdir=infra/terraform/envs/${{ env.ENVIRONMENT }} init -input=false
+
+      # `-detailed-exitcode`: 0 = no changes, 2 = changes present, 1 = error. Unexpected
+      # drift should be visible in the log before it is applied.
+      - name: terraform plan
+        id: plan
+        run: |
+          terraform -chdir=infra/terraform/envs/${{ env.ENVIRONMENT }} plan \
+            -input=false -detailed-exitcode \
+            -var="image=${{ steps.build.outputs.image }}" \
+            -out=tfplan || [ $? -eq 2 ]
+
+      - name: terraform apply
+        run: |
+          terraform -chdir=infra/terraform/envs/${{ env.ENVIRONMENT }} apply \
+            -input=false -auto-approve tfplan
+
+      # --- 4. deploy the candidate with no traffic ----------------------------------
+      - name: Deploy candidate revision
+        id: candidate
+        run: |
+          set -euo pipefail
+          gcloud run deploy "${{ env.SERVICE }}" \
+            --image="${{ steps.build.outputs.image }}" \
+            --region="${{ env.REGION }}" \
+            --no-traffic --tag=candidate \
+            --quiet
+          url=$(gcloud run services describe "${{ env.SERVICE }}" \
+            --region="${{ env.REGION }}" \
+            --format='value(status.traffic.filter("tag=candidate").extract("url"))' | head -1)
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      # --- 5. smoke test ------------------------------------------------------------
+      - name: Smoke test the candidate
+        run: |
+          set -euo pipefail
+          url="${{ steps.candidate.outputs.url }}"
+          echo "Smoke testing $url"
+
+          curl -fsS --max-time 30 "$url/healthz" | tee /dev/stderr | grep -q '"status":"ok"'
+          curl -fsS --max-time 30 "$url/readyz"  | tee /dev/stderr | grep -q '"status":"ok"'
+
+          # One authenticated round-trip. An unauthenticated /api/me must be a 401 in
+          # problem+json — which also proves the SPA catch-all is not shadowing the API
+          # on the deployed revision, the thing docs/07-infra-deploy.md#container warns
+          # about and that only shows up in a real image.
+          status=$(curl -s -o /tmp/me.json -w '%{http_code}' --max-time 30 "$url/api/me")
+          test "$status" = "401"
+          grep -q 'application/problem' <(curl -sI --max-time 30 "$url/api/me")
+
+          # And the SPA itself is served at the root of the same origin.
+          curl -fsS --max-time 30 "$url/" | grep -qi '<!doctype html'
+
+      # --- 6. shift traffic ---------------------------------------------------------
+      - name: Shift traffic (dev - straight to 100%)
+        if: env.ENVIRONMENT == 'dev'
+        run: |
+          gcloud run services update-traffic "${{ env.SERVICE }}" \
+            --region="${{ env.REGION }}" --to-tags candidate=100 --quiet
+
+      - name: Shift traffic (prod - 10% canary, then 100%)
+        if: env.ENVIRONMENT == 'prod'
+        run: |
+          set -euo pipefail
+          gcloud run services update-traffic "${{ env.SERVICE }}" \
+            --region="${{ env.REGION }}" --to-tags candidate=10 --quiet
+          sleep 120
+          curl -fsS --max-time 30 "${{ steps.candidate.outputs.url }}/healthz" >/dev/null
+          gcloud run services update-traffic "${{ env.SERVICE }}" \
+            --region="${{ env.REGION }}" --to-tags candidate=100 --quiet
+
+      # --- 7. fail loudly, leaving traffic where it was -----------------------------
+      - name: Report a failed rollout
+        if: failure()
+        run: |
+          echo "::error::Rollout failed. Traffic was NOT shifted to the candidate revision;"
+          echo "::error::the previous revision is still serving. Roll back explicitly with:"
+          echo "::error::  gcloud run services update-traffic ${{ env.SERVICE }} \\"
+          echo "::error::    --region=${{ env.REGION }} --to-revisions <previous>=100"
+          exit 1

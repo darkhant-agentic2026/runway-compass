@@ -23,7 +23,15 @@ turns/{turnId}/checkpoint_pages/{page}       ← spill when the turn doc nears 1
 autonomous_runs/{runId}                      ← durable job ledger
 presence/{uid}
 usage/{uid}_{yyyymmdd}                       ← token + run counters
+idempotency/{uid}__{fingerprint}             ← Idempotency-Key replay records, TTL 24 h
 ```
+
+`idempotency/*` was added at M1 to make the `Idempotency-Key` contract in
+[04-api-contract.md](04-api-contract.md) real across instances: the first request stores
+its response body and status, a replay returns them without re-executing the handler. The
+fingerprint hashes method, path, and key, so the same key reused on a different endpoint
+is a different operation rather than an unrelated replay. Scoped by `uid` so one user's
+key cannot collide with another's.
 
 ADK-owned — this layout comes from the shipped `FirestoreSessionService` and is **not ours
 to choose**; changing it means not subclassing:
@@ -168,6 +176,13 @@ Invariants enforced in a Firestore transaction by `TaskService`:
    cards therefore render counts and summed minutes with no extra reads — which is the
    "card shows number of sub-tasks and total estimated duration" requirement.
 
+The task document also carries its own `id` as a field, mirroring the document key. This
+is the same denormalization-for-collection-group-queries the `projectId` and `ownerUid`
+comments describe, and it exists because `/api/tasks/{id}` addresses a task without naming
+its project: a collection-group query cannot filter on a document key by its trailing
+segment, so there has to be a field to filter on. Ownership is then checked against the
+task's own `ownerUid`, which keeps that lookup to one query.
+
 Task nesting is **one level deep**. A subtask cannot have subtasks; if the agent thinks a
 subtask is still too big, it splits it into siblings. This keeps rollups, ordering, and UI
 simple, and matches how bite-sized work actually decomposes.
@@ -300,6 +315,7 @@ See [05-autonomous-runs.md](05-autonomous-runs.md) for the full schema and seman
 | Session events | `events`: `seq ASC` — single-field, ascending; the collection is nested under one session, so no composite is needed |
 | Memory search | `memories`: `keywords ARRAY_CONTAINS_ANY, createdAt DESC` |
 | Session by task | `sessions` collection group: `taskId ASC` — resolves a task to its session without storing the reverse pointer twice |
+| Task by bare id | collection group `tasks`: `id ASC` — `GET /api/tasks/{id}` and friends address a task without its project (see below) |
 
 ## Access model
 

@@ -1,0 +1,23 @@
+# Keep the build context small and, more importantly, keep host state out of the image:
+# a stale apps/api/.venv or apps/web/node_modules copied in would shadow what the build
+# stages install.
+**/.venv/
+**/node_modules/
+**/dist/
+**/.git/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/coverage/
+**/.firestore-emulator/
+**/test-results/
+**/playwright-report/
+**/.terraform/
+infra/
+docs/
+*.md
+.github/
+.env
+.env.*
+!apps/web/.npmrc

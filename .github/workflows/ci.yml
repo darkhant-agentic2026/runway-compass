@@ -1,0 +1,201 @@
+name: CI
+
+# docs/07-infra-deploy.md#ciyml-every-pr:
+#
+#   api:  uv sync -> ruff check -> ruff format --check -> mypy -> pytest (Firestore emulator)
+#   web:  npm ci -> tsc --noEmit -> eslint -> vitest run --coverage -> vite build
+#   e2e:  docker compose (single app image + Firestore emulator) -> playwright test
+#   tf:   terraform fmt -check -> terraform validate -> tflint
+#
+# Target: under 10 minutes. The four jobs are independent and run in parallel.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Node 22 matches the node:22-slim image pin (docs/07-infra-deploy.md#prerequisites).
+  NODE_VERSION: '22'
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  api:
+    name: apps/api
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.12.1'
+          enable-cache: true
+          cache-dependency-glob: apps/api/uv.lock
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # The Firestore emulator is a Java jar and the Cloud SDK bundles no JRE, so every
+      # backend test depends on this step. The emulator's minimum JRE rises over time —
+      # see the floor table in docs/07-infra-deploy.md#prerequisites before bumping.
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: google-github-actions/setup-gcloud@v3
+        with:
+          version: '580.0.0'
+      - name: Install the Firestore emulator
+        run: gcloud components install beta cloud-firestore-emulator --quiet
+
+      - name: Install dependencies
+        working-directory: apps/api
+        run: uv sync --frozen --all-groups
+
+      - name: ruff check
+        working-directory: apps/api
+        run: uv run ruff check .
+
+      - name: ruff format --check
+        working-directory: apps/api
+        run: uv run ruff format --check .
+
+      - name: mypy
+        working-directory: apps/api
+        run: uv run mypy
+
+      # conftest.py starts the emulator itself when FIRESTORE_EMULATOR_HOST is unset or
+      # unreachable, so there is no separate service container to keep in step.
+      - name: pytest
+        working-directory: apps/api
+        env:
+          ENV: local
+          GOOGLE_CLOUD_PROJECT: demo-coach-test
+        run: uv run coverage run -m pytest -q
+
+      - name: Coverage report
+        working-directory: apps/api
+        run: uv run coverage report
+
+  web:
+    name: apps/web
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+
+      - name: tsc --noEmit
+        run: npm run typecheck
+
+      - name: eslint
+        run: npm run lint
+
+      - name: vitest
+        run: npm run test:coverage
+
+      # Only a typecheck-and-lint gate. The *deployable* bundle is the one produced
+      # inside the Docker build, so there is exactly one build of the SPA that can ever
+      # reach production (docs/07-infra-deploy.md#ciyml-every-pr).
+      - name: vite build (gate only)
+        run: npx vite build
+
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: apps/web
+        run: npm ci
+
+      # Chromium only through M1. WebKit becomes a requirement at M2, where golden flow
+      # #4 is an exit criterion (docs/08-testing.md).
+      - name: Install Playwright Chromium
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+
+      - name: Start the harness
+        run: docker compose -f docker-compose.e2e.yml up --build -d --wait
+
+      - name: playwright test
+        working-directory: apps/web
+        run: npm run e2e
+
+      - name: Collect API logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.e2e.yml logs --no-color
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report/
+          retention-days: 7
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.e2e.yml down -v
+
+  tf:
+    name: terraform
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.15.8'
+          terraform_wrapper: false
+
+      - name: terraform fmt -check
+        run: terraform -chdir=infra/terraform fmt -check -recursive
+
+      # `-backend=false` keeps this job free of any GCP credential: it validates the
+      # configuration without touching the state bucket. Nothing in CI on a PR may reach
+      # a real project.
+      - name: terraform validate
+        run: |
+          for env_dir in infra/terraform/envs/*/; do
+            echo "== $env_dir =="
+            terraform -chdir="$env_dir" init -backend=false -input=false
+            terraform -chdir="$env_dir" validate
+          done
+
+      - uses: terraform-linters/setup-tflint@v5
+        with:
+          tflint_version: v0.64.0
+
+      - name: tflint
+        run: |
+          tflint --init --chdir=infra/terraform
+          tflint --recursive --chdir=infra/terraform

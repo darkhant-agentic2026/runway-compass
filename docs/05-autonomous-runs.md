@@ -113,11 +113,36 @@ collide" true rather than hopeful.
     unless the board changed, and the recorded `output.taskId` is reused on resume.
   - `research` — keyed by `runId`; the report document id is `report_{runId}` so a retry
     overwrites rather than duplicating.
-  - `post_report` — the session event carries `invocationId = runId:post_report`; the
-    session service rejects a duplicate.
+  - `post_report` — the session event carries `invocationId = runId:post_report`, and the
+    step must make that tag actually deduplicate. **See the note below: the shipped session
+    service does not do this for us.**
   - `propose_tasks` — each created task carries `createdByRun: runId` + a content hash;
     re-running skips tasks that already exist with that hash.
   - `reprioritize` — writing a fractional index is naturally idempotent.
+> **Correction (verified against the pinned `google-adk==2.7.0` source): `append_event`
+> does not deduplicate by `invocationId`.** The shipped
+> `FirestoreSessionService.append_event` writes the event to `events/{event.id}` with
+> `transaction.set()`, which creates-or-**overwrites** silently, and it never reads or
+> compares `invocationId`. Tagging the event is therefore documentation, not enforcement:
+> a re-executed `post_report` step appends a *second* event with a fresh id and the
+> transcript shows the report twice.
+>
+> `post_report` idempotency has to be implemented explicitly. Two workable options, both
+> local to the step: give the event a **deterministic id** derived from
+> `runId:post_report` so the overwrite lands on the same document, or do an **explicit
+> existence check** for that `invocationId` inside the appending transaction before
+> writing. The deterministic-id option is the cheaper of the two and rides on the
+> overwrite semantics that already exist.
+>
+> This is an **M5 obligation**, not something to build now — the step it protects does not
+> exist until then. It is called out here because the "steps are individually idempotent"
+> list above would otherwise read as already-satisfied. Note also that the report document
+> (`report_{runId}`) *is* genuinely idempotent by the same overwrite mechanism; it is only
+> the session event that needs the extra work. Overriding `append_event` is already the
+> most bump-sensitive surface in the project
+> ([03-agent-design.md](03-agent-design.md#bumping-the-adk-version)), so whichever option
+> is chosen belongs on the bump checklist.
+
 - Retries: Cloud Tasks retry with exponential backoff (min 30 s, max 10 min, 3 attempts).
   After `maxAttempts` the run is `failed` and surfaced in the UI as "the coach couldn't
   prepare this task — retry?" rather than silently disappearing.

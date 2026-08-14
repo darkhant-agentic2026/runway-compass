@@ -4,7 +4,9 @@ An adaptive agentic coach that turns your technical goals into bite-sized tasks,
 the material for the next one while you're away, and adjusts how it guides you as it
 learns how you think.
 
-**Status:** planning. No application code yet — the design is in [`docs/`](docs/).
+**Status:** M0 (local scope) and M1 landed. Both apps build and test; the task board works
+end to end as a plain CRUD app. The design is in [`docs/`](docs/); see
+[09-roadmap.md](docs/09-roadmap.md) for what is next.
 
 ## What it does
 
@@ -53,7 +55,21 @@ the eight design choices everything else follows from.
 | [09-roadmap.md](docs/09-roadmap.md) | Milestones M0–M7 with exit criteria |
 | [10-risks.md](docs/10-risks.md) | Risks, mitigations, open questions |
 
+## Getting started
+
+```bash
+./scripts/dev.sh doctor    # check the machine prerequisites
+./scripts/dev.sh up        # Firestore emulator + API + Vite
+./scripts/dev.sh seed      # a demo user, project, and tasks
+./scripts/dev.sh test      # api (pytest + emulator), web (vitest), e2e (Playwright)
+./scripts/dev.sh lint      # ruff, mypy, eslint, tsc, terraform fmt
+```
+
+See [07-infra-deploy.md](docs/07-infra-deploy.md#prerequisites) for the toolchain, and
+[infra/terraform/RUNBOOK.md](infra/terraform/RUNBOOK.md) for the two manual bootstrap
+steps each environment needs before its first `terraform apply`.
+
 ## Next step
 
-M0 in [the roadmap](docs/09-roadmap.md): scaffold both apps, provision dev infrastructure
-with Terraform, and get a signed-in user rendered from a deployed Cloud Run service.
+M2 in [the roadmap](docs/09-roadmap.md): sessions, streaming, and the disconnect
+guarantee — the riskiest engineering in the project.
