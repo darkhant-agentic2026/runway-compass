@@ -143,7 +143,31 @@ resource "google_identity_platform_config" "this" {
   # The Cloud Run service URL, plus a custom domain in prod. A sign-in popup from any
   # other origin is refused, which is the actual security boundary for the public Web API
   # key below.
-  authorized_domains = var.authorized_domains
+  #
+  # `authorized_domains` REPLACES the list rather than adding to it, and Identity Platform
+  # ships three entries by default that things depend on:
+  #
+  #   <project>.firebaseapp.com   the auth domain itself, which serves the
+  #                               /__/auth/handler that signInWithPopup returns to
+  #   <project>.web.app           the same handler on the other default domain
+  #   localhost                   local development against a real Identity Platform
+  #
+  # Setting the variable alone therefore deletes the domain the popup handler lives on,
+  # and sign-in fails *after* the user has already consented — the popup closes cleanly
+  # and the app simply stays signed out, which is about the least debuggable failure
+  # available. Union rather than replace.
+  #
+  # These are derived from `project_id` rather than from
+  # `google_identity_platform_config.this.client[0].firebase_subdomain`, which would be a
+  # self-reference and a dependency cycle. The default domains use the project id.
+  authorized_domains = distinct(concat(
+    [
+      "localhost",
+      "${var.project_id}.firebaseapp.com",
+      "${var.project_id}.web.app",
+    ],
+    var.authorized_domains,
+  ))
 }
 
 resource "google_identity_platform_default_supported_idp_config" "google" {

@@ -10,7 +10,7 @@
  * before auth resolves rather than from `globalPrefs`.
  */
 
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
@@ -22,6 +22,37 @@ export default function LoginPage() {
   const navigate = useNavigate()
   const location = useLocation()
   const from = (location.state as { from?: string } | null)?.from ?? '/'
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  /**
+   * Sign-in failures have to be visible.
+   *
+   * Identity Platform rejects with a coded error — `auth/unauthorized-domain`,
+   * `auth/invalid-api-key`, `auth/popup-blocked` — and every one of them is a
+   * configuration problem the person looking at the screen can fix. Discarding the
+   * rejection leaves a login page that silently does nothing after a popup that
+   * apparently succeeded, which is indistinguishable from the app being broken.
+   */
+  async function signIn(): Promise<void> {
+    setError(null)
+    setBusy(true)
+    try {
+      await auth.signIn()
+    } catch (cause) {
+      const code =
+        typeof cause === 'object' && cause !== null && 'code' in cause
+          ? String((cause as { code: unknown }).code)
+          : null
+      const message = cause instanceof Error ? cause.message : String(cause)
+      setError(code ? `${code} — ${message}` : message)
+      // Also on the console, where the full object with its stack is more useful than
+      // anything that fits on a card.
+      console.error('sign-in failed', cause)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   useEffect(() => {
     if (auth.status === 'signed-in') void navigate(from, { replace: true })
@@ -42,11 +73,21 @@ export default function LoginPage() {
           </p>
           <Button
             className="w-full"
-            disabled={auth.status === 'resolving'}
-            onClick={() => void auth.signIn()}
+            disabled={busy || auth.status === 'resolving'}
+            onClick={() => void signIn()}
           >
             {auth.mode === 'dev' ? 'Continue as the local dev user' : 'Sign in with Google'}
           </Button>
+
+          {error ? (
+            <p
+              role="alert"
+              className="text-destructive border-destructive/30 bg-destructive/5 rounded-md border p-2 text-xs break-words"
+              data-testid="signin-error"
+            >
+              {error}
+            </p>
+          ) : null}
           {auth.mode === 'dev' ? (
             <p className="text-muted-foreground text-xs">
               Local development: this signs in with a <code>dev:</code> token, which the API
