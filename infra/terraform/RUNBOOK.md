@@ -7,20 +7,24 @@ tribal memory.
 
 Do this once per environment (`coach-dev`, then `coach-prod`).
 
-> **Nothing in this file was executed before it was written.** The Terraform in this
-> directory is authored and checked locally — `terraform fmt -check`, `terraform
-> validate`, and `tflint` all pass — but those are weaker than they look.
+> **Status: steps 0–7 have now been run end to end against a real dev project**, and the
+> exit criterion reached — a signed-in user seeing their own email on a deployed Cloud Run
+> URL. Everything below reflects what actually happened, including seven corrections made
+> while doing it. Still unexercised: the `prod` environment, the teardown section, and
+> whether `terraform apply` reproduces an environment from scratch.
 >
-> In particular **`terraform validate` is not a substitute for `terraform plan`.** Several
-> failure modes are invisible to it and only appear when the graph is walked: a root
-> output carrying a value the provider marks sensitive, a resource that already exists
-> and needs importing, and an API that is enabled but not yet propagated. Every one of
-> those was hit on the first real run through this runbook. `plan` needs credentials and
-> a state backend, so PR CI cannot run it — which is what the nightly Terraform drift
-> check in [docs/08-testing.md](../../docs/08-testing.md#ci-wiring) is for.
+> Worth keeping in mind, because it shaped most of those corrections: **`terraform
+> validate` is not a substitute for `terraform plan`.** Several failure modes are
+> invisible to it and appear only when the graph is walked — a root output carrying a
+> value the provider marks sensitive, a resource that already exists and needs importing,
+> an API enabled but not yet propagated. `plan` needs credentials and a state backend, so
+> PR CI cannot run it, which is what the nightly Terraform drift check in
+> [docs/08-testing.md](../../docs/08-testing.md#ci-wiring) is for.
 >
-> Treat the step ordering below as reasoned and now partly exercised, not as
-> battle-tested end to end.
+> The other recurring shape: **anything this runbook tells you to create by hand,
+> Terraform will then try to create again.** That produced two of the seven (the OAuth
+> client secret container, and the Identity Platform config). If you add a manual step,
+> check it against the resource list first.
 
 ---
 
@@ -294,6 +298,20 @@ then fails as the popup closes, with
 `auth/invalid-credential … error=invalid_client&error_description=The provided client
 secret is invalid.` The redirect URI in that message being correct is a good sign — it
 means everything up to the token exchange is right.
+
+> **Then wait before you debug.** Identity Platform caches the provider configuration, and
+> after the apply the *old* secret keeps being used for several minutes. The failure is
+> byte-identical to a genuinely wrong secret, so there is nothing in the error to tell you
+> which one you are looking at.
+>
+> This was observed on the first real run: the secret was correct, `terraform plan`
+> reported "No changes" — meaning the value had already been pushed — and sign-in still
+> failed with `invalid_client` for some minutes before starting to work on its own with no
+> further changes.
+>
+> So: once `terraform plan` says "No changes" and the client id and secret belong to the
+> same OAuth client, **stop and retry in a few minutes in a fresh tab.** Continuing to
+> rotate secrets at that point only adds variables.
 
 ---
 

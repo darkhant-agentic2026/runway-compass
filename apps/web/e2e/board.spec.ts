@@ -65,6 +65,11 @@ test('sign in, create a project, and see it on the list', async ({ page }) => {
   await page.getByRole('button', { name: 'Continue as the local dev user' }).click()
 
   await expect(page.getByRole('heading', { name: 'Your projects' })).toBeVisible()
+
+  // M0's exit criterion: the signed-in user sees their own email. It comes from
+  // `GET /api/me`, so rendering it proves the token round-tripped through
+  // `verify_id_token` rather than merely that the client thinks it signed in.
+  await expect(page.getByTestId('signed-in-email')).toContainText('@')
   await page.getByLabel('New project').fill('Learn Rust')
   await page.getByRole('button', { name: 'Create' }).click()
 
