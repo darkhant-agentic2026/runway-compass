@@ -60,11 +60,22 @@ Do this once per environment (`coach-dev`, then `coach-prod`).
   holds:
 
   ```bash
-  gsutil mb -p coach-dev -l us-central1 gs://coach-dev-tfstate
-  gsutil versioning set on gs://coach-dev-tfstate
+  # GCS bucket names are globally unique, so pick one nobody has taken.
+  gsutil mb -p coach-dev -l us-central1 gs://YOUR-UNIQUE-tfstate
+  gsutil versioning set on gs://YOUR-UNIQUE-tfstate
   ```
 
-  The bucket name is hard-coded in `envs/dev/backend.tf`; change both together.
+  Put that name in **`envs/dev/backend.hcl`**, not in `backend.tf`:
+
+  ```hcl
+  bucket = "YOUR-UNIQUE-tfstate"
+  ```
+
+  A backend block cannot reference variables — it is configured before the rest of the
+  configuration exists — so this is supplied at init time with `-backend-config`. It also
+  cannot come from `dev.tfvars`, because the GCS backend rejects keys it does not
+  recognise and that file is full of them. Every `terraform init` below therefore reads
+  `backend.hcl`, and `backend.tf` stays generic.
 
 ### Enable the APIs up front (recommended)
 
@@ -122,7 +133,7 @@ This is not a failure so much as a handover. Import it once, before the first ap
 
 ```bash
 cd infra/terraform/envs/dev
-terraform init
+terraform init -backend-config=backend.hcl
 terraform import -var-file=dev.tfvars \
   module.identity.google_identity_platform_config.this YOUR_PROJECT_ID
 ```
@@ -196,6 +207,16 @@ whether it has before accepting this permanently.
 
 ## 3. First apply
 
+> **Already initialised against a hard-coded bucket?** Earlier revisions of this repo put
+> the bucket in `backend.tf`. Moving it to `backend.hcl` changes how the backend is
+> configured but not *which* bucket is used, so re-initialise in place — no state is
+> moved:
+>
+> ```bash
+> terraform init -reconfigure -backend-config=backend.hcl
+> ```
+
+
 ### 3a. Create the registry, then put an image in it
 
 `var.image` has no default and Cloud Run cannot start without a real image, but the
@@ -205,7 +226,7 @@ on, and nothing else:
 
 ```bash
 cd infra/terraform/envs/dev
-terraform init
+terraform init -backend-config=backend.hcl
 terraform apply -var-file=dev.tfvars -target=google_artifact_registry_repository.images
 ```
 

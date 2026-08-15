@@ -101,8 +101,13 @@ jobs:
           terraform_version: '1.15.8'
           terraform_wrapper: false
 
+      # The state bucket comes from `backend.hcl` rather than `backend.tf`: a backend
+      # block cannot reference variables, and GCS bucket names are globally unique so
+      # hard-coding one makes the repo usable by exactly one project.
       - name: terraform init
-        run: terraform -chdir=infra/terraform/envs/${{ env.ENVIRONMENT }} init -input=false
+        run: |
+          terraform -chdir=infra/terraform/envs/${{ env.ENVIRONMENT }} init -input=false \
+            -backend-config=backend.hcl
 
       # `-detailed-exitcode`: 0 = no changes, 2 = changes present, 1 = error. Unexpected
       # drift should be visible in the log before it is applied.
