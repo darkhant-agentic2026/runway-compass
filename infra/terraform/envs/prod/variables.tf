@@ -68,3 +68,30 @@ variable "notification_channels" {
   default     = []
   description = "Monitoring notification channels for the alert policies."
 }
+
+variable "min_instances" {
+  type    = number
+  default = 1
+
+  description = <<-EOT
+    Cloud Run `min_instance_count`.
+
+    The design specifies 1 (docs/07-infra-deploy.md#cloud-run-configuration-the-settings-that-matter),
+    and from **M2 that stops being a cost preference and becomes a correctness
+    requirement**: a scaled-to-zero instance can be reaped in the middle of a detached
+    generation task, which is precisely the failure the disconnect guarantee exists to
+    prevent. It also removes cold starts on the scheduler tick and keeps session affinity
+    pointing somewhere real.
+
+    Until M2 there is no streaming to lose, so an environment may set 0 and pay nothing
+    while idle. That is a deliberate, temporary trade and it belongs in a tfvars file
+    where it is visible, not as a local edit to a tracked `.tf`.
+
+    **Set this back to 1 in every environment before M2.**
+  EOT
+
+  validation {
+    condition     = var.min_instances >= 0 && var.min_instances <= 10
+    error_message = "min_instances must be between 0 and 10."
+  }
+}

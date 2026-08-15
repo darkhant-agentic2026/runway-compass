@@ -124,6 +124,21 @@ disconnects — exactly the scenario the design must survive.
 `min_instance_count = 1` costs a little idle money and buys: no cold start on the
 scheduler tick, warm ADK/Vertex clients, and a stable instance for session affinity.
 
+**It is a per-environment variable (`min_instances`), defaulting to 1, and `coach-dev`
+currently sets it to 0.** That is a deliberate, temporary trade recorded in
+`envs/dev/dev.tfvars`: through M1 there is no streaming to lose, and an idle dev
+environment that holds no instance bills essentially nothing. Note that `cpu_idle = false`
+is unaffected — CPU stays allocated for an instance's whole lifetime; what is given up is
+the *warm* instance, so the first request after a quiet period pays a cold start.
+
+**This must return to 1 in every environment before M2.** From M2 the setting stops being
+a cost preference: a scaled-to-zero instance can be reaped in the middle of a detached
+generation task, which is exactly the failure
+[04-api-contract.md](04-api-contract.md#surviving-client-disconnects) is built to survive.
+It is called out here, and in the variable's own description, because a dev environment
+that quietly disagrees with this document is how that gets discovered by debugging a
+dropped stream instead of by reading.
+
 A per-instance `asyncio.Semaphore` caps concurrent agent runs (default 8) so a burst of
 background work cannot starve interactive turns; excess background work stays queued in
 Cloud Tasks where it belongs.

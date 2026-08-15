@@ -218,7 +218,7 @@ module "cloud_run" {
   image                 = var.image
   service_account_email = module.identity.api_service_account_email
 
-  min_instances       = 1
+  min_instances       = var.min_instances
   max_instances       = 10
   max_concurrency     = 40
   deletion_protection = false
