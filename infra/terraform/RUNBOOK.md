@@ -386,19 +386,74 @@ terraform output -raw identity_auth_domain;       echo
 `-raw` prints the bare string with no quotes, which is what these fields want pasted
 into them.
 
-Set these as **repository variables** (not secrets — all four are public values, and the
-deploy workflow reads them from `vars.*`):
+These are **variables, not secrets.** The deploy workflow contains no `secrets.*`
+reference at all — authentication is Workload Identity Federation, so there is no key to
+store, and the other four values are public by design.
 
 | Variable | From |
 | --- | --- |
-| `GCP_PROJECT_ID` | `coach-dev` |
+| `GCP_PROJECT_ID` | the project id, e.g. `coach-dev` |
 | `WIF_PROVIDER` | `terraform output -raw workload_identity_provider` |
 | `DEPLOYER_SERVICE_ACCOUNT` | `terraform output -raw deployer_service_account` |
 | `IDENTITY_API_KEY` | `terraform output -raw identity_api_key` |
 | `IDENTITY_AUTH_DOMAIN` | `terraform output -raw identity_auth_domain` |
 
-Create a GitHub Environment named `prod` with a required-reviewer protection rule; the
-deploy workflow's `environment:` key is what makes it take effect.
+### Repository or environment scope?
+
+**All five values differ between `coach-dev` and `coach-prod`** — different projects,
+different WIF pools, different Identity Platform configs. A repository variable holds one
+value, so it cannot serve both.
+
+`vars.X` resolves environment scope first and falls back to repository scope, which gives
+two workable arrangements:
+
+- **One environment only (now).** Put the dev values at **repository** scope and stop.
+  This is enough to deploy dev and is what the next step assumes.
+- **Both environments (before any prod deploy).** Create GitHub Environments named `dev`
+  and `prod` under *Settings → Environments*, and set all five variables **inside each**.
+  Leaving the dev values at repository scope while adding a `prod` environment also works,
+  but then prod's values live in one place and dev's in another, which is easy to
+  misread later.
+
+**Do not deploy prod with only repository-scoped variables.** It would authenticate to the
+dev project's WIF pool and deploy the prod tag into `coach-dev` — a failure that succeeds
+loudly in the wrong place.
+
+### Deployment protection for prod
+
+*Settings → Environments → prod → **Deployment protection rules** → tick **Required
+reviewers***, and add yourself or a team. The workflow's `environment:` key is what makes
+it apply; a run targeting `prod` then pauses until someone approves it.
+
+**If you cannot find that section, check the repository's visibility and plan.**
+Environment deployment protection rules are available on public repositories on any plan,
+but on **private** repositories they require GitHub Pro, Team, or Enterprise. On a private
+Free repository the Environments page exists and accepts variables, but the protection
+rules are simply not offered. That is a billing boundary, not a setting you have missed.
+
+If protection rules are unavailable, prod is still gated — just differently. The workflow
+only selects prod for a `v*` tag or a manual dispatch, so nothing reaches prod without a
+deliberate act. To harden it further without paying: protect the tag pattern under
+*Settings → Rules → Rulesets* (tag ruleset, restrict who can create `v*`), which limits
+who can trigger a prod deploy at all.
+
+Note that GitHub creates an environment implicitly the first time a workflow references
+one, so a `dev` environment will appear on its own after the first deploy. An implicitly
+created environment has **no** protection rules — the existence of the environment is not
+the gate; the rules on it are.
+
+### What actually triggers a deploy
+
+| Event | Environment deployed |
+| --- | --- |
+| Push / merge to `main` | **`dev`** |
+| Push of a `v*` tag | `prod` |
+| Manual *Run workflow* | whichever you pick (defaults to `dev`) |
+
+So **merging to `main` deploys dev, never prod.** Promotion to prod is a separate,
+deliberate act: tag a release, or dispatch the workflow by hand. That is the mapping
+docs/07-infra-deploy.md#deploy-cloudrunyml specifies, and it is why prod can be left
+entirely unconfigured until you actually want one.
 
 ---
 
