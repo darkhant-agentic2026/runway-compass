@@ -148,9 +148,23 @@ whether it has before accepting this permanently.
    email, and developer contact. Add the scopes `openid`, `email`, `profile`.
 2. **APIs & Services → Credentials → Create credentials → OAuth client ID**, type
    **Web application**.
-3. Authorized JavaScript origins and redirect URIs: the Cloud Run service URL. On a
-   brand-new project that URL does not exist yet — leave these empty for now and come back
-   in step 5.
+3. Authorized origins and redirect URIs. **These are two different values, and the
+   redirect URI is not the Cloud Run URL.** Getting this wrong produces a Google popup
+   reading "Access blocked: This app's request is invalid", which names neither field.
+
+   | Field | Value | Why |
+   | --- | --- | --- |
+   | Authorized **JavaScript origins** | `https://<cloud-run-host>` | Where the SPA is served from |
+   | Authorized **redirect URIs** | `https://<auth-domain>/__/auth/handler` | Where Google sends the user back |
+
+   `signInWithPopup` does not return to your app directly. It returns to Identity
+   Platform's own handler on the **auth domain** — `<something>.firebaseapp.com`, the
+   value of the `identity_auth_domain` output — which then posts the result back to the
+   page that opened the popup. Google validates the redirect against the OAuth client, so
+   it is the handler URL that has to be registered, not the app's.
+
+   Both values need resources that do not exist on a brand-new project, so leave these
+   empty for now and fill them in at step 5.
 4. Copy the **client ID** into `envs/<env>/<env>.tfvars` as `oauth_client_id`. It is a
    public value and is committed on purpose.
 5. Keep the **client secret** somewhere safe for step 4. It never goes in a tfvars file.
@@ -263,18 +277,38 @@ Anything printing `REPLACE_ME_V` has not been seeded.
 ## 5. Reconcile the URL and re-apply
 
 ```bash
-terraform output service_url     # e.g. https://coach-api-abc123-uc.a.run.app
+terraform output -raw service_url;          echo   # https://coach-api-abc123-uc.a.run.app
+terraform output -raw identity_auth_domain; echo   # coach-dev-xyz.firebaseapp.com
 ```
 
-Then, with that value:
+Then, with those two values:
 
-1. Update `dev.tfvars`:
+1. Update `dev.tfvars` with the **Cloud Run host**:
    - `authorized_domains` → `["coach-api-abc123-uc.a.run.app"]` (bare hostname)
    - `authorized_domains_urls` → `["https://coach-api-abc123-uc.a.run.app"]`
    - `service_url_hint` → `"https://coach-api-abc123-uc.a.run.app"`
-2. Add the same URL to the OAuth client's authorized origins and redirect URIs (step 2.3).
+
+2. Update the **OAuth client** (APIs & Services → Credentials → your web client). Two
+   fields, two different values — see the table in step 2.3:
+
+   - Authorized **JavaScript origins**: `https://coach-api-abc123-uc.a.run.app`
+   - Authorized **redirect URIs**: `https://coach-dev-xyz.firebaseapp.com/__/auth/handler`
+
+   The redirect URI is built from `identity_auth_domain`, **not** from the service URL.
+   Using the service URL here is the single most likely reason sign-in fails with
+   "Access blocked: This app's request is invalid".
+
+   Note that there are now *three* separate allow-lists in play, and they take different
+   forms — Identity Platform's `authorized_domains` (bare hostnames, in tfvars), the OAuth
+   client's JS origins (full origins), and its redirect URIs (a full URL with a path).
+   All three must be right; each one fails differently.
+
 3. `terraform apply -var-file=dev.tfvars -var="image=$IMAGE"` again (the same
    `$IMAGE` from step 3a; `var.image` has no default).
+
+   OAuth client changes take effect within a minute or so, but Google caches them — if
+   sign-in still fails immediately after editing, retry in a fresh tab before assuming the
+   value is wrong.
 
 ---
 
@@ -316,8 +350,48 @@ curl -fsS "$(terraform output -raw service_url)/" | head -1         # <!doctype 
 ```
 
 The last two together are the M0 exit criterion's structural half: the SPA and the API are
-served from one origin, and the SPA catch-all is not shadowing `/api/*`. The other half —
-a signed-in user seeing their email — needs a browser and steps 1 and 2 above.
+served from one origin, and the SPA catch-all is not shadowing `/api/*`.
+
+If `/healthz` fails on the very first request, try it once more before investigating — the
+service has just started and the first caller can beat it to the door. Cloud Run's startup
+probe hits `/healthz`, so an apply that succeeded is itself evidence the endpoint answers.
+
+### Sign-in — the other half of the exit criterion
+
+Open the service URL and sign in with Google. Seeing your own email on the page is what M0
+is for.
+
+The bootstrap image from step 3a **cannot** do this: its SPA was built with no Identity
+Platform values. Rebuild with them first:
+
+```bash
+API_KEY=$(terraform output -raw identity_api_key)
+AUTH_DOMAIN=$(terraform output -raw identity_auth_domain)
+IMAGE="us-central1-docker.pkg.dev/$PROJECT/coach/coach-api:$(git rev-parse --short HEAD)"
+
+docker build \
+  --build-arg VITE_AUTH_MODE=identity-platform \
+  --build-arg VITE_IDENTITY_API_KEY="$API_KEY" \
+  --build-arg VITE_IDENTITY_AUTH_DOMAIN="$AUTH_DOMAIN" \
+  --build-arg VITE_IDENTITY_PROJECT_ID="$PROJECT" \
+  -t "$IMAGE" .          # from the repo root
+docker push "$IMAGE"
+terraform apply -var-file=dev.tfvars -var="image=$IMAGE"
+```
+
+If the popup says **"Access blocked: This app's request is invalid"**, the OAuth client's
+**redirect URI** is wrong or missing. It must be
+`https://<identity_auth_domain>/__/auth/handler` — not the Cloud Run URL. See step 5.2.
+Google hides the specific code behind a "Learn more" or an expandable detail on that page;
+`redirect_uri_mismatch` confirms the diagnosis.
+
+Two other things that block the popup rather than letting it work:
+
+- **The consent screen is still in Testing.** Add your account under *Audience → Test
+  users*, or publish the app.
+- **The client secret is still the placeholder** (step 4). That breaks the token exchange
+  rather than the redirect, so it tends to surface a step later — but check it before
+  chasing anything exotic.
 
 ---
 
