@@ -261,16 +261,39 @@ printf '%s' "$GEMINI_API_KEY" | gcloud secrets versions add gemini-api-key \
   --project=coach-dev --data-file=-
 ```
 
-Check that none of them is still the placeholder before moving on:
+**Use `printf '%s'`, not `echo`.** `echo` appends a newline, and a client secret with a
+trailing `\n` is rejected by Google as `invalid_client` — the same error you get from not
+seeding it at all, which makes it an expensive mistake to diagnose.
+
+Check the values before moving on. This prints a prefix and a byte count, because both
+failure modes are invisible otherwise:
 
 ```bash
 for s in youtube-api-key oauth-client-secret gemini-api-key; do
-  printf '%-22s %s\n' "$s" \
-    "$(gcloud secrets versions access latest --secret="$s" --project=coach-dev | head -c 12)"
+  v=$(gcloud secrets versions access latest --secret="$s" --project=coach-dev 2>/dev/null)
+  printf '%-22s %-14s %s bytes\n' "$s" "$(printf '%s' "$v" | head -c 12)" \
+    "$(gcloud secrets versions access latest --secret="$s" --project=coach-dev | wc -c)"
 done
 ```
 
-Anything printing `REPLACE_ME_V` has not been seeded.
+- A prefix of `REPLACE_ME_V` means it has not been seeded.
+- A Google OAuth client secret looks like `GOCSPX-…` and is 35 bytes. **36 means a
+  trailing newline** — re-add it with `printf '%s'`.
+
+Then re-apply, so the Identity Platform provider config picks up the new value:
+
+```bash
+terraform apply -var-file=dev.tfvars -var="image=$IMAGE"
+```
+
+The data source reads `latest`, so a new version is enough; nothing needs rebuilding,
+because this is server-side configuration and not part of the image.
+
+**Symptom if you skip this:** sign-in gets all the way through Google's consent screen and
+then fails as the popup closes, with
+`auth/invalid-credential … error=invalid_client&error_description=The provided client
+secret is invalid.` The redirect URI in that message being correct is a good sign — it
+means everything up to the token exchange is right.
 
 ---
 
