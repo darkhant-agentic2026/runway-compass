@@ -64,15 +64,34 @@ class UploadRepository:
             return None
         return snapshot.to_dict() or {}
 
-    async def finalize(self, upload_id: str, *, size_bytes: int, mime_type: str) -> None:
+    async def finalize(
+        self,
+        upload_id: str,
+        *,
+        size_bytes: int,
+        mime_type: str,
+        artifact_filename: str,
+        artifact_version: int,
+        artifact_uri: str,
+    ) -> None:
+        """Record what was verified, and where the durable copy went.
+
+        `artifactUri` is what every later reference uses; `objectName` keeps pointing at
+        the staging object, which the bucket's one-day lifecycle rule will collect. The
+        two are deliberately both kept — the first is the answer, the second is the
+        provenance.
+        """
         await self._doc(upload_id).update(
             {
                 "status": "ready",
                 "sizeBytes": size_bytes,
                 "mimeType": mime_type,
+                "artifactFilename": artifact_filename,
+                "artifactVersion": artifact_version,
+                "artifactUri": artifact_uri,
                 "finalizedAt": now(),
-                # A finalized object is no longer subject to the unfinalized lifecycle
-                # rule, so the record must stop advertising an expiry.
+                # The record's own expiry, not the object's: the staging object is still
+                # collected on schedule, but the upload it produced is now durable.
                 "expiresAt": None,
             }
         )

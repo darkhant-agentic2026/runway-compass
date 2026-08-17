@@ -128,12 +128,14 @@ tests, 142 web, 52 Playwright specs.
 
 **Not met, and it needs a deploy:** *"a user can chat with the coach about an uploaded
 screenshot on the deployed dev environment."* Every piece is implemented and covered by
-tests, but three of them are only exercisable against real GCP and are therefore unproven:
+tests, but four of them are only exercisable against real GCP and are therefore unproven:
 Vertex AI as the model backend (local and e2e both run a scripted or stub model), V4
 signed upload URLs (which need a real IAM signer — [07-infra-deploy.md](07-infra-deploy.md)
-calls storage one of the two local dependencies that are not emulated), and
-`GcsArtifactService`. Close this by deploying to `coach-dev` and doing it by hand;
-until then, treat the upload path as untested rather than working.
+calls storage one of the two local dependencies that are not emulated),
+`GcsArtifactService`, and whether Vertex actually resolves the `gs://` artifact URI the
+turn attaches. Close this by deploying to `coach-dev` and doing it by hand — the steps are
+in [infra/terraform/RUNBOOK.md](../infra/terraform/RUNBOOK.md#closing-the-m2-exit-criterion).
+Until then, treat the upload path as untested rather than working.
 
 **Decisions made during implementation** that the design documents did not fix:
 
@@ -146,6 +148,34 @@ until then, treat the upload path as untested rather than working.
 | A cancelled turn is announced as `turn_error` with `code: "cancelled"`, `retryable: false` | The contract has no `turn_cancelled` frame, and the user asked for this — offering a retry would be wrong | `services/turns.py` |
 | `GET /api/turns/{turnId}` added | Lets a client with a dead socket tell a running turn from a finished one, so the "still working" state is truthful rather than hopeful | `api/routers/sessions.py` |
 | The `StreamBroker` keeps a per-turn ring buffer of recent frames | Deltas are published immediately but checkpointed up to 400 ms later; a client attaching in that window would find a frame in neither source. The buffer covers exactly that gap | `ws/broker.py` |
+| An upload's artifact is `user:`-scoped and named for its upload id | ADK scopes an artifact to a session or to a user, and `POST /api/uploads` does not know a session — the contract's body is `{ filename, mimeType, sizeBytes }`. The id rather than the filename so two `screenshot.png`s are two artifacts, not two versions of one | `integrations/artifacts.py` |
+
+**Known limitation: `gs://` attachments do not work against `MODEL_BACKEND=gemini_api`.**
+[00-overview.md](00-overview.md#model-configuration) specifies attachments as "`types.Part`
+file references backed by GCS", which Vertex AI resolves and the Gemini API does not — it
+wants inline bytes or its own Files API. Production is Vertex, so the shipped path is
+correct; a developer running locally against a real Gemini key will find that text works
+and attachments do not. Not worked around, because the workaround is a second multimodal
+code path that production would never exercise.
+
+### Fixed after the first M2 pass
+
+Two gaps found by auditing the M2 surface against the contract rather than against the
+tests, which is why neither showed up as a failure:
+
+- **`POST /api/uploads/{id}/finalize` did not register the ADK artifact.** It verified
+  size and type and stopped, and the turn referenced `gs://{project}-coach-uploads/…`
+  directly. That bucket is staging and carries `lifecycle_rule { age = 1 → Delete }`; a
+  GCS lifecycle rule cannot express "unfinalized", so it collects finalized objects too.
+  Because a session's history is replayed to the model on every subsequent turn, the
+  symptom would have been delayed and silent — a coach that had forgotten a screenshot it
+  discussed the day before. Finalize now copies the verified bytes into
+  `{project}-coach-artifacts` through `GcsArtifactService` and every later reference uses
+  the artifact URI. Nothing local caught this: the in-memory object store has no lifecycle
+  rule, and no test waits a day.
+- **"Scans" is still not implemented.** The contract lists content scanning in the same
+  step. Deferred to M7's "Security review: … upload handling" rather than left unremarked;
+  until then an accepted MIME type and a size cap are the only checks on uploaded bytes.
 
 **Deferred, and the milestone that needs it:** the `subscribe`-by-`runId` frame is
 accepted and answered with an explicit error until the run ledger lands (M5); tool-activity

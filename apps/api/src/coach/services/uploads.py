@@ -14,6 +14,26 @@ only moment the server can look at what actually landed is afterwards — and th
 declared `mimeType` at request time is a hint for the signature, never the decision. An
 object whose stored content type does not match what was declared is rejected and the
 upload never becomes referenceable.
+
+## Two buckets, and why "registers ADK artifact" is load-bearing
+
+The signed PUT targets `{project}-coach-uploads`, which is **staging**: it carries
+`lifecycle_rule { age = 1 → Delete }` (docs/07-infra-deploy.md). GCS lifecycle rules
+cannot express "unfinalized", so that rule deletes finalized objects just as happily.
+
+Durable storage is `{project}-coach-artifacts`, written by ADK's `GcsArtifactService`
+(docs/03-agent-design.md#artifacts: "User uploads (images, PDFs) land there and are
+referenced as `types.Part` file parts"). So finalize copies the verified bytes across and
+every later reference points at the artifact, never at the staging object.
+
+Getting this wrong is not a 24-hour bug, it is a *delayed* one: a session's history is
+replayed to the model on every subsequent turn, so an attachment referenced from staging
+works all day and then starts silently resolving to nothing — a coach that has forgotten
+a screenshot it discussed yesterday.
+
+**Not yet done: "scans".** The contract lists content scanning in this step and nothing
+here scans. Deferred to M7's "Security review: … upload handling", and recorded in
+docs/09-roadmap.md rather than left as an unremarked gap.
 """
 
 from __future__ import annotations
@@ -21,10 +41,14 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from google.adk.artifacts.base_artifact_service import BaseArtifactService
+
+from coach.agents.runner import APP_NAME
 from coach.core.clock import now
 from coach.core.errors import NotFound, ValidationProblem
 from coach.core.ids import upload_id as new_upload_id
 from coach.core.principal import Principal
+from coach.integrations.artifacts import register_upload
 from coach.integrations.storage import SIGNED_URL_TTL, ObjectStore
 from coach.repositories.uploads import UploadRepository
 
@@ -61,9 +85,15 @@ class ResolvedUpload:
 
 
 class UploadService:
-    def __init__(self, uploads: UploadRepository, store: ObjectStore) -> None:
+    def __init__(
+        self,
+        uploads: UploadRepository,
+        store: ObjectStore,
+        artifacts: BaseArtifactService,
+    ) -> None:
         self._uploads = uploads
         self._store = store
+        self._artifacts = artifacts
 
     async def create(
         self, principal: Principal, *, filename: str, mime_type: str, size_bytes: int
@@ -124,12 +154,32 @@ class UploadService:
             )
 
         resolved_type = content_type or str(record["mimeType"])
-        await self._uploads.finalize(upload_id, size_bytes=size_bytes, mime_type=resolved_type)
-        return ResolvedUpload(
+
+        data = await self._store.download(object_name)
+        if data is None:  # pragma: no cover - `stat` above already found it
+            raise ValidationProblem("The uploaded object disappeared before it was finalized.")
+
+        # The move out of staging. Everything above only decided whether these bytes are
+        # allowed to exist; this is what makes them last longer than a day.
+        artifact = await register_upload(
+            self._artifacts,
+            app_name=APP_NAME,
+            user_id=principal.uid,
             upload_id=upload_id,
-            uri=f"gs://{self._store.bucket}/{object_name}",
+            display_name=str(record["filename"]),
             mime_type=resolved_type,
+            data=data,
         )
+
+        await self._uploads.finalize(
+            upload_id,
+            size_bytes=size_bytes,
+            mime_type=resolved_type,
+            artifact_filename=artifact.filename,
+            artifact_version=artifact.version,
+            artifact_uri=artifact.uri,
+        )
+        return ResolvedUpload(upload_id=upload_id, uri=artifact.uri, mime_type=resolved_type)
 
     async def resolve(self, principal: Principal, upload_id: str) -> ResolvedUpload:
         """The `types.Part` file reference for a finalized upload.
@@ -143,9 +193,11 @@ class UploadService:
                 f"Upload {upload_id!r} has not been finalized. Call "
                 f"POST /api/uploads/{upload_id}/finalize first."
             )
+        # The artifact URI, never `objectName` — that one points into the staging bucket
+        # and stops resolving a day later. See the module docstring.
         return ResolvedUpload(
             upload_id=upload_id,
-            uri=f"gs://{self._store.bucket}/{record['objectName']}",
+            uri=str(record["artifactUri"]),
             mime_type=str(record["mimeType"]),
         )
 

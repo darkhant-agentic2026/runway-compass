@@ -24,6 +24,7 @@ from coach.adk_firestore import CoachSessionService
 from coach.agents.runner import RunnerFactory
 from coach.core.config import Settings
 from coach.core.principal import Principal
+from coach.integrations.artifacts import build_artifact_service
 from coach.integrations.storage import build_object_store
 from coach.repositories.firestore import Database, get_client
 from coach.repositories.idempotency import IdempotencyRepository
@@ -92,11 +93,18 @@ class Container:
             self.session_service, self.tasks, self.task_repository, self.projects
         )
 
-        self.uploads = UploadService(self.upload_repository, build_object_store(settings))
+        # One artifact service for the process. `UploadService` writes user uploads into
+        # it on finalize and the agent reads them back through the `Runner`, so a second
+        # instance would be a second client against the same bucket and a second place to
+        # get the bucket name wrong.
+        self.artifact_service = build_artifact_service(settings)
+        self.uploads = UploadService(
+            self.upload_repository, build_object_store(settings), self.artifact_service
+        )
 
         self.registry = TurnRegistry()
         self.broker = StreamBroker()
-        self.runners = RunnerFactory(settings, self.session_service)
+        self.runners = RunnerFactory(settings, self.session_service, self.artifact_service)
         self.turns = TurnService(
             settings,
             self.turn_repository,

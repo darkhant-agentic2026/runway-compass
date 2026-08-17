@@ -303,6 +303,92 @@ async def test_finalize_uses_the_stored_content_type_not_the_declared_one(
     assert finalized["mimeType"] == "application/pdf"
 
 
+async def test_finalize_registers_the_upload_as_an_adk_artifact(
+    client, container, alice
+) -> None:
+    """The contract's third clause, and the one with teeth.
+
+    The staging bucket deletes every object at one day of age, so an upload that is only
+    verified — never copied — stops resolving a day later, silently, long after the
+    conversation that produced it.
+    """
+    from coach.agents.runner import APP_NAME
+
+    upload_id = await _staged_upload(client, container, b"screenshot-bytes")
+
+    await client.post(f"/api/uploads/{upload_id}/finalize")
+
+    stored = await container.artifact_service.load_artifact(
+        app_name=APP_NAME, user_id=alice.uid, filename=f"user:{upload_id}"
+    )
+    assert stored is not None
+    assert stored.inline_data is not None
+    assert stored.inline_data.data == b"screenshot-bytes"
+
+
+async def test_a_finalized_upload_resolves_to_the_artifact_not_the_staging_object(
+    client, container, alice
+) -> None:
+    """The regression this whole path exists to prevent.
+
+    `objectName` is retained on the record for provenance, so the failure mode is a URI
+    that still *looks* plausible — hence an assertion on the staging bucket name rather
+    than only on the artifact one.
+    """
+    upload_id = await _staged_upload(client, container)
+    await client.post(f"/api/uploads/{upload_id}/finalize")
+
+    resolved = await container.uploads.resolve(alice, upload_id)
+
+    record = await container.upload_repository.get(upload_id)
+    assert record["objectName"] not in resolved.uri
+    assert container.uploads._store.bucket not in resolved.uri
+    assert upload_id in resolved.uri
+
+
+async def test_the_artifact_uri_matches_the_shipped_gcs_blob_layout() -> None:
+    """Pins the one place this project restates an ADK internal.
+
+    `artifact_part_uri` reads the blob path out of `GcsArtifactService._get_blob_name`
+    instead of formatting it here, so an upstream *rename* is an immediate error and an
+    upstream *format change* is picked up silently and correctly. This test is what makes
+    the first of those true without a deploy: it fails at the `getattr`, naming the
+    method, rather than at a model that cannot see an attachment.
+    docs/03-agent-design.md#bumping-the-adk-version
+    """
+    from google.adk.artifacts.gcs_artifact_service import GcsArtifactService
+
+    from coach.integrations.artifacts import artifact_part_uri
+
+    # Constructed without touching GCS: `_get_blob_name` is pure string work, and the
+    # client built in __init__ is never used by it.
+    service = GcsArtifactService.__new__(GcsArtifactService)
+    service.bucket_name = "coach-dev-coach-artifacts"
+
+    uri = artifact_part_uri(
+        service, app_name="coach", user_id="u_alice", filename="user:up_1", version=0
+    )
+
+    assert uri == "gs://coach-dev-coach-artifacts/coach/u_alice/user/user:up_1/0"
+
+
+async def _staged_upload(client, container, content: bytes = b"x") -> str:
+    """Create an upload and pretend the browser's PUT landed."""
+    created = (
+        await client.post(
+            "/api/uploads",
+            json={
+                "filename": "shot.png",
+                "mimeType": "image/png",
+                "sizeBytes": max(len(content), 1),
+            },
+        )
+    ).json()
+    record = await container.upload_repository.get(created["uploadId"])
+    container.uploads._store.declare(record["objectName"], len(content), "image/png", content)
+    return str(created["uploadId"])
+
+
 async def test_finalize_rejects_an_object_whose_real_type_is_not_accepted(
     client, container
 ) -> None:

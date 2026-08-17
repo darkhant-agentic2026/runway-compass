@@ -31,7 +31,13 @@ SIGNED_URL_TTL = timedelta(minutes=30)
 
 
 class ObjectStore(Protocol):
-    """The two operations the upload flow needs."""
+    """The operations the upload flow needs from the **staging** bucket.
+
+    Staging, not storage: `{project}-coach-uploads` carries a
+    `lifecycle_rule { age = 1 → Delete }`, so everything here is gone within a day. That
+    is why `download` exists — finalize has to move the bytes somewhere durable before
+    the rule collects them (see `coach.services.uploads`).
+    """
 
     @property
     def bucket(self) -> str: ...
@@ -41,6 +47,15 @@ class ObjectStore(Protocol):
 
     async def stat(self, object_name: str) -> tuple[int, str] | None:
         """`(size_bytes, content_type)` of an uploaded object, or `None` if absent."""
+
+    async def download(self, object_name: str) -> bytes | None:
+        """The object's bytes, or `None` if it is not there.
+
+        Bounded by the 20 MB upload cap, and called once per upload, so pulling the
+        bytes through the process is affordable. A server-side copy would avoid that but
+        would mean naming the destination blob ourselves — and the destination layout
+        belongs to ADK's `GcsArtifactService`, not to us.
+        """
 
 
 class GcsObjectStore:
@@ -79,6 +94,15 @@ class GcsObjectStore:
 
         return await asyncio.to_thread(_stat)
 
+    async def download(self, object_name: str) -> bytes | None:
+        import asyncio
+
+        def _download() -> bytes | None:
+            blob = self._bucket.get_blob(object_name)
+            return None if blob is None else bytes(blob.download_as_bytes())
+
+        return await asyncio.to_thread(_download)
+
 
 class InMemoryObjectStore:
     """Local and test stand-in. Accepts a PUT that never happens.
@@ -92,13 +116,18 @@ class InMemoryObjectStore:
     def __init__(self, bucket_name: str = "local-uploads") -> None:
         self._bucket_name = bucket_name
         self._declared: dict[str, tuple[int, str]] = {}
+        self._content: dict[str, bytes] = {}
 
     @property
     def bucket(self) -> str:
         return self._bucket_name
 
-    def declare(self, object_name: str, size_bytes: int, mime_type: str) -> None:
+    def declare(
+        self, object_name: str, size_bytes: int, mime_type: str, content: bytes = b""
+    ) -> None:
+        """Stand in for a PUT that never happened."""
         self._declared[object_name] = (size_bytes, mime_type)
+        self._content[object_name] = content
 
     def signed_put_url(self, object_name: str, *, mime_type: str) -> str:
         stamp = int(now().timestamp())
@@ -106,6 +135,11 @@ class InMemoryObjectStore:
 
     async def stat(self, object_name: str) -> tuple[int, str] | None:
         return self._declared.get(object_name)
+
+    async def download(self, object_name: str) -> bytes | None:
+        if object_name not in self._declared:
+            return None
+        return self._content.get(object_name, b"")
 
 
 def build_object_store(settings: Settings) -> ObjectStore:

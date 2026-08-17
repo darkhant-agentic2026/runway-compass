@@ -13,13 +13,13 @@ with only the token source scripted.
 
 from __future__ import annotations
 
+from google.adk.artifacts.base_artifact_service import BaseArtifactService
 from google.adk.models.base_llm import BaseLlm
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import BaseSessionService
 
 from coach.agents.coach_agent import build_coach_agent
 from coach.core.config import Settings
-from coach.integrations.artifacts import build_artifact_service
 from coach.integrations.model import build_model
 
 #: The ADK `app_name`, which is also the `{appName}` segment of every session path
@@ -35,9 +35,14 @@ class RunnerFactory:
         self,
         settings: Settings,
         session_service: BaseSessionService,
+        artifact_service: BaseArtifactService,
     ) -> None:
         self._settings = settings
         self._session_service = session_service
+        # Injected rather than built here, because `UploadService` writes into the same
+        # store on finalize. Two instances would mean two `storage.Client`s against one
+        # bucket, and — worse — two places that could disagree about which bucket that is.
+        self._artifact_service = artifact_service
         self._model: BaseLlm | None = None
         self._runner: Runner | None = None
 
@@ -53,7 +58,7 @@ class RunnerFactory:
                 app_name=APP_NAME,
                 agent=build_coach_agent(model),
                 session_service=self._session_service,
-                artifact_service=build_artifact_service(self._settings),
+                artifact_service=self._artifact_service,
             )
         return self._runner
 
