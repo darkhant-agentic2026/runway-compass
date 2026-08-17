@@ -49,6 +49,26 @@ needs cross-instance state that no existing collection holds:
   needs somewhere to remember what an upload id refers to and who may reference it.
   Scoped by `ownerUid`, checked on every read.
 
+  ```jsonc
+  { "ownerUid": "…", "objectName": "{uid}/{uploadId}/{filename}",  // in the *staging* bucket
+    "filename": "screenshot.png", "mimeType": "image/png", "sizeBytes": 20481,
+    "status": "pending" | "ready",
+    "artifactFilename": "user:{uploadId}",   // set by finalize; ADK-scoped to the user
+    "artifactVersion": 0,
+    "artifactUri": "gs://{project}-coach-artifacts/…",  // what a turn actually references
+    "createdAt": ts, "finalizedAt": ts, "expiresAt": null }
+  ```
+
+  **`objectName` and `artifactUri` point at different buckets, and only the second is
+  durable.** `{project}-coach-uploads` is staging and carries
+  `lifecycle_rule { age = 1 → Delete }`; a GCS lifecycle rule cannot express
+  "unfinalized", so it collects finalized objects just as happily. `finalize` therefore
+  copies the verified bytes into `{project}-coach-artifacts` through `GcsArtifactService`
+  ([03-agent-design.md](03-agent-design.md#artifacts)) and every later reference uses
+  `artifactUri`. Referencing the staging object instead fails *a day later*, silently —
+  a session's history is replayed to the model on every turn, so the symptom is a coach
+  that has forgotten a screenshot it discussed yesterday.
+
 ADK-owned — this layout comes from the shipped `FirestoreSessionService` and is **not ours
 to choose**; changing it means not subclassing:
 
@@ -296,6 +316,19 @@ Two things to note, both consequences of subclassing rather than hand-rolling:
   is the queryable plane and session state is conversation scratch space.
 - **The whole `Event` is nested under `event_data`.** Queries and indexes address `seq` and
   `timestamp` at the top level; anything inside `event_data` is read-back-only.
+- **Everything inside `event_data` is `snake_case`** — `file_data`, `mime_type`,
+  `function_call`, `display_name`. This surprises, because ADK's `Event` declares
+  `alias_generator=to_camel`, so its *aliases* are camelCase and every other camelCase
+  field in this database invites the same assumption. But `append_event` stores
+  `event.model_dump(exclude_none=True, mode="json")`, and `model_dump` defaults to
+  `by_alias=False`.
+
+  A reader that assumes the aliases finds nothing and reports *absence* rather than
+  failing — an attachment that silently stops existing, not an error. `apps/web` reads this
+  shape in `lib/transcript.ts` and is tested against `session-event-vectors.json`,
+  generated from real dumps by `scripts/gen_event_vectors.py`
+  ([08-testing.md](08-testing.md#end-to-end-playwright)); regenerate it after an ADK bump
+  rather than hand-writing a fixture.
 
 Only finalized events are persisted — `append_event` returns early on `event.partial`.
 

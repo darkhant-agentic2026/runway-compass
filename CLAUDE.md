@@ -87,11 +87,13 @@ user's button calls.
 - **`ENV=local` accepts `Authorization: Bearer dev:<uid>`.** This is deliberate auth-bypass
   code standing in for an emulator that does not exist. Its test asserting the path is inert
   for every other `ENV` must never be deleted. `docs/04-api-contract.md`
-- **`MODEL_BACKEND=stub` is refused for every `ENV` but `local`.** It is the deterministic
-  model the e2e harness runs against. Like the dev-token path it is guarded by one check
-  with a named regression test, and for a sharper reason: a deployed revision serving
-  canned answers would reply, update the board, and look perfectly healthy.
-  `docs/07-infra-deploy.md`
+- **Two more test-only surfaces exist on the same terms**, each behind one `settings.is_local`
+  check with a named regression test for every other `ENV`: `MODEL_BACKEND=stub`, the
+  deterministic model the e2e harness runs against (`docs/07-infra-deploy.md`), and
+  `api/routers/local_storage.py`, which receives the signed-upload PUT so the upload path is
+  reachable from a browser at all (`docs/08-testing.md`). Both fail *silently* if the guard
+  goes: a revision serving canned answers looks perfectly healthy, and an unauthenticated
+  PUT endpoint is an open door.
 - **Auth is Cloud Identity Platform.** `firebase_admin` (Python) and `firebase/auth` (npm)
   are its client libraries — the same `identitytoolkit` service. Do not remove them as
   "leftovers" and do not introduce a Firebase project. `roles/firebaseauth.admin` is likewise
@@ -115,21 +117,6 @@ user's button calls.
   a resolution problem rather than a missing API.
 - **The Firestore emulator needs a JRE 21+**, and its floor rises with the Cloud SDK. Every
   backend test depends on the emulator. `docs/07-infra-deploy.md`
-- **The emulator does not enforce index requirements; real Firestore does.** Any query
-  filtering or ordering on more than one field needs an explicit `google_firestore_index`
-  in `infra/terraform/modules/firestore/main.tf`, and any *collection-group* query needs
-  one even for a single field — automatic single-field indexes are `COLLECTION`-scoped
-  only. Without it the query passes every local test and returns `FAILED_PRECONDITION`
-  the first time it runs deployed. Add the query, the index, and its row in
-  `docs/02-data-model.md#indexes` in one change, or add the extra filter in Python
-  instead — see `CoachSessionService.find_session_id_for_task`, which does the latter and
-  has a test pinning its filter count.
-- **An OAuth *scope* failure looks exactly like a missing IAM *role*.** IAM `signBlob`
-  answers a storage-scoped token with `403 … ACCESS_TOKEN_SCOPE_INSUFFICIENT`, which
-  reads as "the service account lacks permission" and is not — the binding can be
-  present and correct. A client resolves ADC at whatever scope *it* needs, so a token
-  borrowed from one API's client is rarely valid for another's. Resolve credentials for
-  the call being made: `GcsObjectStore.SIGNING_SCOPES`.
 - **A Zustand selector must never end in `?? []` or `?? {}`.** Zustand compares the
   selector's result with `Object.is`, so a fresh literal is a new value on every render and
   the component re-renders forever. React reports it as minified error #185 ("maximum
@@ -142,10 +129,48 @@ user's button calls.
   guarantee is gone and every test in the matrix still passes — just more slowly.
   `docs/04-api-contract.md#surviving-client-disconnects`
 
+## A green local gate is weaker evidence than it looks
+
+Six of the eight defects fixed while closing M2 were invisible to a fully passing local
+run. The failure modes, what each looks like, and where each is likely to recur are
+tabulated in `docs/09-roadmap.md#what-only-a-deployed-environment-catches`. **Read that
+table before writing anything that queries Firestore, calls a second Google API, or reads a
+stored ADK event** — M3 onwards does all three.
+
+Two working habits follow from it, and neither belongs in `docs/`:
+
+- **When a fixture stands in for a shape this project does not define, generate it.**
+  Hand-written fixtures encode the same assumption as the code they test, so both are wrong
+  together and the suite is green. `scripts/gen_event_vectors.py` and
+  `scripts/gen_ordering_vectors.py` are the pattern; add one rather than inventing a
+  payload.
+- **Prefer a test that pins a *decision* over one that pins a result** where the two
+  differ. A composite Firestore query and a single-field one return the same rows locally,
+  and only one of them works deployed; the same is true of a signed URL's arguments. In
+  those cases assert the call, not the output.
+
+## Reporting a deployed failure
+
+`docs/07-infra-deploy.md` covers the deploy itself and `infra/terraform/RUNBOOK.md#8-closing-the-m2-exit-criterion`
+the manual verification. What is worth knowing when something fails there:
+
+- Ask for the **server-side traceback**, not the browser's status code. Logs are JSON with
+  the traceback under `jsonPayload.exception`, so `gcloud run services logs read | grep` is
+  the wrong instrument — use
+  `gcloud logging read 'resource.type="cloud_run_revision" AND severity>=ERROR' --format='value(jsonPayload.exception)'`.
+- A 500 response now carries a `traceId` matching `gcloud logging read 'trace:"…"'`, so a
+  screenshot is enough to find the line.
+- Before proposing a fix from an error message, check the message is *about* what it names.
+  Two M2 diagnoses went the wrong way on this: a 403 naming an IAM method that was really an
+  OAuth scope, and a probe that 404'd for every input because the method it called did not
+  exist — which read as "no models are available".
+
 ## Commands
 
-`./scripts/dev.sh up | seed | tick | test [api|web|e2e] | lint` — see
-`docs/07-infra-deploy.md` for what each does and for the machine prerequisites.
+`./scripts/dev.sh up | seed | tick | test [api|web|e2e] | lint | doctor` — see
+`docs/07-infra-deploy.md` for what each does and for the machine prerequisites. Two more
+regenerate committed cross-language fixtures: `gen-ordering-vectors` and
+`gen-event-vectors`.
 
 **Reach for `dev.sh` before reaching for the underlying tool.** `dev.sh test api` starts the
 emulator and exports `ENV`, `GOOGLE_CLOUD_PROJECT`, and `FIRESTORE_EMULATOR_HOST` before

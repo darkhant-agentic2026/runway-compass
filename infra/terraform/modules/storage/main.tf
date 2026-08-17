@@ -43,8 +43,11 @@ resource "google_storage_bucket" "uploads" {
     max_age_seconds = 3600
   }
 
-  # An upload that is never finalized is abandoned client work; it should not accrue
-  # storage cost forever.
+  # This deletes EVERY object here at one day of age, finalized or not — a GCS lifecycle
+  # rule has no way to express "unfinalized". That is why this bucket is staging and
+  # `finalize` copies the verified bytes into the artifacts bucket through
+  # GcsArtifactService (docs/02-data-model.md#collection-map). Referencing an object here
+  # from a transcript works for a day and then silently stops.
   lifecycle_rule {
     condition {
       age = 1

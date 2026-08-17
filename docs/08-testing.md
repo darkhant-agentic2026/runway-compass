@@ -88,7 +88,7 @@ emits a known delta sequence at controlled intervals:
 | No subscribers at all | Turn started, socket never opened → still completes and checkpoints |
 | Resume same instance | Reconnect with `lastSeq=10` → replays 11…N with no duplicates and no gaps |
 | Resume after completion | Reconnect after `turn_complete` → full replay from checkpoints, then `turn_complete` |
-| Resume cross-instance | Two app instances sharing the emulator; resume on B for a turn owned by A → Firestore-listener path delivers the remainder |
+| Resume cross-instance | Two app instances sharing the emulator; resume on B for a turn owned by A → the follower path delivers the remainder (it polls rather than listens; [09-roadmap.md](09-roadmap.md#status-after-m2)) |
 | Explicit cancel | Cancel endpoint stops generation, marks `cancelled`, notifies subscribers |
 | SIGTERM drain | In-flight turn is awaited within the grace period; a turn that outlives it is marked `failed, retryable` |
 | Duplicate deltas | Deltas with `seq <= lastSeq` are dropped client-side (also covered in web tests) |
@@ -177,9 +177,10 @@ exactly the ones that diverge between engines:
 Secondary but real: streaming text uses `aria-live="polite"`, and VoiceOver's behaviour on
 WebKit differs from Chromium's accessibility tree.
 
-WebKit is first *required* at M2, so installing it is deferred until then
-([07-infra-deploy.md](07-infra-deploy.md)). As of M2 the suite runs on four projects —
-chromium, mobile-chrome, webkit, mobile-safari — and flow #4 passes on all four.
+The suite runs on **four projects** — chromium, mobile-chrome, webkit, mobile-safari — and
+every spec passes on each. WebKit became load-bearing at M2, when flow #4 arrived; it is
+installed with `npx playwright install --with-deps webkit`
+([07-infra-deploy.md](07-infra-deploy.md#python-dependency-pins-that-are-not-routine)).
 
 **The model is stubbed by `MODEL_BACKEND=stub`, not by a stub server.** A server would have
 to speak the Gemini wire protocol convincingly enough for `google.genai` to parse it, which

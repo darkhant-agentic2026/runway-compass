@@ -34,7 +34,7 @@ infra/terraform/
 | `google_firestore_database` | Native mode, `us-central1`, PITR on in prod |
 | `google_firestore_index` × N | From [02-data-model.md](02-data-model.md) |
 | `google_firestore_field` TTL | `turns.endedAt` (7 d), `autonomous_runs.updatedAt` (30 d) |
-| `google_storage_bucket` × 2 | `-coach-artifacts` (uniform access, CMEK-ready), `-coach-uploads` (CORS for signed PUT, 1-day lifecycle on unfinalized) |
+| `google_storage_bucket` × 2 | `-coach-artifacts` (uniform access, versioned, CMEK-ready) is the durable one; `-coach-uploads` (CORS for signed PUT) is **staging** and deletes *everything* at one day of age — a lifecycle rule cannot express "unfinalized", so `finalize` copies the bytes across ([02-data-model.md](02-data-model.md#collection-map)) |
 | `google_cloud_scheduler_job.tick` | `*/15 * * * *`, OIDC token for the scheduler SA |
 | `google_cloud_tasks_queue.autonomous_runs` | `max_dispatches_per_second = 1`, `max_concurrent_dispatches = 5`, retry 3× with 30 s–10 min backoff |
 | `google_secret_manager_secret` | `youtube-api-key`, `gemini-api-key` (dev only) |
@@ -124,20 +124,17 @@ disconnects — exactly the scenario the design must survive.
 `min_instance_count = 1` costs a little idle money and buys: no cold start on the
 scheduler tick, warm ADK/Vertex clients, and a stable instance for session affinity.
 
-**It is a per-environment variable (`min_instances`), defaulting to 1, and `coach-dev`
-currently sets it to 0.** That is a deliberate, temporary trade recorded in
-`envs/dev/dev.tfvars`: through M1 there is no streaming to lose, and an idle dev
-environment that holds no instance bills essentially nothing. Note that `cpu_idle = false`
-is unaffected — CPU stays allocated for an instance's whole lifetime; what is given up is
-the *warm* instance, so the first request after a quiet period pays a cold start.
-
-**This must return to 1 in every environment before M2.** From M2 the setting stops being
-a cost preference: a scaled-to-zero instance can be reaped in the middle of a detached
-generation task, which is exactly the failure
+It is a per-environment variable (`min_instances`) defaulting to 1, and **every
+environment is at 1 from M2 onward**. `coach-dev` ran at 0 through M1, when there was no
+streaming to lose and an idle environment billed essentially nothing; that trade is no
+longer available, because a scaled-to-zero instance can be reaped in the middle of a
+detached generation task — exactly the failure
 [04-api-contract.md](04-api-contract.md#surviving-client-disconnects) is built to survive.
-It is called out here, and in the variable's own description, because a dev environment
-that quietly disagrees with this document is how that gets discovered by debugging a
-dropped stream instead of by reading.
+
+Do not lower it again to save money. The symptom is an occasional lost stream, which is a
+miserable thing to trace back to a scaling number. Note that `cpu_idle = false` is a
+separate setting and unaffected by it: CPU stays allocated for an instance's whole
+lifetime, and what a zero floor gives up is the *warm* instance.
 
 A per-instance `asyncio.Semaphore` caps concurrent agent runs (default 8) so a burst of
 background work cannot starve interactive turns; excess background work stays queued in

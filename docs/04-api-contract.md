@@ -4,6 +4,16 @@ Base URL: same origin as the SPA — the Cloud Run service serves both the stati
 these endpoints, so no rewrite layer is involved. All payloads JSON unless noted. Errors
 follow RFC 9457 `application/problem+json`.
 
+**Including unhandled ones.** A bug used to be the single thing in the service answering in
+`text/plain` — Starlette's default 500 — so a client parsing for a problem document fell
+back to the HTTP status text and showed the user "request failed" while the traceback sat
+in the logs with nothing tying it to their request. Unhandled exceptions now render as a
+problem document carrying a **`traceId`**, taken from Cloud Run's `X-Cloud-Trace-Context`
+when present so that the value in the response is the one
+`gcloud logging read 'trace:"…"'` matches. `detail` names the exception outside production
+and is a fixed string in it, since an exception message can carry a bucket name, a query,
+or a row of user data.
+
 ## Authentication
 
 - Frontend signs in with **Cloud Identity Platform**, Google provider.
@@ -98,6 +108,8 @@ without a refetch.
 | `POST` | `/api/sessions/{sid}/turns` | Start a turn (below) |
 | `POST` | `/api/sessions/{sid}/turns/{turnId}/cancel` | Explicit user cancel — the *only* thing that stops generation |
 | `POST` | `/api/sessions/{sid}/research` | **Manual research trigger** (below) |
+| `GET` | `/api/turns/{turnId}` | Status only. Added at M2 so a client whose socket is down can tell a running turn from a finished one — the "still working" state has to be truthful rather than hopeful |
+| `GET` | `/api/sessions/{sid}/events/{seq}/attachments/{index}` | An attachment's bytes, for the transcript's image previews ([06-frontend.md](06-frontend.md)). Added at M2. Addressed by **position** rather than by artifact name or `gs://` URI: a session lives under the caller's uid, so reaching an event at all proves ownership and no caller-supplied storage path is ever validated |
 
 #### `POST /api/sessions/{sid}/turns`
 
