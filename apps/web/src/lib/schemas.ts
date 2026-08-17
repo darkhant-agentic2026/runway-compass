@@ -167,6 +167,57 @@ export type TaskMutation = z.infer<typeof taskMutationSchema>
 
 export const taskDetailSchema = z.object({ task: taskWithSubtasksSchema })
 
+// --- sessions & turns ------------------------------------------------------------------
+
+export const sessionSummarySchema = z.object({
+  id: z.string(),
+  projectId: z.string().nullable().default(null),
+  taskId: z.string().nullable().default(null),
+})
+export type SessionSummary = z.infer<typeof sessionSummarySchema>
+
+export const sessionResponseSchema = z.object({ session: sessionSummarySchema })
+
+/**
+ * One transcript row. `event` is the serialized ADK `Event` verbatim — the API returns it
+ * unprojected on purpose (docs/02-data-model.md), so the parts this UI actually renders
+ * are picked out by `transcript.ts` rather than pinned by a schema that would have to
+ * track a pinned dependency's model.
+ */
+export const sessionEventSchema = z.object({
+  seq: z.number().int(),
+  eventId: z.string(),
+  event: z.record(z.string(), z.unknown()),
+})
+export type SessionEvent = z.infer<typeof sessionEventSchema>
+
+export const sessionEventsSchema = z.object({
+  events: z.array(sessionEventSchema),
+  nextAfterSeq: z.number().int(),
+  hasMore: z.boolean(),
+})
+
+export const turnStatusSchema = z.enum(['running', 'complete', 'failed', 'cancelled'])
+export type TurnStatus = z.infer<typeof turnStatusSchema>
+
+export const turnAcceptedSchema = z.object({
+  turnId: z.string(),
+  sessionId: z.string(),
+  status: turnStatusSchema,
+  startSeq: z.number().int().default(0),
+})
+
+export const turnStatusResponseSchema = z.object({
+  turnId: z.string(),
+  status: turnStatusSchema,
+  lastSeq: z.number().int(),
+})
+
+export const wsTicketSchema = z.object({ ticket: z.string(), expiresAt: z.string() })
+
+export const uploadCreatedSchema = z.object({ uploadId: z.string(), signedUrl: z.string() })
+export const uploadFinalizedSchema = z.object({ uploadId: z.string(), mimeType: z.string() })
+
 /** RFC 9457 problem+json, which is how every API error arrives. */
 export const problemSchema = z.object({
   type: z.string().default('about:blank'),

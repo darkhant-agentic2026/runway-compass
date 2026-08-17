@@ -26,3 +26,21 @@ notification_channels = []
 # It was 0 through M1, when there was no streaming to lose and an idle environment billed
 # essentially nothing. That trade is no longer available.
 min_instances = 1
+
+# `gemini-3.7-flash` (docs/00-overview.md) is served to this project on the **global**
+# endpoint only. Probed 2026-08-17 with RUNBOOK.md section 8.5, which issues the real
+# `:generateContent` call:
+#
+#   us-central1  gemini-3.7-flash  404      global  gemini-3.7-flash  200
+#   us-central1  gemini-2.5-flash  200      global  gemini-2.5-flash  200
+#   us-central1  gemini-2.5-pro    200      global  gemini-2.5-pro    200
+#
+# So this is a location fix, not a model choice: the design's model is available, just not
+# where Cloud Run happens to run. Without it every turn fails with a `NOT_FOUND` naming
+# the model, and nothing before the first turn notices — the revision starts and serves
+# the board, the sockets, and the transcript normally.
+#
+# Re-probe before assuming this still holds. Regional availability moves as models roll
+# out, and the day `us-central1` starts serving it, dropping this line puts the model in
+# the same region as Cloud Run and Firestore again.
+vertex_location = "global"

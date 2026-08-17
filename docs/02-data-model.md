@@ -24,6 +24,8 @@ autonomous_runs/{runId}                      ← durable job ledger
 presence/{uid}
 usage/{uid}_{yyyymmdd}                       ← token + run counters
 idempotency/{uid}__{fingerprint}             ← Idempotency-Key replay records, TTL 24 h
+ws_tickets/{ticket}                          ← single-use socket tickets, TTL 60 s
+uploads/{uploadId}                           ← what a signed upload URL was issued for
 ```
 
 `idempotency/*` was added at M1 to make the `Idempotency-Key` contract in
@@ -32,6 +34,40 @@ its response body and status, a replay returns them without re-executing the han
 fingerprint hashes method, path, and key, so the same key reused on a different endpoint
 is a different operation rather than an unrelated replay. Scoped by `uid` so one user's
 key cannot collide with another's.
+
+`ws_tickets/*` and `uploads/*` were added at M2 on the same footing — the API contract
+needs cross-instance state that no existing collection holds:
+
+- **`ws_tickets/{ticket}`** backs `POST /api/ws-ticket`. It is a *collection* rather than
+  a process-local dict because session affinity is a preference, not a guarantee, and it
+  is least reliable exactly when it matters — during a redeploy or a scale event, which
+  is also when clients are most likely to be reconnecting. An in-process store would fail
+  those reconnects with what looks like an authentication bug. "Redeemed and deleted" is
+  one transaction, so two sockets racing on one ticket cannot both be admitted.
+- **`uploads/{uploadId}`** records the object name, owner, and declared type behind a
+  signed URL. The browser PUTs straight to GCS, so the server is out of the data path and
+  needs somewhere to remember what an upload id refers to and who may reference it.
+  Scoped by `ownerUid`, checked on every read.
+
+  ```jsonc
+  { "ownerUid": "…", "objectName": "{uid}/{uploadId}/{filename}",  // in the *staging* bucket
+    "filename": "screenshot.png", "mimeType": "image/png", "sizeBytes": 20481,
+    "status": "pending" | "ready",
+    "artifactFilename": "user:{uploadId}",   // set by finalize; ADK-scoped to the user
+    "artifactVersion": 0,
+    "artifactUri": "gs://{project}-coach-artifacts/…",  // what a turn actually references
+    "createdAt": ts, "finalizedAt": ts, "expiresAt": null }
+  ```
+
+  **`objectName` and `artifactUri` point at different buckets, and only the second is
+  durable.** `{project}-coach-uploads` is staging and carries
+  `lifecycle_rule { age = 1 → Delete }`; a GCS lifecycle rule cannot express
+  "unfinalized", so it collects finalized objects just as happily. `finalize` therefore
+  copies the verified bytes into `{project}-coach-artifacts` through `GcsArtifactService`
+  ([03-agent-design.md](03-agent-design.md#artifacts)) and every later reference uses
+  `artifactUri`. Referencing the staging object instead fails *a day later*, silently —
+  a session's history is replayed to the model on every turn, so the symptom is a coach
+  that has forgotten a screenshot it discussed yesterday.
 
 ADK-owned — this layout comes from the shipped `FirestoreSessionService` and is **not ours
 to choose**; changing it means not subclassing:
@@ -280,6 +316,19 @@ Two things to note, both consequences of subclassing rather than hand-rolling:
   is the queryable plane and session state is conversation scratch space.
 - **The whole `Event` is nested under `event_data`.** Queries and indexes address `seq` and
   `timestamp` at the top level; anything inside `event_data` is read-back-only.
+- **Everything inside `event_data` is `snake_case`** — `file_data`, `mime_type`,
+  `function_call`, `display_name`. This surprises, because ADK's `Event` declares
+  `alias_generator=to_camel`, so its *aliases* are camelCase and every other camelCase
+  field in this database invites the same assumption. But `append_event` stores
+  `event.model_dump(exclude_none=True, mode="json")`, and `model_dump` defaults to
+  `by_alias=False`.
+
+  A reader that assumes the aliases finds nothing and reports *absence* rather than
+  failing — an attachment that silently stops existing, not an error. `apps/web` reads this
+  shape in `lib/transcript.ts` and is tested against `session-event-vectors.json`,
+  generated from real dumps by `scripts/gen_event_vectors.py`
+  ([08-testing.md](08-testing.md#end-to-end-playwright)); regenerate it after an ADK bump
+  rather than hand-writing a fixture.
 
 Only finalized events are persisted — `append_event` returns early on `event.partial`.
 
@@ -296,13 +345,28 @@ subclass does ([03-agent-design.md](03-agent-design.md#what-the-subclass-adds)).
   "startedAt": ts, "endedAt": ts, "lastSeq": 128,
   "instanceId": "…",                      // which Cloud Run instance owns it
   "leaseExpiresAt": ts,
-  "checkpoints": [ { "fromSeq": 0, "toSeq": 40, "text": "…" } ],  // ≤ 400 KB total
+  "cancelRequested": false,               // + set by the cancel endpoint on any instance
+  "checkpoints": [ { "fromSeq": 0, "toSeq": 40, "text": "…",
+                     "lengths": [3, 5, …] } ],                   // ≤ 400 KB total
   "error": null }
 ```
 
 Checkpoints are appended in slices so a resume can replay from any `lastSeq`. When the doc
 approaches the 1 MiB limit, older slices spill to
 `turns/{turnId}/checkpoint_pages/{page}`.
+
+Two fields marked **+** were added at M2, both because the resume path needs them:
+
+- **`lengths`** is the character count of each delta in the slice, in order, so
+  `sum(lengths) == len(text)` and `len(lengths) == toSeq - fromSeq + 1`. A slice merges
+  every delta between two flushes, so a client whose `lastSeq` falls *inside* one cannot
+  be served by `fromSeq`/`toSeq` alone: replaying the slice whole would resend text it
+  already rendered, and skipping it would lose the tail. `lengths` is what lets the replay
+  cut the string at the right offset, which is what makes "no duplicates and no gaps" true
+  at token granularity rather than approximately.
+- **`cancelRequested`** is the instruction channel for a cancel served by an instance that
+  does not own the turn. The owner polls it; the local `TurnRegistry` handles the case
+  where the owner is the one being asked.
 
 ## `presence/{uid}`
 

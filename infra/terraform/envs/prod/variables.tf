@@ -26,6 +26,31 @@ variable "image" {
 variable "model_name" {
   type    = string
   default = "gemini-3.7-flash"
+
+  description = <<-EOT
+    The Vertex AI publisher model. docs/00-overview.md decides this value.
+
+    Availability is per project *and* per location, so a name that is valid in the docs
+    can still 404. The failure is a `NOT_FOUND` naming
+    `publishers/google/models/<name>` on the first turn — the service starts and serves
+    everything else normally, because nothing calls the model until a user does.
+    RUNBOOK.md section 8.5 has the probe that tells you which names this project can
+    actually reach.
+  EOT
+}
+
+variable "vertex_location" {
+  type    = string
+  default = null
+
+  description = <<-EOT
+    Where to call Vertex AI. Defaults to `var.region`, which is where Cloud Run runs.
+
+    Separate from the region because the two need not agree, and for new Gemini models
+    they often do not: a model can be reachable only on the `global` endpoint for a
+    while after release. Setting this to `global` is the fix for a `NOT_FOUND` that
+    names a model this project is otherwise entitled to.
+  EOT
 }
 
 variable "github_repository" {

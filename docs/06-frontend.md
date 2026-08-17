@@ -139,7 +139,25 @@ Right — **session chat**:
 - Streamed markdown with syntax highlighting; tool activity as inline status chips
   ("Searching the web…", "Checking video lengths…") built from `tool_call`/`tool_result`.
 - Composer with drag-and-drop upload (image/PDF/text), preview thumbnails, paste-image
-  support.
+  support. **The drop target is the whole chat pane, not the composer strip** — a
+  two-line strip is a target people miss, and missing it is worse than having none,
+  because the browser's default action for a file dropped on a page is to navigate away
+  from the app.
+- **Attachments in the transcript render as thumbnails when they are images**, and as a
+  named chip otherwise. Added at M2 rather than specified here originally; a conversation
+  about a screenshot reads badly when the screenshot is a word.
+
+  The bytes come from `GET /api/sessions/{sid}/events/{seq}/attachments/{index}` through an
+  authenticated `fetch`, and become an object URL. An `<img src>` pointing straight at the
+  endpoint cannot work — an `<img>` sends no `Authorization` header — and giving the URL its
+  own credential would add a second way into the data, against
+  [00-overview.md](00-overview.md)'s one-auth-path decision. Loading is lazy, so a long
+  conversation does not fetch every image in it to render the last screen.
+
+  What the transcript can show depends on which side it is looking at: a message still in
+  flight knows the user's filename, and a stored event does not unless
+  `TurnService._build_content` put it in `file_data.display_name` — the artifact itself is
+  named `user:{uploadId}` and the `gs://` URI has no human segment.
 - A visible **reconnecting** state that makes the resume guarantee legible: "Connection
   lost — your coach is still working. Reconnecting…" then the stream continues from where
   it left off.

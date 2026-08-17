@@ -14,7 +14,11 @@ from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Env = Literal["local", "dev", "prod"]
-ModelBackend = Literal["vertex", "gemini_api"]
+#: `stub` is the deterministic model the end-to-end harness runs against
+#: (docs/08-testing.md). It is refused for every non-`local` `ENV` below, on the same
+#: footing as the `Bearer dev:<uid>` auth path: deliberate test-only code, guarded by one
+#: check, with a named regression test rather than a comment and a hope.
+ModelBackend = Literal["vertex", "gemini_api", "stub"]
 
 #: Fields that only a deployed environment can supply. Required when ENV != "local";
 #: absent locally, where the corresponding surfaces are stubbed or unused.
@@ -118,6 +122,21 @@ class Settings(BaseSettings):
                 "MODEL_BACKEND=gemini_api requires GEMINI_API_KEY. Production uses "
                 "MODEL_BACKEND=vertex, which authenticates as the service account and "
                 "needs no key."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_stub_model_is_local_only(self) -> Settings:
+        """A deployed revision must never serve canned answers.
+
+        Failing to start is much better than the alternative, which would look exactly
+        like the product working — the coach would reply, the board would update, and
+        nobody would find out until someone read a transcript.
+        """
+        if self.model_backend == "stub" and self.env != "local":
+            raise ValueError(
+                f"MODEL_BACKEND=stub is the deterministic end-to-end stub and is only "
+                f"valid for ENV=local; got ENV={self.env!r}."
             )
         return self
 

@@ -12,10 +12,18 @@ import { renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createQueryClient, queryKeys, useReorderTask, useSetTaskState } from '@/features/queries'
+import {
+  createQueryClient,
+  queryKeys,
+  useReorderTask,
+  useSetTaskState,
+  useStartTurn,
+} from '@/features/queries'
 import { api } from '@/lib/api'
 import { keyBetween } from '@/lib/ordering'
-import type { TaskWithSubtasks } from '@/lib/schemas'
+import { getSocket } from '@/lib/socket'
+import { toMessages } from '@/lib/transcript'
+import type { SessionEvent, TaskWithSubtasks } from '@/lib/schemas'
 import { DEFAULT_FILTERS } from '@/stores/boardUi'
 import { makeParent, makeTask } from '@/test/factories'
 
@@ -122,6 +130,104 @@ describe('useSetTaskState', () => {
       expect(task?.state).toBe('postponed_until')
       expect(task?.postponedUntil).toBe(when)
     })
+  })
+})
+
+describe('useStartTurn', () => {
+  const SESSION = 's_1'
+  const key = queryKeys.sessionEvents(SESSION)
+
+  function setupSession() {
+    const queryClient = createQueryClient()
+    queryClient.setQueryData(key, [])
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    )
+    return { queryClient, wrapper, read: () => queryClient.getQueryData<SessionEvent[]>(key)! }
+  }
+
+  it('echoes the message into the transcript before the server confirms it', async () => {
+    // Without this the sender watches "Your coach is thinking…" with no record of what
+    // they asked: ADK writes the user event during generation, and the transcript is only
+    // refetched on `turn_complete`.
+    let resolve: (() => void) | undefined
+    vi.spyOn(api, 'startTurn').mockReturnValue(
+      new Promise((r) => {
+        resolve = () =>
+          r({ turnId: 't_1', sessionId: SESSION, status: 'running', startSeq: 0 })
+      }),
+    )
+    vi.spyOn(getSocket(), 'subscribe').mockImplementation(() => {})
+
+    const { wrapper, read } = setupSession()
+    const { result } = renderHook(() => useStartTurn(SESSION), { wrapper })
+
+    result.current.mutate({ text: 'why does this deadlock?' })
+
+    await waitFor(() => expect(read()).toHaveLength(1))
+    expect(toMessages(read())[0]).toMatchObject({
+      role: 'user',
+      text: 'why does this deadlock?',
+    })
+    resolve?.()
+  })
+
+  it('shows the attachment on the echoed message, by name', async () => {
+    vi.spyOn(api, 'startTurn').mockResolvedValue({
+      turnId: 't_1',
+      sessionId: SESSION,
+      status: 'running',
+      startSeq: 0,
+    })
+    vi.spyOn(getSocket(), 'subscribe').mockImplementation(() => {})
+
+    const { wrapper, read } = setupSession()
+    const { result } = renderHook(() => useStartTurn(SESSION), { wrapper })
+
+    result.current.mutate({
+      text: 'explain this',
+      attachments: [{ uploadId: 'up_1', mimeType: 'image/png', filename: 'shot.png' }],
+    })
+
+    await waitFor(() => expect(read()).toHaveLength(1))
+    expect(toMessages(read())[0]?.attachments).toEqual([
+      { mimeType: 'image/png', filename: 'shot.png' },
+    ])
+  })
+
+  it('sorts the echo after everything already in the transcript', async () => {
+    vi.spyOn(api, 'startTurn').mockResolvedValue({
+      turnId: 't_1',
+      sessionId: SESSION,
+      status: 'running',
+      startSeq: 0,
+    })
+    vi.spyOn(getSocket(), 'subscribe').mockImplementation(() => {})
+
+    const { queryClient, wrapper, read } = setupSession()
+    queryClient.setQueryData(key, [
+      { seq: 7, eventId: 'e_7', event: { author: 'coach', content: { parts: [{ text: 'earlier' }] } } },
+    ])
+    const { result } = renderHook(() => useStartTurn(SESSION), { wrapper })
+
+    result.current.mutate({ text: 'later' })
+
+    await waitFor(() => expect(read()).toHaveLength(2))
+    expect(toMessages(read()).map((message) => message.text)).toEqual(['earlier', 'later'])
+  })
+
+  it('removes the echo when the server refuses the turn', async () => {
+    // A message that was never accepted must not sit in the transcript looking as if it
+    // had been.
+    vi.spyOn(api, 'startTurn').mockRejectedValue(new Error('boom'))
+
+    const { wrapper, read } = setupSession()
+    const { result } = renderHook(() => useStartTurn(SESSION), { wrapper })
+
+    result.current.mutate({ text: 'this will fail' })
+
+    await waitFor(() => expect(result.current.isError).toBe(true))
+    expect(read()).toEqual([])
   })
 })
 

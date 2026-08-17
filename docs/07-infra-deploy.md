@@ -34,7 +34,7 @@ infra/terraform/
 | `google_firestore_database` | Native mode, `us-central1`, PITR on in prod |
 | `google_firestore_index` × N | From [02-data-model.md](02-data-model.md) |
 | `google_firestore_field` TTL | `turns.endedAt` (7 d), `autonomous_runs.updatedAt` (30 d) |
-| `google_storage_bucket` × 2 | `-coach-artifacts` (uniform access, CMEK-ready), `-coach-uploads` (CORS for signed PUT, 1-day lifecycle on unfinalized) |
+| `google_storage_bucket` × 2 | `-coach-artifacts` (uniform access, versioned, CMEK-ready) is the durable one; `-coach-uploads` (CORS for signed PUT) is **staging** and deletes *everything* at one day of age — a lifecycle rule cannot express "unfinalized", so `finalize` copies the bytes across ([02-data-model.md](02-data-model.md#collection-map)) |
 | `google_cloud_scheduler_job.tick` | `*/15 * * * *`, OIDC token for the scheduler SA |
 | `google_cloud_tasks_queue.autonomous_runs` | `max_dispatches_per_second = 1`, `max_concurrent_dispatches = 5`, retry 3× with 30 s–10 min backoff |
 | `google_secret_manager_secret` | `youtube-api-key`, `gemini-api-key` (dev only) |
@@ -124,20 +124,17 @@ disconnects — exactly the scenario the design must survive.
 `min_instance_count = 1` costs a little idle money and buys: no cold start on the
 scheduler tick, warm ADK/Vertex clients, and a stable instance for session affinity.
 
-**It is a per-environment variable (`min_instances`), defaulting to 1, and `coach-dev`
-currently sets it to 0.** That is a deliberate, temporary trade recorded in
-`envs/dev/dev.tfvars`: through M1 there is no streaming to lose, and an idle dev
-environment that holds no instance bills essentially nothing. Note that `cpu_idle = false`
-is unaffected — CPU stays allocated for an instance's whole lifetime; what is given up is
-the *warm* instance, so the first request after a quiet period pays a cold start.
-
-**This must return to 1 in every environment before M2.** From M2 the setting stops being
-a cost preference: a scaled-to-zero instance can be reaped in the middle of a detached
-generation task, which is exactly the failure
+It is a per-environment variable (`min_instances`) defaulting to 1, and **every
+environment is at 1 from M2 onward**. `coach-dev` ran at 0 through M1, when there was no
+streaming to lose and an idle environment billed essentially nothing; that trade is no
+longer available, because a scaled-to-zero instance can be reaped in the middle of a
+detached generation task — exactly the failure
 [04-api-contract.md](04-api-contract.md#surviving-client-disconnects) is built to survive.
-It is called out here, and in the variable's own description, because a dev environment
-that quietly disagrees with this document is how that gets discovered by debugging a
-dropped stream instead of by reading.
+
+Do not lower it again to save money. The symptom is an occasional lost stream, which is a
+miserable thing to trace back to a scaling number. Note that `cpu_idle = false` is a
+separate setting and unaffected by it: CPU stays allocated for an instance's whole
+lifetime, and what a zero floor gives up is the *warm* instance.
 
 A per-instance `asyncio.Semaphore` caps concurrent agent runs (default 8) so a burst of
 background work cannot starve interactive turns; excess background work stays queued in
@@ -388,7 +385,29 @@ with a missing-shared-object error rather than at install time.
 Local model access uses the **Gemini API** with a developer key in `.env.local` (fastest
 onboarding); production uses **Vertex AI** with the Cloud Run service account (no key to
 rotate, VPC-SC compatible, and per-project quotas). One `ModelProvider` abstraction,
-selected by `MODEL_BACKEND=gemini_api|vertex`. Cloud Tasks is stubbed by an in-process
+selected by `MODEL_BACKEND=gemini_api|vertex`.
+
+**`VERTEX_LOCATION` is not `var.region`.** It defaults to it, but the two are separate
+variables because model availability is per project *and* per location, and a new Gemini
+model is often served on the `global` endpoint before any specific region. Measured in
+`coach-dev` on 2026-08-17: `gemini-3.7-flash` answered `200` at `global` and `404` in
+`us-central1`, while `gemini-2.5-flash` answered `200` in both. `envs/dev/dev.tfvars`
+therefore sets `vertex_location = "global"`.
+
+Nothing detects this before the first turn. The revision starts, `/readyz` passes, the
+board and the sockets work, and only a user sending a message finds out — which is why the
+probe is a numbered runbook step ([RUNBOOK](../infra/terraform/RUNBOOK.md#85-if-a-turn-fails-with-not_found-publisher-model--was-not-found))
+rather than a paragraph to remember. Note also that `global` is a data-residency choice, so
+it is not a setting to copy into `prod` without deciding that separately.
+
+A third value, **`MODEL_BACKEND=stub`**, selects the deterministic model the end-to-end
+harness runs against ([08-testing.md](08-testing.md)); `docker-compose.e2e.yml` sets it, so
+e2e depends on no GCP project and no model nondeterminism. `Settings` **refuses it for any
+`ENV` other than `local`**, and a named regression test pins that. The guard is worth as
+much as the one on the `Bearer dev:<uid>` auth path and for the same reason: its failure
+mode is *silent success*. A deployed revision serving canned answers would reply, update
+the board, and look entirely healthy — the only symptom would be someone eventually
+reading a transcript. Cloud Tasks is stubbed by an in-process
 `JobQueue` implementation behind the same interface, so the full autonomous path runs on a
 laptop.
 
@@ -417,8 +436,9 @@ dev only. Unit tests fake the artifact service outright and touch neither GCS no
 ```
 ENV=local|dev|prod
 GOOGLE_CLOUD_PROJECT=…
-MODEL_BACKEND=vertex                          # vertex | gemini_api
+MODEL_BACKEND=vertex                          # vertex | gemini_api | stub (ENV=local only)
 MODEL_NAME=gemini-3.7-flash
+STUB_MODEL_DELAY_MS=40                        # only read by MODEL_BACKEND=stub
 VERTEX_LOCATION=us-central1
 GEMINI_API_KEY=…                              # required iff MODEL_BACKEND=gemini_api (local)
 FIRESTORE_DATABASE=(default)

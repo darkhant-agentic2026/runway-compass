@@ -24,12 +24,26 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from coach.api.idempotency import IdempotencyMiddleware, ReplayedResponse
-from coach.api.routers import health, me, projects, tasks
+from coach.api.routers import health, me, projects, sessions, tasks, uploads, ws
 from coach.core.config import Settings, get_settings
 from coach.core.errors import PROBLEM_CONTENT_TYPE, CoachError
+from coach.core.ids import trace_id as new_trace_id
 from coach.core.logging import configure_logging
 
 logger = logging.getLogger(__name__)
+
+#: How long the shutdown path waits for in-flight turns.
+#:
+#: docs/04-api-contract.md, mechanism 5: "On `SIGTERM` Cloud Run gives a termination
+#: grace period. The app stops accepting new turns, waits up to the grace period for
+#: in-flight turns, and marks any survivors `failed` with `retryable: true`."
+#:
+#: Cloud Run's default grace period is 10 s, and this is deliberately shorter: the
+#: platform sends `SIGKILL` when the period expires, so a drain budget equal to the
+#: period would be racing the kill for the very writes that mark survivors failed —
+#: the writes that keep a turn from being left `running` forever with no `endedAt` and
+#: therefore no TTL (docs/02-data-model.md#retention).
+DRAIN_TIMEOUT_SECONDS = 8.0
 
 #: Relative on purpose — see the module docstring.
 STATIC_DIR = Path("static")
@@ -39,6 +53,20 @@ STATIC_DIR = Path("static")
 # `/livez` rather than `/healthz`: Google's frontend intercepts the latter on Cloud
 # Run and never forwards it (coach.api.routers.health).
 API_PREFIXES = ("/api", "/ws", "/internal", "/livez", "/readyz")
+
+
+def _trace_id(request: Request) -> str:
+    """Cloud Run's own trace id when it is there, otherwise one of ours.
+
+    The platform sets `X-Cloud-Trace-Context: TRACE_ID/SPAN_ID;o=1`, and the leading
+    segment is what `gcloud logging read 'trace:"…"'` matches — so echoing it turns a
+    user's screenshot into a log query. Off Cloud Run there is no such header, and a
+    generated id is still better than none: it appears in both the response and the log
+    line, which is all the correlation this needs.
+    """
+    header = request.headers.get("X-Cloud-Trace-Context", "")
+    platform_id = header.split("/", 1)[0].strip()
+    return platform_id or new_trace_id()
 
 
 def _problem_response(request: Request, error: CoachError) -> JSONResponse:
@@ -62,6 +90,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         },
     )
     yield
+
+    # Uvicorn runs lifespan shutdown on SIGTERM, so this is the drain hook. It runs
+    # before the event loop closes, which is the only window in which an in-flight
+    # generation task can still finish or be marked failed.
+    container = app.state.container
+    await container.turns.drain(DRAIN_TIMEOUT_SECONDS)
     logger.info("coach-api stopped")
 
 
@@ -102,6 +136,51 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             headers={REPLAY_HEADER: "true"},
         )
 
+    @app.exception_handler(Exception)
+    async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
+        """Render an *unplanned* failure as `problem+json`, like every planned one.
+
+        Without this, a bug is the only thing in the system that answers with a bare
+        `Internal Server Error` in `text/plain`. The client's error parser expects a
+        problem document, falls back to the HTTP status text, and shows the user
+        "request failed" — while a perfectly good traceback sits in the logs, unlinked to
+        the request that produced it. That gap cost a full diagnosis round on a 403 from
+        IAM signBlob: the UI could say nothing except that something had gone wrong.
+
+        `traceId` is the fix for the linking half. On Cloud Run the platform's own trace
+        id is in the request, so quoting it back means a support report can be turned
+        into `gcloud logging read 'trace:"…"'` directly.
+
+        `detail` carries the exception outside production, because in `local` and `dev`
+        the person reading the toast is the person fixing the bug. In `prod` it is a
+        fixed string: an exception message can carry a bucket name, a query, or a row of
+        data, and none of that belongs in a browser. M7's error-handling pass owns the
+        wider question of retryability and user-facing wording
+        (docs/09-roadmap.md#m7--hardening-and-launch-readiness-15-weeks).
+        """
+        trace_id = _trace_id(request)
+        logger.exception(
+            "unhandled exception", extra={"trace_id": trace_id, "path": request.url.path}
+        )
+        settings: Settings = request.app.state.settings
+        detail = (
+            "Something went wrong on our side. Quote the trace id if you report this."
+            if settings.env == "prod"
+            else f"{type(exc).__name__}: {exc}"
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "type": "/problems/internal-error",
+                "title": "Internal Server Error",
+                "status": 500,
+                "detail": detail,
+                "instance": request.url.path,
+                "traceId": trace_id,
+            },
+            media_type=PROBLEM_CONTENT_TYPE,
+        )
+
     @app.exception_handler(RequestValidationError)
     async def _validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
         return JSONResponse(
@@ -124,6 +203,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(me.router)
     app.include_router(projects.router)
     app.include_router(tasks.router)
+    app.include_router(sessions.router)
+    app.include_router(uploads.router)
+    app.include_router(ws.router)
+
+    if settings.is_local:
+        # ------------------------------------------------------------------------------
+        # DELIBERATE LOCAL-ONLY SURFACE. It stands in for the GCS bucket a signed PUT
+        # targets, so the upload path is reachable from a Playwright flow at all — see
+        # `api/routers/local_storage.py`. Guarded by this one check, exactly like the
+        # `Bearer dev:<uid>` path, and pinned for every other `ENV` by
+        # `tests/test_local_storage_guard.py`.
+        # ------------------------------------------------------------------------------
+        from coach.api.routers import local_storage
+
+        app.include_router(local_storage.router)
 
     # --- SPA, registered LAST ---------------------------------------------------------
     _mount_spa(app, settings)

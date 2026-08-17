@@ -118,6 +118,80 @@ about an uploaded screenshot on the deployed dev environment.
 
 ---
 
+## Status after M2
+
+Complete and deployed to `coach-dev`. What follows is the carry-over a later milestone
+needs, recorded here because it is not derivable from the code.
+
+**Met.** The full disconnect matrix from [08-testing.md](08-testing.md) is green, including
+cross-instance resume — driven by two `Container`s over one emulator, which is what a
+second Cloud Run instance is. Golden flow #4 passes on all four Playwright projects, which
+is what installing WebKit early was for. The last criterion was verified by hand on
+`coach-dev` on 2026-08-17: chat with the coach, attach a screenshot by paperclip and by
+drag-and-drop, get a reply that demonstrably sees it, reload, and take another turn in the
+same session. 318 backend tests, 178 web, 76 Playwright specs.
+
+**Deliberately deferred, and the milestone that needs it:**
+
+| Item | Needed by | Note |
+| --- | --- | --- |
+| Content **scanning** on `POST /api/uploads/{id}/finalize` | **M7** | The contract lists it in that step and nothing scans. An accepted MIME type and a size cap are the only checks on uploaded bytes |
+| `subscribe` by `runId` | **M5** | The frame is accepted and answered with an explicit error until the run ledger exists |
+| Tool-activity chips on **resume** | M3+ | Chips render from the live stream but are not checkpointed, so a resumed client rebuilds them from the finalized transcript rather than the stream |
+| Composite indexes for the `turns` queries | **M5** | `list_running_for_instance` and `expire_stale` were written ahead of a caller, needed indexes that do not exist, and were deleted. The ledger sweep should add each query *with* its index and its row in the index table |
+| Nightly evalsets, live-API tests, real-auth test | M4–M6 | Still as recorded after M1 |
+| `prod` environment, `terraform destroy` | before release | Still as recorded after M1. `envs/prod` also has a commented `vertex_location` needing its own decision |
+
+**Endpoints in the API contract still unimplemented**, by milestone rather than oversight:
+`POST /api/sessions/{sid}/research` and everything under reports (M4), runs (M5),
+`PATCH /api/me/learner-profile`'s Settings UI (M6), and `DELETE /api/me` (M7).
+
+**Decisions made during implementation** that the design documents did not fix:
+
+| Decision | Why | Where |
+| --- | --- | --- |
+| Cross-instance resume **polls** `turns/{turnId}` every 400 ms instead of using a snapshot listener | [04-api-contract.md](04-api-contract.md#surviving-client-disconnects) says "snapshot listener", but `on_snapshot` exists only on the *synchronous* `DocumentReference`; the async one raises `NotImplementedError`, and the async client is not optional. Polling at the checkpoint interval delivers the granularity that section already accepts | `ws/manager.py` |
+| `checkpoints[].lengths` on the turn document | Makes resume exact when `lastSeq` falls *inside* a slice, instead of duplicating or dropping text | `services/models.py` |
+| `StreamBroker` keeps a per-turn ring buffer of recent frames | Deltas are published immediately but checkpointed up to 400 ms later; a client attaching in that window would find a frame in neither source | `ws/broker.py` |
+| `ws_tickets/*` and `uploads/*` added to the collection map | Cross-instance state the contract needs and no existing collection holds | [02-data-model.md](02-data-model.md#collection-map) |
+| **`MODEL_BACKEND=stub`**, refused for any `ENV` but `local` | [08-testing.md](08-testing.md) asks for "a stubbed model server"; a stubbed *model* is the same determinism for a fraction of the surface. Guarded like the `Bearer dev:<uid>` path — its failure mode is *silent success* | `integrations/stub_model.py` |
+| A local-only **PUT receiver** for uploads, same guard | Without it the in-memory store hands the browser an unreachable URL and the entire upload path is untestable end to end | `api/routers/local_storage.py` |
+| **`vertex_location`**, separate from the Cloud Run region | Model availability is per project *and* per location; `gemini-3.7-flash` is served to `coach-dev` on `global` only. Set in `envs/dev`, left unset in `prod` where `global` is a data-residency decision | [07-infra-deploy.md](07-infra-deploy.md#local-development) |
+| An unhandled exception now answers in `problem+json` with a `traceId` | It was the one thing in the service returning `text/plain`, so every bug reached the user as "request failed" while its traceback sat unlinked in the logs. `detail` names the exception outside production only | `main.py` |
+| Model errors are **classified**: 5xx and 408/409/425/429 retryable, other 4xx terminal | `retryable` drives "You can try again", and a 404 for a missing model invited a retry that could never work | `services/turns.py` |
+| A cancelled turn is a `turn_error` with `code: "cancelled"`, `retryable: false` | The contract has no `turn_cancelled` frame, and the user asked for this | `services/turns.py` |
+| `GET /api/turns/{turnId}` added | Lets a client with a dead socket tell a running turn from a finished one | `api/routers/sessions.py` |
+| `GET /api/sessions/{sid}/events/{seq}/attachments/{index}` added | Backs the transcript's image previews. Addressed by *position*, so reaching an event proves ownership and no caller-supplied storage path is validated | `api/routers/sessions.py` |
+| An upload's artifact is `user:`-scoped, named for its upload id | `POST /api/uploads` does not know a session, and ADK scopes an artifact to one or the other. The id rather than the filename, so two `screenshot.png`s are two artifacts and not two versions | `integrations/artifacts.py` |
+| `google-cloud-storage` pinned explicitly | Imported directly but arriving only as a transitive of `firebase-admin` — the same argument that pins `google-cloud-firestore` | `pyproject.toml` |
+
+**Known limitation: `gs://` attachments do not work against `MODEL_BACKEND=gemini_api`.**
+[00-overview.md](00-overview.md#model-configuration) specifies attachments as `types.Part`
+file references backed by GCS, which Vertex resolves and the Gemini API does not — it wants
+inline bytes or its own Files API. Production is Vertex, so the shipped path is right; a
+developer running locally against a real Gemini key will find text works and attachments do
+not. Not worked around, because the workaround is a second multimodal path production would
+never exercise.
+
+### What a green local run does not prove
+
+Nine defects were fixed closing this milestone. **Seven were invisible to a fully green
+local gate** — the whole suite passed against code that could not run in CI or in
+production. The individual incidents are in the git history; what generalises is below, and
+M4 and M5 add query surface and integrations to every row of it.
+
+| Trap | How it presents | Where it will recur |
+| --- | --- | --- |
+| **The Firestore emulator does not enforce index requirements** | A query with two filters — or one filter on a collection group — passes every local test and returns `FAILED_PRECONDITION` on the first deployed call | M4's report queries, M5's run-ledger and sweep queries. Add the query, the index, and its row in [02-data-model.md](02-data-model.md#indexes) in one change |
+| **An OAuth *scope* failure reads exactly like a missing IAM *role*** | `403 … ACCESS_TOKEN_SCOPE_INSUFFICIENT` naming an IAM method, while the binding is present and correct. A client resolves ADC at the scope *it* needs, so a token borrowed from one API's client is rarely valid for another's | Any second Google API called with a client built for a different one — YouTube and Secret Manager at M4 |
+| **Credentials differ in *kind* between local and Cloud Run** | Impersonated credentials can sign for themselves; the metadata server's cannot. Code that works locally raises in production | Anything signing, minting tokens, or impersonating — Cloud Tasks OIDC at M5 |
+| **Model availability is per project *and* per location** | `NOT_FOUND` naming a model the design chose, with nothing before the first turn detecting it | Any model change, and `prod` when it exists |
+| **A stored ADK event is `snake_case`** | `Event` declares camelCase aliases, but `append_event` stores `model_dump()` with the default `by_alias=False`. A reader that assumes the aliases silently finds nothing | M3's tool chips and M4's report events, both read from stored events. [02-data-model.md](02-data-model.md#sessions--events-adk-owned-layout) states the shape; `session-event-vectors.json` pins it |
+| **A hand-written fixture can encode the same wrong assumption as the code** | Every test passes and the feature is broken | Anywhere a test fixture stands in for a shape this project does not define. Generate it instead — `gen_event_vectors.py`, `gen_ordering_vectors.py` |
+| **Constructing a Google client resolves credentials** | Every such constructor calls `google.auth.default()`, so building one while assembling the app makes the app unimportable without credentials. Locally `dev.sh` exports `FIRESTORE_EMULATOR_HOST` (anonymous Firestore client) and a dev machine usually has ADC, so it passes; CI has neither. It was fixed once for Firestore and *recurred immediately* for the two GCS clients, which only a deployed `ENV` reaches | Any client built in a constructor. `coach.core.lazy` defers them all; `tests/test_import_without_credentials.py` pins it for `local` **and** deployed settings, forcing the absence of credentials rather than relying on it |
+
+---
+
 ## M3 — The coach acts on the board (~1.5 weeks)
 
 - Domain tools (`add_task`, `split_task`, `set_task_state`, `set_next_up`, `reorder_task`,

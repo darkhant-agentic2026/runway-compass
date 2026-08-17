@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, status
 
-from coach.api.deps import CurrentUser, Projects, Tasks
+from coach.api.deps import CurrentUser, Projects, Sessions, Tasks
 from coach.api.idempotency import idempotency_guard
 from coach.api.schemas import (
     BoardResponse,
@@ -34,9 +34,17 @@ async def list_projects(
     dependencies=[Depends(idempotency_guard)],
 )
 async def create_project(
-    body: ProjectCreate, principal: CurrentUser, projects: Projects
+    body: ProjectCreate, principal: CurrentUser, projects: Projects, sessions: Sessions
 ) -> Project:
-    return await projects.create(principal, title=body.title, goal=body.goal)
+    """`{ title, goal? }` — creates project **and an intake session**.
+
+    The intake session is a session with `taskId: null` (docs/04-api-contract.md). The
+    Socratic conversation that fills it is M3; creating it here means a project made now
+    already has somewhere for that conversation to live.
+    """
+    project = await projects.create(principal, title=body.title, goal=body.goal)
+    await sessions.create_intake(principal, project.id)
+    return project
 
 
 @router.get("/{project_id}", response_model=Project)

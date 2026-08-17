@@ -17,6 +17,35 @@ step — see `docs/07-infra-deploy.md`.
 A permission prompt for one of those commands means the work has drifted out of scope. Stop
 and report rather than asking for approval.
 
+## Git: a branch per milestone, a commit once it is green
+
+**Start a new milestone or other major goal on a fresh local branch off `main`**, before the
+first edit rather than after the last one. Name it for the goal — `m2-sessions-streaming`,
+`m3-coach-acts-on-the-board`, `adk-2.8-bump`. Nothing lands directly on `main`.
+
+The reason is the shape of the work here: a milestone touches both apps, the Terraform, and
+`docs/`, and it is only meaningfully verifiable at the end, when the disconnect matrix or the
+golden flows run. A branch is what makes "this is half-finished" an ordinary state rather than
+a broken `main`, and what makes abandoning an approach cost nothing.
+
+**Commit only after the local gate passes, all of it:**
+
+```
+./scripts/dev.sh lint            # ruff --fix, ruff format, mypy, eslint --fix, tsc, terraform fmt
+./scripts/dev.sh test            # api, then web, then e2e
+```
+
+Run the gate *again* after any change made in response to it, including a change that only
+touches a comment or a doc — `dev.sh lint` rewrites files, so the tree that was green is not
+necessarily the tree about to be committed. If something is still red, do not commit and say
+so plainly; a red commit on a branch is not "saved work", it is a bisect trap.
+
+Commit in the milestone's own vocabulary — what changed and why it was decided that way, not a
+file list. Deviations from `docs/` belong in the roadmap's status section (see M0–M2 for the
+form), not only in the commit message, because that is where the next person looks.
+
+Pushing, opening a PR, and merging to `main` stay human steps. Ask before doing any of them.
+
 ## ADK: the installed source is the authority
 
 **Important: `google-adk` is pinned at `2.7.0`. Do not bump it unless absolutely
@@ -58,6 +87,13 @@ user's button calls.
 - **`ENV=local` accepts `Authorization: Bearer dev:<uid>`.** This is deliberate auth-bypass
   code standing in for an emulator that does not exist. Its test asserting the path is inert
   for every other `ENV` must never be deleted. `docs/04-api-contract.md`
+- **Two more test-only surfaces exist on the same terms**, each behind one `settings.is_local`
+  check with a named regression test for every other `ENV`: `MODEL_BACKEND=stub`, the
+  deterministic model the e2e harness runs against (`docs/07-infra-deploy.md`), and
+  `api/routers/local_storage.py`, which receives the signed-upload PUT so the upload path is
+  reachable from a browser at all (`docs/08-testing.md`). Both fail *silently* if the guard
+  goes: a revision serving canned answers looks perfectly healthy, and an unauthenticated
+  PUT endpoint is an open door.
 - **Auth is Cloud Identity Platform.** `firebase_admin` (Python) and `firebase/auth` (npm)
   are its client libraries — the same `identitytoolkit` service. Do not remove them as
   "leftovers" and do not introduce a Firebase project. `roles/firebaseauth.admin` is likewise
@@ -81,8 +117,72 @@ user's button calls.
   a resolution problem rather than a missing API.
 - **The Firestore emulator needs a JRE 21+**, and its floor rises with the Cloud SDK. Every
   backend test depends on the emulator. `docs/07-infra-deploy.md`
+- **A Zustand selector must never end in `?? []` or `?? {}`.** Zustand compares the
+  selector's result with `Object.is`, so a fresh literal is a new value on every render and
+  the component re-renders forever. React reports it as minified error #185 ("maximum
+  update depth exceeded"), which names the symptom and not the cause, and it only shows up
+  in a built bundle. Return a module-level frozen constant instead — see `NO_ATTACHMENTS`
+  in `stores/composer.ts` and `DEFAULT_FILTERS` in `stores/boardUi.ts`.
+- **Nothing in `ws/` may cancel generation.** `TurnRegistry` owns the task and a socket
+  closing is a subscriber leaving. If `TurnService.start` ever grows an `await` on the
+  generation task, or the task moves into a request handler's scope, the disconnect
+  guarantee is gone and every test in the matrix still passes — just more slowly.
+  `docs/04-api-contract.md#surviving-client-disconnects`
+
+## A green local gate is weaker evidence than it looks
+
+Seven of the nine defects fixed while closing M2 were invisible to a fully passing local
+run. The failure modes, what each looks like, and where each is likely to recur are
+tabulated in `docs/09-roadmap.md#what-a-green-local-run-does-not-prove`. **Read that
+table before writing anything that queries Firestore, calls a second Google API, or reads a
+stored ADK event** — M3 onwards does all three.
+
+Two working habits follow from it, and neither belongs in `docs/`:
+
+- **When a fixture stands in for a shape this project does not define, generate it.**
+  Hand-written fixtures encode the same assumption as the code they test, so both are wrong
+  together and the suite is green. `scripts/gen_event_vectors.py` and
+  `scripts/gen_ordering_vectors.py` are the pattern; add one rather than inventing a
+  payload.
+- **Prefer a test that pins a *decision* over one that pins a result** where the two
+  differ. A composite Firestore query and a single-field one return the same rows locally,
+  and only one of them works deployed; the same is true of a signed URL's arguments. In
+  those cases assert the call, not the output.
+
+## Reporting a deployed failure
+
+`docs/07-infra-deploy.md` covers the deploy itself and `infra/terraform/RUNBOOK.md#8-closing-the-m2-exit-criterion`
+the manual verification. What is worth knowing when something fails there:
+
+- Ask for the **server-side traceback**, not the browser's status code. Logs are JSON with
+  the traceback under `jsonPayload.exception`, so `gcloud run services logs read | grep` is
+  the wrong instrument — use
+  `gcloud logging read 'resource.type="cloud_run_revision" AND severity>=ERROR' --format='value(jsonPayload.exception)'`.
+- A 500 response now carries a `traceId` matching `gcloud logging read 'trace:"…"'`, so a
+  screenshot is enough to find the line.
+- Before proposing a fix from an error message, check the message is *about* what it names.
+  Two M2 diagnoses went the wrong way on this: a 403 naming an IAM method that was really an
+  OAuth scope, and a probe that 404'd for every input because the method it called did not
+  exist — which read as "no models are available".
 
 ## Commands
 
-`./scripts/dev.sh up | seed | tick | test [api|web|e2e] | lint` — see
-`docs/07-infra-deploy.md` for what each does and for the machine prerequisites.
+`./scripts/dev.sh up | seed | tick | test [api|web|e2e] | lint | doctor` — see
+`docs/07-infra-deploy.md` for what each does and for the machine prerequisites. Two more
+regenerate committed cross-language fixtures: `gen-ordering-vectors` and
+`gen-event-vectors`.
+
+**`dev.sh test api` is a *weaker* gate than CI in one respect**: it exports
+`FIRESTORE_EMULATOR_HOST` before pytest, so anything resolved at import time gets an
+anonymous Firestore client. CI has no such variable until a fixture starts the emulator,
+which is after collection. It also usually has ADC, which CI does not. Keep cloud-client construction out of
+constructors — `coach/core/lazy.py` explains why and
+`tests/test_import_without_credentials.py` pins it.
+
+**Reach for `dev.sh` before reaching for the underlying tool.** `dev.sh test api` starts the
+emulator and exports `ENV`, `GOOGLE_CLOUD_PROJECT`, and `FIRESTORE_EMULATOR_HOST` before
+calling `uv run pytest`; a bare `uv run pytest` gets none of that and fails against a missing
+emulator. Hand-rolling the environment inline — `ENV=local GOOGLE_CLOUD_PROJECT=… uv run
+pytest` — also stalls on a permission prompt, because allow-list rules match a literal prefix
+of the command string and the leading `VAR=value` assignments mean it no longer starts with
+`uv`. Pass extra arguments through instead: `./scripts/dev.sh test api -q -k session`.

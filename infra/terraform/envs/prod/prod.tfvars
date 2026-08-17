@@ -16,3 +16,17 @@ authorized_domains_urls = ["https://coach-api-REPLACE_ME.us-central1.run.app"]
 service_url_hint        = "https://coach-api-REPLACE_ME.us-central1.run.app"
 
 notification_channels = []
+
+# Deliberately unset, unlike dev, which pins `vertex_location = "global"` because
+# `gemini-3.7-flash` was not served in `us-central1` there (probed 2026-08-17).
+#
+# Do not copy that line across on faith. Two reasons:
+#
+# 1. Availability is per project and moves as models roll out, so re-run the probe in
+#    RUNBOOK.md section 8.5 against *this* project rather than inheriting dev's answer.
+# 2. `global` routes the request to any region Google chooses, which is a **data
+#    residency** decision rather than a configuration detail. Dev handles no real learner
+#    work; production does. If residency matters, the answer is a region that serves the
+#    model, not `global` — and if none does, the model choice itself has to change.
+#
+# vertex_location = "global"

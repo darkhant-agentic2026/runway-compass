@@ -15,8 +15,18 @@ import {
 
 import { ApiError, api, newIdempotencyKey } from '@/lib/api'
 import { orderForMove } from '@/lib/ordering'
-import type { GlobalPrefs, Project, ProjectPrefs, Task, TaskState, TaskWithSubtasks } from '@/lib/schemas'
+import type {
+  GlobalPrefs,
+  Project,
+  ProjectPrefs,
+  SessionEvent,
+  Task,
+  TaskState,
+  TaskWithSubtasks,
+} from '@/lib/schemas'
+import { getSocket } from '@/lib/socket'
 import type { BoardFilters } from '@/stores/boardUi'
+import { useStreamStore } from '@/stores/stream'
 
 export const queryKeys = {
   me: ['me'] as const,
@@ -26,6 +36,8 @@ export const queryKeys = {
   tasks: (projectId: string, filters: BoardFilters) =>
     ['tasks', projectId, filters] as const,
   task: (taskId: string) => ['task', taskId] as const,
+  taskSession: (taskId: string) => ['task', taskId, 'session'] as const,
+  sessionEvents: (sessionId: string) => ['session', sessionId, 'events'] as const,
 }
 
 export function createQueryClient(): QueryClient {
@@ -254,6 +266,140 @@ export function usePatchProject(projectId: string) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.effectivePrefs(projectId) })
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects })
     },
+  })
+}
+
+// --- sessions & turns -------------------------------------------------------------------
+
+export function useTaskSession(taskId: string) {
+  return useQuery({
+    queryKey: queryKeys.taskSession(taskId),
+    queryFn: () => api.openTaskSession(taskId),
+    // The session is created once and never changes, so re-opening the workspace should
+    // not re-POST. `staleTime: Infinity` is the honest expression of that.
+    staleTime: Infinity,
+    enabled: taskId.length > 0,
+  })
+}
+
+export function useTask(taskId: string) {
+  return useQuery({
+    queryKey: queryKeys.task(taskId),
+    queryFn: () => api.getTask(taskId),
+    enabled: taskId.length > 0,
+  })
+}
+
+/**
+ * The transcript.
+ *
+ * Paged by `seq`, following `nextAfterSeq` until the server says there is no more —
+ * which is also the shape `turn_complete` reuses, since a finished turn's finalized
+ * events are fetched rather than assembled from the stream (docs/06-frontend.md).
+ */
+export function useSessionEvents(sessionId: string) {
+  return useQuery({
+    queryKey: queryKeys.sessionEvents(sessionId),
+    enabled: sessionId.length > 0,
+    queryFn: async () => {
+      const collected: SessionEvent[] = []
+      let cursor = 0
+      for (;;) {
+        const page = await api.listSessionEvents(sessionId, cursor, 100)
+        collected.push(...page.events)
+        if (!page.hasMore || page.nextAfterSeq === cursor) break
+        cursor = page.nextAfterSeq
+      }
+      return collected
+    },
+  })
+}
+
+export interface StartTurnBody {
+  text: string
+  /** `filename` is used only by the optimistic echo; it is not sent to the server. */
+  attachments?: { uploadId: string; mimeType: string; filename?: string }[]
+}
+
+/**
+ * The synthetic event that stands in for a message the server has not stored yet.
+ *
+ * `seq` is one past the highest known, so it sorts last; the id is marked `pending:` so
+ * it cannot collide with an ADK event id.
+ */
+export function pendingUserEvent(existing: SessionEvent[], body: StartTurnBody): SessionEvent {
+  const parts: Record<string, unknown>[] = []
+  if (body.text) parts.push({ text: body.text })
+  for (const attachment of body.attachments ?? []) {
+    // `snake_case`, matching what `append_event` stores, so this echo and the event that
+    // replaces it are read by the same code path rather than two
+    // (`session-event-vectors.json` pins the stored shape).
+    parts.push({
+      file_data: {
+        mime_type: attachment.mimeType,
+        file_uri: '',
+        display_name: attachment.filename,
+      },
+    })
+  }
+  const highest = existing.reduce((max, event) => Math.max(max, event.seq), 0)
+  return {
+    seq: highest + 1,
+    eventId: `pending:${crypto.randomUUID()}`,
+    event: { author: 'user', content: { role: 'user', parts } },
+  }
+}
+
+/**
+ * Start a turn, echoing the user's message into the transcript immediately.
+ *
+ * Without the echo the message is invisible until the turn *completes*: ADK writes the
+ * user event during generation and the transcript is only refetched on `turn_complete`,
+ * so the sender watches "Your coach is thinking…" with no record of what they asked.
+ *
+ * An optimistic cache patch rather than a Zustand buffer, which is the shape
+ * docs/06-frontend.md prescribes for interactions that must feel instant — and here it
+ * also avoids a duplicate: the refetch on `turn_complete` replaces the whole array, so
+ * the synthetic event is swapped for the stored one in a single render. A parallel copy
+ * in the stream store would have to be torn down in a second step, and the frame in
+ * between would show the message twice.
+ */
+export function useStartTurn(sessionId: string) {
+  const queryClient = useQueryClient()
+  const key = queryKeys.sessionEvents(sessionId)
+
+  return useMutation<
+    Awaited<ReturnType<typeof api.startTurn>>,
+    Error,
+    StartTurnBody,
+    { previous: SessionEvent[] | undefined }
+  >({
+    mutationFn: (body) => api.startTurn(sessionId, body, newIdempotencyKey()),
+    onMutate(body) {
+      const previous = queryClient.getQueryData<SessionEvent[]>(key)
+      queryClient.setQueryData<SessionEvent[]>(key, (current) => [
+        ...(current ?? []),
+        pendingUserEvent(current ?? [], body),
+      ])
+      return { previous }
+    },
+    onError(_error, _body, context) {
+      // The message was never accepted, so it must not sit in the transcript looking as
+      // though it had been.
+      if (context?.previous) queryClient.setQueryData(key, context.previous)
+    },
+    onSuccess(turn) {
+      // Register the turn before any frame arrives, so a socket that reconnects in the
+      // gap between the 202 and the first delta still has something to resume.
+      useStreamStore.getState().begin(turn.turnId, turn.sessionId)
+      getSocket().subscribe(turn.turnId)
+    },
+  })
+}
+
+export function useCancelTurn(sessionId: string) {
+  return useMutation({
+    mutationFn: (turnId: string) => api.cancelTurn(sessionId, turnId),
   })
 }
 

@@ -520,6 +520,245 @@ Two other things that block the popup rather than letting it work:
 
 ---
 
+## 8. Closing the M2 exit criterion (HUMAN)
+
+M2's last exit criterion is *"a user can chat with the coach about an uploaded screenshot
+on the deployed dev environment"* ([docs/09-roadmap.md](../../docs/09-roadmap.md)). It
+cannot be closed locally, and not for want of tests: four things on that path have **no
+local equivalent at all**, so nothing before this point has ever executed them.
+
+| Unproven until this step | Why no test covers it |
+| --- | --- |
+| Vertex AI as the model backend | Local runs a scripted model, e2e runs `MODEL_BACKEND=stub` |
+| V4 signed upload URLs | Signing needs a real IAM SignBlob call; the local store returns a fake URL |
+| `GcsArtifactService` | Local uses `InMemoryArtifactService` |
+| Vertex resolving the `gs://` artifact URI a turn attaches | Needs all three of the above at once |
+
+Run steps 8.1–8.4 in order. **8.4 is the actual criterion** — the rest is getting a
+current image in front of you.
+
+### 8.1 Apply the M2 infrastructure settings
+
+The Cloud Run settings M2 depends on are in Terraform but are not live until applied.
+`cpu_idle = false` and `min_instances = 1` are correctness settings here, not tuning: a
+scaled-to-zero instance can be reaped mid-generation, and request-based CPU allocation
+throttles a detached generation task to near zero the moment its client disconnects.
+
+```bash
+cd infra/terraform/envs/dev
+terraform init -backend-config=backend.hcl      # no-op if already initialised
+terraform plan  -var-file=dev.tfvars
+terraform apply -var-file=dev.tfvars
+```
+
+**Read the plan before applying.** Expect changes to `google_cloud_run_v2_service.coach_api`
+only. If it proposes to replace the Firestore database, a bucket, or a service account,
+stop and send me the plan — that is drift or a state problem, not this change.
+
+Then confirm the four settings are actually live, rather than trusting the apply:
+
+```bash
+gcloud run services describe coach-api --region=us-central1 \
+  --format='yaml(spec.template.metadata.annotations, spec.template.spec.containerConcurrency, spec.template.spec.timeoutSeconds)'
+```
+
+Send me the output if anything below is missing:
+
+- `autoscaling.knative.dev/minScale: '1'`
+- `run.googleapis.com/cpu-throttling: 'false'`  ← this is `cpu_idle = false`
+- `run.googleapis.com/sessionAffinity: 'true'`
+- `timeoutSeconds: 3600`
+
+### 8.2 Deploy the M2 image
+
+The branch is `m2-sessions-streaming` and is **not** pushed. Pick one:
+
+**Either** merge it and let CI deploy (a push to `main` triggers `deploy-cloudrun.yml`,
+which builds, pushes, deploys with `--no-traffic --tag=candidate`, smoke-tests the
+candidate URL, and only then shifts traffic):
+
+```bash
+git push -u origin m2-sessions-streaming
+gh pr create --fill --base main
+# merge it, then watch:
+gh run watch
+```
+
+**Or** deploy the branch directly without merging, which is the better choice if you want
+to see it working before it reaches `main`:
+
+```bash
+cd infra/terraform/envs/dev
+# There is no `project_id` output; the tfvars file is the source of truth for it.
+PROJECT=$(grep -oP 'project_id\s*=\s*"\K[^"]+' dev.tfvars)
+API_KEY=$(terraform output -raw identity_api_key)
+AUTH_DOMAIN=$(terraform output -raw identity_auth_domain)
+cd ../../../..                                   # back to the repo root
+
+IMAGE="us-central1-docker.pkg.dev/$PROJECT/coach/coach-api:$(git rev-parse --short HEAD)"
+docker build \
+  --build-arg VITE_AUTH_MODE=identity-platform \
+  --build-arg VITE_IDENTITY_API_KEY="$API_KEY" \
+  --build-arg VITE_IDENTITY_AUTH_DOMAIN="$AUTH_DOMAIN" \
+  --build-arg VITE_IDENTITY_PROJECT_ID="$PROJECT" \
+  -t "$IMAGE" .
+docker push "$IMAGE"
+
+gcloud run deploy coach-api --region=us-central1 --image="$IMAGE" \
+  --no-traffic --tag=candidate
+./scripts/smoke.sh "$(./scripts/candidate_url.sh coach-api us-central1)"
+gcloud run services update-traffic coach-api --region=us-central1 --to-tags candidate=100
+```
+
+`VITE_AUTH_MODE=identity-platform` matters: a build without it ships the SPA in dev-auth
+mode, whose `dev:<uid>` tokens the server refuses for any `ENV` but `local`. The symptom is
+a sign-in screen that appears to work and an API that 401s everything.
+
+### 8.3 Confirm the deployed environment is not stubbed
+
+One command, because the failure it catches is silent — a revision serving canned answers
+replies, updates the board, and looks entirely healthy:
+
+```bash
+gcloud run services describe coach-api --region=us-central1 \
+  --format='value(spec.template.spec.containers[0].env)' | tr ',' '\n' | grep -iE 'MODEL_BACKEND|ENV|ARTIFACT_BUCKET|UPLOAD_BUCKET'
+```
+
+Expect `ENV=dev`, `MODEL_BACKEND=vertex`, and both buckets set. If `MODEL_BACKEND` is
+`stub` the container will refuse to boot (`Settings` rejects it for any non-`local` `ENV`),
+so you would see a failed revision rather than bad answers — but check anyway.
+
+### 8.4 The criterion itself
+
+1. Open the service URL and sign in with Google.
+2. Create a project, add a task, open it (click the task title on the board).
+3. Type a message and send it. **Expect streamed text**, arriving progressively.
+4. Attach a screenshot — drag it onto the composer, paste it, or use the paperclip — and
+   send a message asking about it, e.g. *"what do you make of this screenshot?"*
+5. The reply must show the coach has actually seen the image, not merely acknowledged a
+   file.
+6. **Then reload the page.** The whole conversation, including your attachment, must still
+   be there. This is the half that proves the events were durably written.
+7. **Then send a second message in the same session** (anything, e.g. *"say more"*). This
+   is the step that exercises the artifact fix: a session's history is replayed to the
+   model on every turn, so a broken attachment reference fails *here* rather than at
+   step 4.
+
+### 8.5 If a turn fails with `NOT_FOUND: Publisher model … was not found`
+
+The service is fine; the model name or its location is not. Vertex model availability is
+per project **and** per location, so a name that the design decided
+([docs/00-overview.md](../../docs/00-overview.md#model-configuration) picks
+`gemini-3.7-flash`) can still 404 here. Nothing catches this before a turn runs, because
+nothing calls the model until a user does.
+
+**Probe by making the call, not by looking the model up.** There is no `GET` on
+`projects/{p}/locations/{l}/publishers/google/models/{m}` — publisher models are only
+addressable under that path on `:generateContent`. A `GET` there returns 404 for every
+name, available or not, which reads exactly like "no models exist" and is worth nothing.
+Issue the real request instead; it is definitionally the right test, because it is what
+the app does.
+
+```bash
+PROJECT=$(gcloud config get-value project)
+TOKEN=$(gcloud auth print-access-token)
+
+# 0. Is the API on at all? Empty output here explains every 404 below.
+gcloud services list --enabled --filter=aiplatform --format='value(config.name)'
+
+# 1. The call the app makes, one token of output.
+probe() {
+  local LOC=$1 M=$2 HOST OUT CODE
+  HOST=$([ "$LOC" = global ] && echo aiplatform.googleapis.com || echo "$LOC-aiplatform.googleapis.com")
+  OUT=$(curl -s -w '\n%{http_code}' -X POST \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    "https://$HOST/v1/projects/$PROJECT/locations/$LOC/publishers/google/models/$M:generateContent" \
+    -d '{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":1}}')
+  CODE=$(tail -1 <<<"$OUT")
+  printf '%-12s %-22s %s\n' "$LOC" "$M" "$CODE"
+  [ "$CODE" = 200 ] || sed -n '1,8p' <<<"$OUT" | sed 's/^/    /'
+}
+
+for LOC in us-central1 global; do
+  for M in gemini-3.7-flash gemini-3-flash gemini-3-pro gemini-2.5-flash gemini-2.5-pro; do
+    probe "$LOC" "$M"
+  done
+done
+```
+
+Read the codes rather than only their presence:
+
+| Code | Meaning |
+| --- | --- |
+| `200` | Reachable. Usable as `model_name`. |
+| `404` | That name is not served to this project in this location. |
+| `403` | Entitlement or API problem, **not** the model name — check step 0 and the caller's roles. |
+| `401` | The token expired. `gcloud auth print-access-token` again. |
+
+**Whose credentials this uses matters.** `gcloud auth print-access-token` is *your* account;
+the service runs as `coach-api-sa`. They can differ. To test what the service will
+actually experience:
+
+```bash
+TOKEN=$(gcloud auth print-access-token \
+  --impersonate-service-account="coach-api-sa@$PROJECT.iam.gserviceaccount.com")
+```
+
+Send me the table with the error bodies. The choice of model is a cost-and-quality
+decision and a change to a value `docs/00-overview.md` decided, so it is yours to make
+rather than mine to guess.
+
+Applying whichever answer it gives, in `envs/dev/dev.tfvars`:
+
+```hcl
+# Only if a different name is reachable:
+model_name = "<the name that returned 200>"
+
+# Only if the name is reachable at `global` but not at us-central1:
+vertex_location = "global"
+```
+
+Then `terraform apply -var-file=dev.tfvars`. Both are plain environment variables on the
+Cloud Run service, so the apply is a new revision and needs no image rebuild — the
+running image is unchanged and CI still owns it.
+
+`vertex_location` defaults to `var.region` and exists precisely because the two need not
+agree: a new Gemini model is often reachable only on the `global` endpoint for a while
+after release, and before this variable the region served both purposes.
+
+### What to send me
+
+Whatever happened, plus these — they are what I would need to diagnose anything:
+
+```bash
+# The last 200 log lines, errors first
+gcloud run services logs read coach-api --region=us-central1 --limit=200 \
+  | grep -iE 'error|traceback|exception|refused|denied' || echo "no errors logged"
+
+# The turn documents this session wrote (status must be `complete`, not `running`)
+gcloud firestore documents list --collection-ids=turns --limit=5 2>/dev/null \
+  || echo "list unsupported on this gcloud; skip"
+```
+
+Known things that will bite, so you can tell a real failure from a configuration one:
+
+- **The upload PUT fails with a CORS error in the browser console.** The uploads bucket's
+  CORS origins come from `authorized_domains_urls` in `dev.tfvars`. If the service URL
+  there is stale, the signed PUT is blocked by the browser before it ever reaches GCS.
+  Fix the tfvar and re-apply (step 5 covers the same reconciliation for sign-in).
+- **The upload PUT returns 403 `SignatureDoesNotMatch` or the API 500s on
+  `POST /api/uploads`.** `coach-api-sa` needs `roles/iam.serviceAccountTokenCreator`
+  **on itself** to sign V4 URLs through IAM SignBlob. Terraform grants it
+  (`modules/identity/main.tf`), so this means the apply in 8.1 did not go through.
+- **The reply is text-only and never mentions the image.** That is the interesting
+  failure: it means Vertex did not resolve the `gs://` artifact URI. Send me the
+  `artifactUri` from the `uploads/{uploadId}` document and I will trace it.
+
+Once 8.4 passes, M2 is closed. Tell me and I will update the status section in
+[docs/09-roadmap.md](../../docs/09-roadmap.md) and mark the milestone met.
+
+---
+
 ## Teardown (dev only)
 
 ```bash

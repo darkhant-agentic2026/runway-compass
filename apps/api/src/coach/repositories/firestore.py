@@ -21,6 +21,7 @@ from google.api_core.exceptions import Aborted
 from google.cloud.firestore import AsyncClient, AsyncTransaction
 
 from coach.core.config import Settings
+from coach.core.lazy import LazyProxy
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,19 @@ def _client_for(project: str, database: str) -> AsyncClient:
 
 def get_client(settings: Settings) -> AsyncClient:
     return _client_for(settings.google_cloud_project, settings.firestore_database)
+
+
+class LazyAsyncClient(LazyProxy):
+    """A Firestore client that is not built until something asks it to do work.
+
+    `Database` gets this for free by exposing `client` as a property. Anything that has to
+    be *handed* a client — ADK's `FirestoreSessionService`, whose constructor takes one —
+    needs this instead. See `coach.core.lazy` for why deferring matters, and
+    `tests/test_import_without_credentials.py` for the invariant it protects.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        super().__init__(lambda: get_client(settings))
 
 
 class Database:

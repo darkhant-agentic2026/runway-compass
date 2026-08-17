@@ -9,6 +9,7 @@
 #   ./scripts/dev.sh lint                  ruff --fix, ruff format, eslint --fix, tsc
 #   ./scripts/dev.sh doctor                check the machine prerequisites
 #   ./scripts/dev.sh gen-ordering-vectors  regenerate the cross-language order-key vectors
+#   ./scripts/dev.sh gen-event-vectors     regenerate the stored-ADK-event vectors
 #
 set -euo pipefail
 
@@ -88,8 +89,11 @@ doctor() {
   check_gcloud
   echo
   bold "== Playwright browsers =="
-  echo "  Chromium is enough through M1. WebKit is first required at M2 and its"
-  echo "  --with-deps step needs sudo:  npx playwright install --with-deps webkit"
+  echo "  Chromium and WebKit are both required from M2: golden flow #4 (disconnect and"
+  echo "  resume) runs on chromium, mobile-chrome, webkit, and mobile-safari."
+  echo "  Install with:  npx playwright install --with-deps chromium webkit"
+  echo "  The --with-deps half needs sudo; the browser download itself does not, so a"
+  echo "  bump that needs new system libraries fails at launch rather than at install."
 }
 
 # ---------------------------------------------------------------------------------------
@@ -191,7 +195,7 @@ cmd_tick() {
 cmd_test() {
   local target="${1:-all}"
   case "$target" in
-    api) test_api ;;
+    api) test_api "$@" ;;
     web) test_web ;;
     e2e) test_e2e ;;
     all) test_api && test_web && test_e2e ;;
@@ -243,6 +247,15 @@ cmd_lint() {
   fi
 }
 
+cmd_gen_event_vectors() {
+  # `apps/web/src/lib/transcript.ts` reads a shape this project does not define — the
+  # serialized ADK `Event`, returned verbatim by GET /api/sessions/{sid}/events. This dumps
+  # real events from the Python side so the web tests replay an observed shape rather than
+  # an assumed one. Written after attachments silently vanished from reopened conversations
+  # because the fixtures said `fileData` and Firestore says `file_data`.
+  "$API_DIR/.venv/bin/python" "$REPO_ROOT/scripts/gen_event_vectors.py"
+}
+
 cmd_gen_ordering_vectors() {
   # The board's optimistic reorder is only correct while the Python and TypeScript
   # fractional-index implementations agree exactly. This regenerates the shared vectors
@@ -265,6 +278,7 @@ main() {
     lint) cmd_lint "$@" ;;
     doctor) doctor ;;
     gen-ordering-vectors) cmd_gen_ordering_vectors ;;
+    gen-event-vectors) cmd_gen_event_vectors ;;
     ''|-h|--help|help) usage ;;
     *) fail "Unknown command: $command"$'\n'"$(usage)" ;;
   esac

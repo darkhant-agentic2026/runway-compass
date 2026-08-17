@@ -4,10 +4,13 @@ An adaptive agentic coach that turns your technical goals into bite-sized tasks,
 the material for the next one while you're away, and adjusts how it guides you as it
 learns how you think.
 
-**Status:** M0 and M1 landed and deployed. A signed-in user reaches the board on a Cloud
-Run dev environment, and CI builds, tests, and deploys on merge. The design is in
-[`docs/`](docs/); [09-roadmap.md](docs/09-roadmap.md#status-after-m0-and-m1) records what
-is deferred and what M2 needs first.
+**Status:** M0–M2 landed and deployed. A signed-in user can work the board by hand and hold
+a streaming conversation with the coach about an uploaded screenshot on a Cloud Run dev
+environment; generation survives a dropped socket and resumes across instances. CI builds,
+tests, and deploys on merge. The design is in [`docs/`](docs/);
+[09-roadmap.md](docs/09-roadmap.md#status-after-m2) records what is deferred, what was
+decided during implementation, and the seven failure modes a fully green local test run
+did not catch.
 
 ## What it does
 
@@ -72,5 +75,12 @@ steps each environment needs before its first `terraform apply`.
 
 ## Next step
 
-M2 in [the roadmap](docs/09-roadmap.md): sessions, streaming, and the disconnect
-guarantee — the riskiest engineering in the project.
+**M3** in [the roadmap](docs/09-roadmap.md#m3--the-coach-acts-on-the-board-15-weeks): the
+coach acts on the board. Domain tools wrapping the service layer, Socratic project intake
+in the session `POST /api/projects` already opens, prompt assembly from the effective
+prefs, and tool-activity chips driving `board_update` invalidations.
+
+Read [Status after M2](docs/09-roadmap.md#status-after-m2) first — particularly
+[What a green local run does not prove](docs/09-roadmap.md#what-a-green-local-run-does-not-prove).
+M3 adds the first agent tools, and therefore the first queries and writes the emulator will
+happily accept and production will not.

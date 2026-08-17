@@ -53,7 +53,14 @@ services:
       FIRESTORE_EMULATOR_HOST: firestore:8080
       FIRESTORE_DATABASE: '(default)'
       ADK_FIRESTORE_ROOT_COLLECTION: adk-session
-      MODEL_BACKEND: vertex
+      # The deterministic stub, not a real backend: e2e must not depend on a GCP project
+      # or on model nondeterminism (docs/08-testing.md). `Settings` refuses this for any
+      # ENV other than `local`, so it cannot leak into a deployment.
+      MODEL_BACKEND: stub
+      # Golden flow #4 kills the socket mid-stream, so the stub has to still be streaming
+      # when it does. ~40 ms per word over a couple of dozen words is a comfortable
+      # window on a loaded CI runner without making the suite slow.
+      STUB_MODEL_DELAY_MS: '40'
       LOG_LEVEL: INFO
     ports:
       - '8080:8080'
