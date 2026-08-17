@@ -73,6 +73,12 @@ user's button calls.
   format.** Do not route it through Zustand `persist` — the envelope breaks the inline
   reader. `docs/06-frontend.md`
 - **Node 22**, matching the `node:22-slim` image pin.
+- **`typescript` is pinned to `6.0.3`, not 7.x, and that is deliberate.** TypeScript 7's
+  npm package exposes only `version` and `versionMajorMinor` — the JS compiler API is
+  gone — so `typescript-eslint` cannot parse anything and `npm run lint` covers no `.ts`
+  file at all. 6.0.3 is the last JS-based release. Re-check whether `typescript-eslint`
+  supports 7 before bumping; the failure mode is a peer-dependency error that looks like
+  a resolution problem rather than a missing API.
 - **The Firestore emulator needs a JRE 21+**, and its floor rises with the Cloud SDK. Every
   backend test depends on the emulator. `docs/07-infra-deploy.md`
 

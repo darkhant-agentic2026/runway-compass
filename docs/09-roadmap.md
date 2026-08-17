@@ -59,6 +59,45 @@ test suites green; the ADK tool-mixing question is answered and recorded.
 
 ---
 
+## Status after M0 and M1
+
+Both milestones are complete and deployed to `coach-dev`. What follows is the carry-over
+a later milestone needs, recorded here because it is not derivable from the code.
+
+**Met.** A signed-in user sees their email on the deployed dev URL; the SPA and API are
+served from one origin; the board works end to end by hand; `ci.yml` and
+`deploy-cloudrun.yml` both run green on merge to `main`. 189 backend tests, 105 web, 18
+Playwright specs.
+
+Playwright now runs on **four projects** — chromium, mobile-chrome, webkit, and
+mobile-safari — and all 18 specs pass on each. The M1 board, theme, and drag-and-drop are
+WebKit-clean before M2 starts, which is the point of installing it early.
+
+**Deliberately deferred, and the milestone that needs it:**
+
+| Item | Needed by | Note |
+| --- | --- | --- |
+| `min_instances` back to **1** in `envs/dev/dev.tfvars` | **M2** | Currently 0 to save idle cost. From M2 a scaled-to-zero instance can be reaped mid-generation, which is the failure the disconnect guarantee exists to prevent |
+| Nightly **Terraform plan** drift check | soon | CI cannot run `plan` — the deploy workflow has no state-bucket access by design ([07-infra-deploy.md](07-infra-deploy.md#ci-does-not-run-terraform)). Nothing currently detects infrastructure drift |
+| Nightly evalsets, live-API tests, real-auth test | M4–M6 | Specified in [08-testing.md](08-testing.md#ci-wiring), none implemented |
+| `prod` environment | before any release | No GCP project, no GitHub Environment. Note that environment protection rules need a paid plan on private repos ([RUNBOOK](../infra/terraform/RUNBOOK.md)) |
+| `terraform destroy` / from-scratch reproducibility | before relying on it | M0's other exit criterion, never exercised. `google_identity_platform_config` likely cannot be deleted, so a re-apply would need the import again |
+
+**Endpoints in the API contract that are not implemented yet**, all by milestone rather
+than oversight: the intake session created by `POST /api/projects` (M2), everything under
+sessions, turns, uploads, and runs (M2–M5), `PATCH /api/me/learner-profile`'s Settings UI
+(M6), and `DELETE /api/me` (M7).
+
+**Decisions made during implementation** that the design documents did not fix, each
+commented where it lives: the fractional index uses base-62 keys rather than a literal
+LexoRank string ([02-data-model.md](02-data-model.md#ordering) calls the format
+illustrative); `idempotency/*` and the `id` field on task documents were added to the
+collection map; shadcn's current registry builds on Base UI rather than Radix, so the
+theme control has `aria-pressed` toggle semantics rather than `radiogroup`
+([06-frontend.md](06-frontend.md#the-control) specifies the latter).
+
+---
+
 ## M2 — Sessions, streaming, and the disconnect guarantee (~2 weeks)
 
 The riskiest engineering in the project. Do it early, with a stub model.

@@ -37,15 +37,16 @@ export default defineConfig({
       name: 'mobile-chrome',
       use: { ...devices['Pixel 7'] },
     },
-    // --- M2 -----------------------------------------------------------------------
     // WebKit is not optional coverage: on iOS every browser is WebKit and the board has
-    // explicit mobile requirements, and the disconnect guarantee depends on socket
-    // teardown, background-tab throttling, page lifecycle, and `visibilitychange` —
-    // all four of which Safari has historically differed from Chromium on.
+    // explicit mobile requirements, and the disconnect guarantee that arrives at M2
+    // depends on socket teardown, background-tab throttling, page lifecycle, and
+    // `visibilitychange` — all four of which Safari has historically differed from
+    // Chromium on (docs/08-testing.md).
     //
-    //   npx playwright install --with-deps webkit
-    //
-    // { name: 'webkit', use: { ...devices['Desktop Safari'] } },
-    // { name: 'mobile-safari', use: { ...devices['iPhone 14'] } },
+    // Installed with `npx playwright install --with-deps webkit`; the `--with-deps` half
+    // needs root, so a machine without it will fail at launch with a missing shared
+    // object rather than at install time.
+    { name: 'webkit', use: { ...devices['Desktop Safari'] } },
+    { name: 'mobile-safari', use: { ...devices['iPhone 14'] } },
   ],
 })

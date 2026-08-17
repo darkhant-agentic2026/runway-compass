@@ -17,12 +17,12 @@ service_url_hint        = "https://coach-api-pwh2ad5axa-uc.a.run.app"
 
 notification_channels = []
 
-# Cost control during M1: with no instance held warm, an idle dev environment bills
-# essentially nothing. `cpu_idle = false` still applies to instances while they exist, so
-# what this trades away is the warm instance, not CPU allocation — expect a cold start of
-# a few seconds on the first request after a quiet period.
+# At the design value of 1 from M2 onward, and this is a correctness setting rather than a
+# cost one: a scaled-to-zero instance can be reaped in the middle of a detached generation
+# task, which is the exact failure the disconnect guarantee exists to prevent
+# (docs/04-api-contract.md#surviving-client-disconnects). It surfaces as an occasional
+# lost stream, which is a miserable thing to trace back to a scaling number.
 #
-# MUST GO BACK TO 1 BEFORE M2. From there a scaled-to-zero instance can be reaped in the
-# middle of a detached generation task, which is the exact failure the disconnect
-# guarantee exists to prevent (docs/04-api-contract.md#surviving-client-disconnects).
-min_instances = 0
+# It was 0 through M1, when there was no streaming to lose and an idle environment billed
+# essentially nothing. That trade is no longer available.
+min_instances = 1

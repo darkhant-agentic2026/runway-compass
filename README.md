@@ -4,9 +4,10 @@ An adaptive agentic coach that turns your technical goals into bite-sized tasks,
 the material for the next one while you're away, and adjusts how it guides you as it
 learns how you think.
 
-**Status:** M0 (local scope) and M1 landed. Both apps build and test; the task board works
-end to end as a plain CRUD app. The design is in [`docs/`](docs/); see
-[09-roadmap.md](docs/09-roadmap.md) for what is next.
+**Status:** M0 and M1 landed and deployed. A signed-in user reaches the board on a Cloud
+Run dev environment, and CI builds, tests, and deploys on merge. The design is in
+[`docs/`](docs/); [09-roadmap.md](docs/09-roadmap.md#status-after-m0-and-m1) records what
+is deferred and what M2 needs first.
 
 ## What it does
 

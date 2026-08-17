@@ -365,7 +365,7 @@ Depending on `google-adk[extensions]` instead would work but would also pull the
 extra, and would leave the version of the one package this project subclasses against being
 chosen by someone else's range. An explicit `==` pin is the smaller surface.
 
-**Playwright browsers.** Chromium is enough through M1. WebKit is first needed at **M2**,
+**Playwright browsers.** Chromium and WebKit are both installed and both run in CI. Chromium alone was enough through M1. WebKit is first needed at **M2**,
 where golden flow #4 (disconnect and resume) becomes an exit criterion. Install it with
 `npx playwright install --with-deps webkit`; the `--with-deps` step needs sudo, so it is
 worth doing at the same time as the JRE rather than hitting a privilege prompt mid-milestone.
