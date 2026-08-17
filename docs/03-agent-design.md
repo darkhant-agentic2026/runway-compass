@@ -125,6 +125,7 @@ What to re-verify against the newly installed source, and re-test:
 | `Runner` streaming event shape | Feeds delta `seq` assignment, checkpointing, and the resume path | `ws/`, `services/` |
 | `GcsArtifactService(bucket_name, **kwargs)` construction, `types.Part` file references | Upload and multimodal path | `integrations/` |
 | Tool and callback signatures | The tool catalogue below | `agents/` |
+| `_convert_tool_union_to_tools` / `canonical_tools` built-in-tool wrapping | Decides whether `google_search` may sit beside function tools. If a bump lifts the Gemini restriction, the explicit `search_agent` hop becomes deletable ([M1 spike result](#m1-spike-result-resolved-against-the-installed-270-source)) | `agents/` |
 
 **Order of work:** install the new version, run the contract suite
 ([08-testing.md](08-testing.md)) — identical tests against `InMemorySessionService` and ours,
@@ -187,9 +188,39 @@ right for v1, but both are real.
 
 ADK/Gemini restricts mixing built-in tools (like `google_search`) with custom function
 tools in a single agent. The standard workaround is to isolate the built-in tool in its
-own `LlmAgent` and expose it to the parent via `AgentTool`. **Validate this constraint in
-M1 against the pinned ADK version** — if the restriction has been lifted for Gemini 3.x,
-collapse the two agents and delete a hop. The rest of the design is unaffected either way.
+own `LlmAgent` and expose it to the parent via `AgentTool`.
+
+#### M1 spike result (resolved against the installed 2.7.0 source)
+
+The M1 spike ([09-roadmap.md](09-roadmap.md#m1--domain-core-no-agent-15-weeks)) asked
+whether the built-in `google_search` tool can be combined with custom function tools in a
+single agent. Answer, read out of
+`.venv/lib/python3.12/site-packages/google/adk/agents/llm_agent.py`:
+
+- `LlmAgent.canonical_tools` (~line 757) computes `multiple_tools = len(self.tools) > 1`
+  and passes it to `_convert_tool_union_to_tools` (~line 139).
+- That function wraps a `GoogleSearchTool` into `GoogleSearchAgentTool(create_google_search_agent(model))`
+  — i.e. builds the search-agent hop for you — but **only** when `multiple_tools` is true
+  *and* `GoogleSearchTool.bypass_multi_tools_limit` is true. That flag defaults to `False`
+  (`tools/google_search_tool.py`, line 42), so nothing happens implicitly.
+
+So the **Gemini-level restriction still holds**. ADK has not lifted it; it has shipped, as
+an opt-in workaround, exactly the isolate-in-a-sub-agent hop this document already
+describes by hand. The two options are therefore behaviourally the same shape:
+
+| Option | What it means | Cost |
+| --- | --- | --- |
+| **A — explicit `search_agent` (chosen)** | Keep the `search_agent` `LlmAgent` and expose it to `research_agent` as an `AgentTool`, as drawn in the graph above | One hop, authored by us, visible in the agent graph and in traces |
+| B — `GoogleSearchTool(bypass_multi_tools_limit=True)` | Put `google_search` directly in `research_agent`'s tool list and let ADK generate the wrapper | Same hop, generated; depends on an internal wrapping rule and a non-default flag |
+
+**Decision: A.** The hop is not avoidable either way, so the only thing on the table is who
+writes it. Option B moves a load-bearing behaviour inside ADK internals that the pin
+already makes us cautious about, and buys nothing at runtime. Option A keeps the sub-agent's
+model, instruction, and `thinking_level` under our control, which matters because
+`create_google_search_agent` picks those for us.
+
+Either option is compatible with the rest of the design; switching later is a local change
+in `agents/`. Add a row to the bump checklist below for whichever is in force.
 
 ### `coach_agent`
 

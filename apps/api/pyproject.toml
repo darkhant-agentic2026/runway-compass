@@ -1,0 +1,106 @@
+[project]
+name = "coach-api"
+version = "0.1.0"
+description = "Self-Study Coach API — FastAPI service, SPA host, and (from M2) ADK runner."
+requires-python = "==3.12.*"
+
+# Every dependency is pinned exactly; uv.lock is committed. See
+# docs/07-infra-deploy.md#python-dependency-pins-that-are-not-routine for the three
+# pins that carry a reason beyond reproducibility.
+dependencies = [
+    "fastapi==0.141.1",
+    "uvicorn[standard]==0.52.3",
+    "pydantic==2.13.4",
+    "pydantic-settings==2.15.0",
+    # Deliberately pinned: adk_firestore/ subclasses the shipped Firestore services, so
+    # the coupling is to their internals. docs/03-agent-design.md#bumping-the-adk-version
+    "google-adk==2.7.0",
+    # NOT a transitive dependency of google-adk — it is only in that package's `all`,
+    # `extensions`, and `test` extras. Without this line the
+    # google.adk.integrations.firestore.* imports raise ImportError.
+    "google-cloud-firestore==2.28.1",
+    # The Admin SDK for Cloud Identity Platform (`identitytoolkit`). Not a Firebase
+    # project artifact. docs/04-api-contract.md#authentication
+    "firebase-admin==7.5.0",
+    "httpx==0.28.1",
+    "python-ulid==4.0.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pytest-httpx==0.36.2",
+    "hypothesis==6.165.9",
+    "freezegun==1.5.5",
+    "ruff==0.16.3",
+    "mypy==2.3.1",
+    "coverage==7.15.4",
+    "asgi-lifespan==2.1.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/coach"]
+
+[tool.ruff]
+line-length = 96
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",   # pycodestyle, pyflakes
+    "I",             # isort
+    "UP",            # pyupgrade
+    "B",             # bugbear
+    "SIM",           # simplify
+    "TID",           # tidy imports
+    "RUF",
+]
+ignore = [
+    "B008",  # FastAPI's Depends() in defaults is the framework's idiom
+]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "parents"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+packages = ["coach"]
+warn_unreachable = true
+disallow_any_generics = true
+# google.adk and firebase_admin ship incomplete/absent stubs.
+[[tool.mypy.overrides]]
+module = ["google.adk.*", "firebase_admin.*", "google.cloud.*", "ulid.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# One event loop for the whole session, matching production: a single uvicorn worker
+# with a single loop. The Firestore AsyncClient holds a gRPC channel bound to the loop
+# it was built on and is cached per (project, database), so a loop-per-test would leave
+# every test after the first talking to a channel whose loop is closed.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+filterwarnings = ["error::DeprecationWarning:coach.*"]
+markers = [
+    "emulator: test requires the gcloud Firestore emulator",
+]
+
+[tool.coverage.run]
+source = ["src/coach"]
+branch = true
+
+[tool.coverage.report]
+# docs/08-testing.md: 85 % on services/, repositories/, adk_firestore/, ws/.
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]
