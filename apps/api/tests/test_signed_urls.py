@@ -73,16 +73,23 @@ class _ComputeCredentials:
             self.service_account_email = "coach-api-sa@dev.iam.gserviceaccount.com"
 
 
-def _store(credentials: Any, blob: _Blob) -> GcsObjectStore:
+def _store(
+    credentials: Any, blob: _Blob, *, signing_credentials: Any | None = None
+) -> GcsObjectStore:
     """A `GcsObjectStore` with no GCS behind it.
 
     Built with `__new__` because the constructor makes a `storage.Client()`, which
     resolves credentials — the very thing under test.
+
+    `credentials` is what the storage client holds; `signing_credentials` is the
+    separately resolved `cloud-platform` identity the IAM path uses. They are distinct on
+    purpose: conflating them is the bug these tests exist for.
     """
     store = GcsObjectStore.__new__(GcsObjectStore)
     store._bucket_name = "coach-dev-coach-uploads"
     store._client = type("_Client", (), {"_credentials": credentials})()
     store._bucket = type("_Bucket", (), {"blob": staticmethod(lambda _name: blob)})()
+    store._signing_credentials = signing_credentials if signing_credentials else credentials
     return store
 
 
@@ -115,6 +122,51 @@ async def test_compute_credentials_sign_through_iam() -> None:
 
     assert blob.kwargs["service_account_email"] == credentials.service_account_email
     assert blob.kwargs["access_token"] == "metadata-token"
+
+
+async def test_signing_asks_for_cloud_platform_scope_not_the_client_s_token() -> None:
+    """The token handed to IAM must not be the storage client's.
+
+    `storage.Client()` resolves ADC scoped to storage. IAM `signBlob` lives on
+    `iamcredentials.googleapis.com` and refuses anything narrower than `cloud-platform`
+    with:
+
+        403 ACCESS_TOKEN_SCOPE_INSUFFICIENT
+        method: google.iam.credentials.v1.IAMCredentials.SignBlob
+
+    which reads like the missing role and is not — that binding can be present and
+    correct while the token is still refused. This is the assertion that keeps the two
+    credentials apart, and it is checkable nowhere else: locally the self-signing branch
+    is taken and the IAM path never runs.
+    """
+    import google.auth
+
+    from coach.integrations.storage import GcsObjectStore as Store
+
+    storage_scoped = _ComputeCredentials(email="storage-scoped@dev.iam.gserviceaccount.com")
+    storage_scoped.token = "storage-scoped-token"
+    platform_scoped = _ComputeCredentials()
+    platform_scoped.token = "cloud-platform-token"
+
+    requested: list[list[str]] = []
+
+    def _default(*, scopes: list[str] | None = None, **_kwargs: Any) -> tuple[Any, str]:
+        requested.append(list(scopes or []))
+        return platform_scoped, "coach-dev"
+
+    blob = _Blob()
+    store = _store(storage_scoped, blob)
+    store._signing_credentials = None  # force resolution through `google.auth.default`
+    original = google.auth.default
+    google.auth.default = _default  # type: ignore[assignment]
+    try:
+        await store.signed_put_url("o", mime_type="image/png")
+    finally:
+        google.auth.default = original  # type: ignore[assignment]
+
+    assert requested == [list(Store.SIGNING_SCOPES)]
+    assert "cloud-platform" in Store.SIGNING_SCOPES[0]
+    assert blob.kwargs["access_token"] == "cloud-platform-token"
 
 
 async def test_the_signed_url_is_a_v4_put_bound_to_the_content_type() -> None:

@@ -27,6 +27,7 @@ from coach.api.idempotency import IdempotencyMiddleware, ReplayedResponse
 from coach.api.routers import health, me, projects, sessions, tasks, uploads, ws
 from coach.core.config import Settings, get_settings
 from coach.core.errors import PROBLEM_CONTENT_TYPE, CoachError
+from coach.core.ids import trace_id as new_trace_id
 from coach.core.logging import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,20 @@ STATIC_DIR = Path("static")
 # `/livez` rather than `/healthz`: Google's frontend intercepts the latter on Cloud
 # Run and never forwards it (coach.api.routers.health).
 API_PREFIXES = ("/api", "/ws", "/internal", "/livez", "/readyz")
+
+
+def _trace_id(request: Request) -> str:
+    """Cloud Run's own trace id when it is there, otherwise one of ours.
+
+    The platform sets `X-Cloud-Trace-Context: TRACE_ID/SPAN_ID;o=1`, and the leading
+    segment is what `gcloud logging read 'trace:"…"'` matches — so echoing it turns a
+    user's screenshot into a log query. Off Cloud Run there is no such header, and a
+    generated id is still better than none: it appears in both the response and the log
+    line, which is all the correlation this needs.
+    """
+    header = request.headers.get("X-Cloud-Trace-Context", "")
+    platform_id = header.split("/", 1)[0].strip()
+    return platform_id or new_trace_id()
 
 
 def _problem_response(request: Request, error: CoachError) -> JSONResponse:
@@ -119,6 +134,51 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             status_code=exc.stored.status_code,
             content=exc.stored.body,
             headers={REPLAY_HEADER: "true"},
+        )
+
+    @app.exception_handler(Exception)
+    async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
+        """Render an *unplanned* failure as `problem+json`, like every planned one.
+
+        Without this, a bug is the only thing in the system that answers with a bare
+        `Internal Server Error` in `text/plain`. The client's error parser expects a
+        problem document, falls back to the HTTP status text, and shows the user
+        "request failed" — while a perfectly good traceback sits in the logs, unlinked to
+        the request that produced it. That gap cost a full diagnosis round on a 403 from
+        IAM signBlob: the UI could say nothing except that something had gone wrong.
+
+        `traceId` is the fix for the linking half. On Cloud Run the platform's own trace
+        id is in the request, so quoting it back means a support report can be turned
+        into `gcloud logging read 'trace:"…"'` directly.
+
+        `detail` carries the exception outside production, because in `local` and `dev`
+        the person reading the toast is the person fixing the bug. In `prod` it is a
+        fixed string: an exception message can carry a bucket name, a query, or a row of
+        data, and none of that belongs in a browser. M7's error-handling pass owns the
+        wider question of retryability and user-facing wording
+        (docs/09-roadmap.md#m7--hardening-and-launch-readiness-15-weeks).
+        """
+        trace_id = _trace_id(request)
+        logger.exception(
+            "unhandled exception", extra={"trace_id": trace_id, "path": request.url.path}
+        )
+        settings: Settings = request.app.state.settings
+        detail = (
+            "Something went wrong on our side. Quote the trace id if you report this."
+            if settings.env == "prod"
+            else f"{type(exc).__name__}: {exc}"
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "type": "/problems/internal-error",
+                "title": "Internal Server Error",
+                "status": 500,
+                "detail": detail,
+                "instance": request.url.path,
+                "traceId": trace_id,
+            },
+            media_type=PROBLEM_CONTENT_TYPE,
         )
 
     @app.exception_handler(RequestValidationError)

@@ -87,7 +87,25 @@ class GcsObjectStore:
     Passing `service_account_email` **and** `access_token` switches
     `google-cloud-storage` to signing through the IAM `signBlob` API, which is what that
     binding grants and what keeps the no-service-account-keys rule intact.
+
+    ## …and why the token cannot be the storage client's
+
+    `storage.Client()` resolves ADC **scoped to storage**. Handing that token to
+    `iamcredentials.googleapis.com` gets:
+
+        403 ACCESS_TOKEN_SCOPE_INSUFFICIENT
+        method: google.iam.credentials.v1.IAMCredentials.SignBlob
+
+    which is easy to misread as the missing IAM binding, because it is a 403 mentioning
+    IAM. It is not: the binding can be present and correct — the *token* is simply not
+    allowed to exercise it. Signing therefore resolves its own credentials at
+    `cloud-platform` scope rather than reusing the client's.
     """
+
+    #: `signBlob` is an `iamcredentials` method, and that API is only reachable with a
+    #: `cloud-platform` token. Narrower storage scopes are refused, and the refusal names
+    #: the *scope*, not the role.
+    SIGNING_SCOPES = ("https://www.googleapis.com/auth/cloud-platform",)
 
     def __init__(self, bucket_name: str) -> None:
         # `google.cloud` is a namespace package, so mypy cannot see the attribute even
@@ -97,6 +115,10 @@ class GcsObjectStore:
         self._bucket_name = bucket_name
         self._client = storage.Client()
         self._bucket = self._client.bucket(bucket_name)
+        #: Resolved on first use and reused. `google-auth` caches the token internally
+        #: and only talks to the metadata server when it has expired, so this is one
+        #: object rather than one round-trip per upload.
+        self._signing_credentials: Any | None = None
 
     @property
     def bucket(self) -> str:
@@ -116,21 +138,32 @@ class GcsObjectStore:
             "content_type": mime_type,
         }
 
-        credentials = self._client._credentials
-        if getattr(credentials, "signer_email", None) and hasattr(credentials, "sign_bytes"):
+        client_credentials = self._client._credentials
+        if getattr(client_credentials, "signer_email", None) and hasattr(
+            client_credentials, "sign_bytes"
+        ):
             # A key or an impersonated identity: it can sign for itself.
             return str(blob.generate_signed_url(**options))
 
-        email, token = self._iam_signer(credentials)
+        email, token = self._iam_signer()
         return str(
             blob.generate_signed_url(**options, service_account_email=email, access_token=token)
         )
 
-    @staticmethod
-    def _iam_signer(credentials: Any) -> tuple[str, str]:
-        """The `(service account, access token)` pair the IAM signing path needs."""
+    def _iam_signer(self) -> tuple[str, str]:
+        """The `(service account, access token)` pair the IAM signing path needs.
+
+        Deliberately *not* the storage client's credentials — see the class docstring.
+        """
+        import google.auth
         from google.auth.transport.requests import Request
 
+        if self._signing_credentials is None:
+            self._signing_credentials, _project = google.auth.default(
+                scopes=list(self.SIGNING_SCOPES)
+            )
+
+        credentials = self._signing_credentials
         request = Request()
         if not credentials.valid:
             credentials.refresh(request)

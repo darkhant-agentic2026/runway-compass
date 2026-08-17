@@ -40,6 +40,16 @@ def upload_id() -> str:
     return _new("up")
 
 
+def trace_id() -> str:
+    """Correlates a 500 the user can see with the log line that explains it.
+
+    Only used off Cloud Run, where the platform supplies its own trace id
+    (`coach.main._trace_id`). Time-sortable, which is exactly what is wanted when the
+    only other thing known about an incident is roughly when it happened.
+    """
+    return _new("tr")
+
+
 def ticket_id() -> str:
     """A single-use, 60-second WebSocket ticket.
 

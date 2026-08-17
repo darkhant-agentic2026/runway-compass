@@ -124,6 +124,12 @@ user's button calls.
   `docs/02-data-model.md#indexes` in one change, or add the extra filter in Python
   instead — see `CoachSessionService.find_session_id_for_task`, which does the latter and
   has a test pinning its filter count.
+- **An OAuth *scope* failure looks exactly like a missing IAM *role*.** IAM `signBlob`
+  answers a storage-scoped token with `403 … ACCESS_TOKEN_SCOPE_INSUFFICIENT`, which
+  reads as "the service account lacks permission" and is not — the binding can be
+  present and correct. A client resolves ADC at whatever scope *it* needs, so a token
+  borrowed from one API's client is rarely valid for another's. Resolve credentials for
+  the call being made: `GcsObjectStore.SIGNING_SCOPES`.
 - **A Zustand selector must never end in `?? []` or `?? {}`.** Zustand compares the
   selector's result with `Object.is`, so a fresh literal is a new value on every render and
   the component re-renders forever. React reports it as minified error #185 ("maximum

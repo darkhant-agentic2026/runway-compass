@@ -218,6 +218,24 @@ tests, which is why neither showed up as a failure:
   composer strip rather than the chat pane, and `google-cloud-storage` was undeclared —
   imported directly but arriving as a transitive of `firebase-admin`, the same situation
   `google-cloud-firestore` is pinned for.
+- **…and then IAM `signBlob` refused the token: `ACCESS_TOKEN_SCOPE_INSUFFICIENT`.** The
+  fix above reused the *storage client's* credentials for the IAM call, and
+  `storage.Client()` resolves ADC scoped to storage. `iamcredentials.googleapis.com`
+  accepts nothing narrower than `cloud-platform`. The 403 names IAM and reads exactly
+  like the missing `serviceAccountTokenCreator` binding — but that binding was present
+  and correct; the token simply was not allowed to exercise it. Signing now resolves its
+  own `cloud-platform`-scoped credentials rather than borrowing the client's.
+- **A bug was the only thing in the service that did not answer in `problem+json`.**
+  Starlette's default 500 is `text/plain`, so the client's parser fell back to the HTTP
+  status text and every unhandled failure reached the user as "request failed" — while a
+  complete traceback sat in the logs with nothing tying it to the request. That is what
+  turned the two upload failures above into three round trips. There is now a global
+  handler returning a problem document with a `traceId`, taken from Cloud Run's
+  `X-Cloud-Trace-Context` when present so the id in the response is the one
+  `gcloud logging read 'trace:"…"'` matches. `detail` names the exception outside
+  production and is a fixed string in it, since an exception message can carry a bucket
+  name, a query, or a row of user data. The rest of M7's error-handling pass —
+  retryability, wording, empty states — is still M7's.
 - **`gemini-3.7-flash` is served to `coach-dev` on the `global` endpoint, not in
   `us-central1`.** Every turn failed with `NOT_FOUND` naming the model. The model choice
   in [00-overview.md](00-overview.md#model-configuration) is unchanged and correct — the
