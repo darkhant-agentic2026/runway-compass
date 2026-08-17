@@ -115,6 +115,15 @@ user's button calls.
   a resolution problem rather than a missing API.
 - **The Firestore emulator needs a JRE 21+**, and its floor rises with the Cloud SDK. Every
   backend test depends on the emulator. `docs/07-infra-deploy.md`
+- **The emulator does not enforce index requirements; real Firestore does.** Any query
+  filtering or ordering on more than one field needs an explicit `google_firestore_index`
+  in `infra/terraform/modules/firestore/main.tf`, and any *collection-group* query needs
+  one even for a single field — automatic single-field indexes are `COLLECTION`-scoped
+  only. Without it the query passes every local test and returns `FAILED_PRECONDITION`
+  the first time it runs deployed. Add the query, the index, and its row in
+  `docs/02-data-model.md#indexes` in one change, or add the extra filter in Python
+  instead — see `CoachSessionService.find_session_id_for_task`, which does the latter and
+  has a test pinning its filter count.
 - **A Zustand selector must never end in `?? []` or `?? {}`.** Zustand compares the
   selector's result with `Object.is`, so a fresh literal is a new value on every render and
   the component re-renders forever. React reports it as minified error #185 ("maximum

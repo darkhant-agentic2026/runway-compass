@@ -240,6 +240,47 @@ async def test_get_linkage_returns_none_for_an_unknown_session(
     assert await sessions.get_linkage(app_name=APP, user_id=USER, session_id="nope") is None
 
 
+async def test_the_session_by_task_query_filters_on_exactly_one_field(
+    sessions: CoachSessionService,
+) -> None:
+    """The declared index is single-field; a second `where` needs one nobody declared.
+
+    This asserts the shape of the query rather than its result, which is unusual and is
+    the point. The emulator does not enforce index requirements, so a composite
+    collection-group query passes every functional test here and then fails in a deployed
+    environment with `FAILED_PRECONDITION` — which is exactly how this reached a real
+    Cloud Run revision once already. The result-level tests below cannot see it; only the
+    filter count can.
+
+    The index is `google_firestore_field.sessions_task_id` in
+    `infra/terraform/modules/firestore/main.tf`, `COLLECTION_GROUP` scope, one field. If
+    a filter genuinely has to be added here, add the composite index in the same change —
+    and a row to docs/02-data-model.md#indexes — rather than relaxing this test.
+    """
+    captured: list[object] = []
+
+    class _Recorder:
+        def where(self, *, filter: object) -> _Recorder:
+            captured.append(filter)
+            return self
+
+        def limit(self, _count: int) -> _Recorder:
+            return self
+
+        async def stream(self):  # type: ignore[no-untyped-def]
+            return
+            yield  # pragma: no cover - makes this an async generator
+
+    original = sessions.client.collection_group
+    sessions.client.collection_group = lambda _name: _Recorder()  # type: ignore[method-assign]
+    try:
+        await sessions.find_session_id_for_task(app_name=APP, task_id="k_1")
+    finally:
+        sessions.client.collection_group = original  # type: ignore[method-assign]
+
+    assert len(captured) == 1
+
+
 async def test_find_session_id_for_task(sessions: CoachSessionService) -> None:
     await sessions.create_session(
         app_name=APP, user_id=USER, session_id="s_1", project_id="p_1", task_id="k_1"

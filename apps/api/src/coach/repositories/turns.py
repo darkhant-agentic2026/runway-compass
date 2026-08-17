@@ -12,11 +12,10 @@ append-shaped changes, so there is nothing to contend on. The one exception is
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 from google.cloud.firestore_v1 import ArrayUnion
-from google.cloud.firestore_v1.base_query import FieldFilter
 
 from coach.core.clock import now
 from coach.repositories.firestore import TURNS, Database
@@ -176,38 +175,17 @@ class TurnRepository:
             updates["error"] = error.to_document()
         await self._doc(turn_id).update(updates)
 
-    async def list_running_for_instance(self, instance_id: str) -> list[Turn]:
-        """Turns this instance still owns — the drain's worklist on `SIGTERM`."""
-        query = (
-            self._db.client.collection(TURNS)
-            .where(filter=FieldFilter("instanceId", "==", instance_id))
-            .where(filter=FieldFilter("status", "==", TurnStatus.RUNNING.value))
-        )
-        return [_to_turn(document) async for document in query.stream()]
-
-    async def expire_stale(self, before: datetime | None = None) -> list[str]:
-        """Turns whose lease ran out while `running` — an instance died mid-generation.
-
-        Marked `failed, retryable` so the client surfaces a retry affordance rather than
-        spinning on a stream that will never produce another byte. The M5 ledger sweep
-        calls this; `/readyz` deliberately does not, since a probe must not write.
-        """
-        cutoff = before or now()
-        query = (
-            self._db.client.collection(TURNS)
-            .where(filter=FieldFilter("status", "==", TurnStatus.RUNNING.value))
-            .where(filter=FieldFilter("leaseExpiresAt", "<", cutoff))
-        )
-        expired: list[str] = []
-        async for document in query.stream():
-            expired.append(document.id)
-            await self.finish(
-                document.id,
-                TurnStatus.FAILED,
-                error=TurnError(
-                    code="instance-lost",
-                    message="The instance generating this turn stopped responding.",
-                    retryable=True,
-                ),
-            )
-        return expired
+    # No query here reads more than one indexed field, deliberately.
+    #
+    # Two multi-filter queries used to live at the bottom of this class — "turns this
+    # instance still owns" (`instanceId` + `status`) and "turns whose lease expired while
+    # running" (`status` + `leaseExpiresAt`). Both were written ahead of a caller, and
+    # both needed composite indexes that are in neither `modules/firestore/main.tf` nor
+    # docs/02-data-model.md#indexes, so both would have returned `FAILED_PRECONDITION` the
+    # first time anything called them in a deployed environment — and passed locally,
+    # because the emulator does not enforce index requirements.
+    #
+    # They are gone rather than indexed: nothing called them. `SIGTERM` drain works off
+    # the in-process `TurnRegistry` (`services/turns.py`), and the lease sweep belongs to
+    # the M5 ledger, which should add each query together with its index and its row in
+    # the design's index table.

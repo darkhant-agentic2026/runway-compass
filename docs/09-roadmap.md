@@ -176,6 +176,25 @@ tests, which is why neither showed up as a failure:
 - **"Scans" is still not implemented.** The contract lists content scanning in the same
   step. Deferred to M7's "Security review: … upload handling" rather than left unremarked;
   until then an accepted MIME type and a size cap are the only checks on uploaded bytes.
+- **`POST /api/tasks/{id}/session` returned 500 on the first deployed revision.**
+  `find_session_id_for_task` filtered on `taskId` *and* `appName`, which makes it a
+  composite collection-group query; the declared index
+  (`google_firestore_field.sessions_task_id`) is single-field, exactly as the index table
+  in [02-data-model.md](02-data-model.md#indexes) specifies. Real Firestore answered
+  `FAILED_PRECONDITION` and the emulator answered correctly, so the whole local gate —
+  291 backend tests, the disconnect matrix, 52 e2e specs — was green against a query that
+  could not run in production. The `appName` check moved into Python, and a test now pins
+  the filter count, because no result-level test can see this.
+
+  Two unused queries in `repositories/turns.py` had the same defect latent
+  (`instanceId` + `status`, and `status` + `leaseExpiresAt`) and were deleted rather than
+  indexed: nothing called them, and M5's ledger sweep should add each query together with
+  its index and its row in the index table.
+
+  The general rule is now the first thing in the footgun list in `CLAUDE.md`. **The
+  emulator not enforcing index requirements is the single widest gap between the local
+  gate and a deployed environment**, and it is worth assuming it will bite again at M4
+  and M5, which add the research and run queries.
 
 **Deferred, and the milestone that needs it:** the `subscribe`-by-`runId` frame is
 accepted and answered with an explicit error until the run ledger lands (M5); tool-activity

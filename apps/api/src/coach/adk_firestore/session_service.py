@@ -149,15 +149,25 @@ class CoachSessionService(FirestoreSessionService):
         (docs/02-data-model.md#indexes), which is what lets the task document hold a
         `sessionId` pointer without the reverse pointer having to be kept in step by hand:
         this query is the authority, `task.sessionId` is the cache.
+
+        **Exactly one filter, and that is not incidental.** The declared index is
+        single-field (`google_firestore_field.sessions_task_id`, `COLLECTION_GROUP`
+        scope). Adding a second `where` — `appName`, say — turns this into a composite
+        collection-group query that needs an index nobody declared, and real Firestore
+        answers `FAILED_PRECONDITION` while the emulator answers correctly, so the
+        failure appears only once deployed. `appName` is therefore checked in Python
+        below: same guarantee, no second indexed field.
         """
         query = (
             self.client.collection_group(self.sessions_collection)
             .where(filter=firestore.FieldFilter(TASK_ID_FIELD, "==", task_id))
-            .where(filter=firestore.FieldFilter("appName", "==", app_name))
-            .limit(1)
+            .limit(2)
         )
         async for document in query.stream():
-            identifier = (document.to_dict() or {}).get("id")
+            data = document.to_dict() or {}
+            if data.get("appName") != app_name:
+                continue
+            identifier = data.get("id")
             return cast(str | None, identifier) or document.id
         return None
 
