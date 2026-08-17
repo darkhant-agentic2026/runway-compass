@@ -15,8 +15,18 @@ import {
 
 import { ApiError, api, newIdempotencyKey } from '@/lib/api'
 import { orderForMove } from '@/lib/ordering'
-import type { GlobalPrefs, Project, ProjectPrefs, Task, TaskState, TaskWithSubtasks } from '@/lib/schemas'
+import type {
+  GlobalPrefs,
+  Project,
+  ProjectPrefs,
+  SessionEvent,
+  Task,
+  TaskState,
+  TaskWithSubtasks,
+} from '@/lib/schemas'
+import { getSocket } from '@/lib/socket'
 import type { BoardFilters } from '@/stores/boardUi'
+import { useStreamStore } from '@/stores/stream'
 
 export const queryKeys = {
   me: ['me'] as const,
@@ -26,6 +36,8 @@ export const queryKeys = {
   tasks: (projectId: string, filters: BoardFilters) =>
     ['tasks', projectId, filters] as const,
   task: (taskId: string) => ['task', taskId] as const,
+  taskSession: (taskId: string) => ['task', taskId, 'session'] as const,
+  sessionEvents: (sessionId: string) => ['session', sessionId, 'events'] as const,
 }
 
 export function createQueryClient(): QueryClient {
@@ -254,6 +266,73 @@ export function usePatchProject(projectId: string) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.effectivePrefs(projectId) })
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects })
     },
+  })
+}
+
+// --- sessions & turns -------------------------------------------------------------------
+
+export function useTaskSession(taskId: string) {
+  return useQuery({
+    queryKey: queryKeys.taskSession(taskId),
+    queryFn: () => api.openTaskSession(taskId),
+    // The session is created once and never changes, so re-opening the workspace should
+    // not re-POST. `staleTime: Infinity` is the honest expression of that.
+    staleTime: Infinity,
+    enabled: taskId.length > 0,
+  })
+}
+
+export function useTask(taskId: string) {
+  return useQuery({
+    queryKey: queryKeys.task(taskId),
+    queryFn: () => api.getTask(taskId),
+    enabled: taskId.length > 0,
+  })
+}
+
+/**
+ * The transcript.
+ *
+ * Paged by `seq`, following `nextAfterSeq` until the server says there is no more —
+ * which is also the shape `turn_complete` reuses, since a finished turn's finalized
+ * events are fetched rather than assembled from the stream (docs/06-frontend.md).
+ */
+export function useSessionEvents(sessionId: string) {
+  return useQuery({
+    queryKey: queryKeys.sessionEvents(sessionId),
+    enabled: sessionId.length > 0,
+    queryFn: async () => {
+      const collected: SessionEvent[] = []
+      let cursor = 0
+      for (;;) {
+        const page = await api.listSessionEvents(sessionId, cursor, 100)
+        collected.push(...page.events)
+        if (!page.hasMore || page.nextAfterSeq === cursor) break
+        cursor = page.nextAfterSeq
+      }
+      return collected
+    },
+  })
+}
+
+export function useStartTurn(sessionId: string) {
+  return useMutation({
+    mutationFn: (body: {
+      text: string
+      attachments?: { uploadId: string; mimeType: string }[]
+    }) => api.startTurn(sessionId, body, newIdempotencyKey()),
+    onSuccess(turn) {
+      // Register the turn before any frame arrives, so a socket that reconnects in the
+      // gap between the 202 and the first delta still has something to resume.
+      useStreamStore.getState().begin(turn.turnId, turn.sessionId)
+      getSocket().subscribe(turn.turnId)
+    },
+  })
+}
+
+export function useCancelTurn(sessionId: string) {
+  return useMutation({
+    mutationFn: (turnId: string) => api.cancelTurn(sessionId, turnId),
   })
 }
 

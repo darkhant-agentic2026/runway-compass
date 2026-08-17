@@ -88,8 +88,11 @@ doctor() {
   check_gcloud
   echo
   bold "== Playwright browsers =="
-  echo "  Chromium is enough through M1. WebKit is first required at M2 and its"
-  echo "  --with-deps step needs sudo:  npx playwright install --with-deps webkit"
+  echo "  Chromium and WebKit are both required from M2: golden flow #4 (disconnect and"
+  echo "  resume) runs on chromium, mobile-chrome, webkit, and mobile-safari."
+  echo "  Install with:  npx playwright install --with-deps chromium webkit"
+  echo "  The --with-deps half needs sudo; the browser download itself does not, so a"
+  echo "  bump that needs new system libraries fails at launch rather than at install."
 }
 
 # ---------------------------------------------------------------------------------------
@@ -191,7 +194,7 @@ cmd_tick() {
 cmd_test() {
   local target="${1:-all}"
   case "$target" in
-    api) test_api ;;
+    api) test_api "$@" ;;
     web) test_web ;;
     e2e) test_e2e ;;
     all) test_api && test_web && test_e2e ;;

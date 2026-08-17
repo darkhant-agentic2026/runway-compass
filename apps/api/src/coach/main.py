@@ -24,12 +24,25 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from coach.api.idempotency import IdempotencyMiddleware, ReplayedResponse
-from coach.api.routers import health, me, projects, tasks
+from coach.api.routers import health, me, projects, sessions, tasks, uploads, ws
 from coach.core.config import Settings, get_settings
 from coach.core.errors import PROBLEM_CONTENT_TYPE, CoachError
 from coach.core.logging import configure_logging
 
 logger = logging.getLogger(__name__)
+
+#: How long the shutdown path waits for in-flight turns.
+#:
+#: docs/04-api-contract.md, mechanism 5: "On `SIGTERM` Cloud Run gives a termination
+#: grace period. The app stops accepting new turns, waits up to the grace period for
+#: in-flight turns, and marks any survivors `failed` with `retryable: true`."
+#:
+#: Cloud Run's default grace period is 10 s, and this is deliberately shorter: the
+#: platform sends `SIGKILL` when the period expires, so a drain budget equal to the
+#: period would be racing the kill for the very writes that mark survivors failed —
+#: the writes that keep a turn from being left `running` forever with no `endedAt` and
+#: therefore no TTL (docs/02-data-model.md#retention).
+DRAIN_TIMEOUT_SECONDS = 8.0
 
 #: Relative on purpose — see the module docstring.
 STATIC_DIR = Path("static")
@@ -62,6 +75,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         },
     )
     yield
+
+    # Uvicorn runs lifespan shutdown on SIGTERM, so this is the drain hook. It runs
+    # before the event loop closes, which is the only window in which an in-flight
+    # generation task can still finish or be marked failed.
+    container = app.state.container
+    await container.turns.drain(DRAIN_TIMEOUT_SECONDS)
     logger.info("coach-api stopped")
 
 
@@ -124,6 +143,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(me.router)
     app.include_router(projects.router)
     app.include_router(tasks.router)
+    app.include_router(sessions.router)
+    app.include_router(uploads.router)
+    app.include_router(ws.router)
 
     # --- SPA, registered LAST ---------------------------------------------------------
     _mount_spa(app, settings)

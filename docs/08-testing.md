@@ -178,7 +178,17 @@ Secondary but real: streaming text uses `aria-live="polite"`, and VoiceOver's be
 WebKit differs from Chromium's accessibility tree.
 
 WebKit is first *required* at M2, so installing it is deferred until then
-([07-infra-deploy.md](07-infra-deploy.md)).
+([07-infra-deploy.md](07-infra-deploy.md)). As of M2 the suite runs on four projects —
+chromium, mobile-chrome, webkit, mobile-safari — and flow #4 passes on all four.
+
+**The model is stubbed by `MODEL_BACKEND=stub`, not by a stub server.** A server would have
+to speak the Gemini wire protocol convincingly enough for `google.genai` to parse it, which
+is a large surface to maintain for no extra confidence: nothing in the socket, the
+checkpoint writer, or the resume path can tell where the tokens came from. The stub emits a
+deterministic reply derived from the prompt, one word at a time with a configurable pause,
+which is what gives flow #4 a window to disconnect inside *and* makes "identical to the
+control run" a character-for-character assertion. It is refused for any `ENV` other than
+`local` ([07-infra-deploy.md](07-infra-deploy.md#local-development)).
 
 Sign-in is seeded rather than performed: the app under test runs with `ENV=local`, and the
 Playwright fixture injects a `dev:<uid>` token so every flow starts authenticated. No flow

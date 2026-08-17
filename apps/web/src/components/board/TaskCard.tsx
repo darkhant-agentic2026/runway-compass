@@ -99,7 +99,19 @@ export function TaskCard({
 
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="truncate font-medium">{task.title}</span>
+            {/*
+              A plain anchor rather than react-router's `<Link>`: this component is
+              rendered by tests that mount it without a router, and a `<Link>` throws
+              outside one. The board is a full page load away from the workspace either
+              way, so client-side navigation buys nothing here.
+            */}
+            <a
+              href={`/projects/${task.projectId}/tasks/${task.id}`}
+              className="truncate font-medium hover:underline"
+              data-testid="open-workspace"
+            >
+              {task.title}
+            </a>
             {isNextUp ? <Badge>Next up</Badge> : null}
             {task.origin === 'agent' ? (
               <Badge

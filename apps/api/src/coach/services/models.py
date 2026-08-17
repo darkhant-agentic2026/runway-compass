@@ -274,3 +274,137 @@ class TaskWithSubtasks(Task):
     """A parent task with its children nested, as `GET /api/projects/{id}/tasks` returns."""
 
     subtasks: list[Task] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------------------
+# Turns — the streaming checkpoint ledger
+# --------------------------------------------------------------------------------------
+
+
+class TurnStatus(StrEnum):
+    """docs/02-data-model.md#turnsturnid.
+
+    `cancelled` is reachable only from the explicit cancel endpoint — a client
+    disconnecting never produces it, which is the whole point of the design
+    (docs/04-api-contract.md#surviving-client-disconnects).
+    """
+
+    RUNNING = "running"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self is not TurnStatus.RUNNING
+
+
+class CheckpointSlice(DomainModel):
+    """One flush of the delta buffer.
+
+    `fromSeq`/`toSeq`/`text` are the shape in docs/02-data-model.md. `lengths` is an
+    addition, and it is what makes resume exact rather than approximate.
+
+    A slice merges every delta published between two flushes, so a client whose
+    `lastSeq` falls *inside* a slice cannot be served by the slice alone: replaying it
+    whole would resend text the client already rendered, and skipping it would lose the
+    tail. `lengths[i]` is the character count of the delta at `fromSeq + i`, so the
+    replay path can cut the string at exactly the right offset. The invariant
+    `sum(lengths) == len(text)` and `len(lengths) == toSeq - fromSeq + 1` is asserted by
+    the streaming tests.
+    """
+
+    from_seq: int
+    to_seq: int
+    text: str
+    lengths: list[int] = Field(default_factory=list)
+
+    def text_after(self, last_seq: int) -> str:
+        """The part of this slice a client that has already seen `last_seq` still needs."""
+        if last_seq < self.from_seq:
+            return self.text
+        if last_seq >= self.to_seq:
+            return ""
+        consumed = sum(self.lengths[: last_seq - self.from_seq + 1])
+        return self.text[consumed:]
+
+
+class TurnError(DomainModel):
+    code: str
+    message: str
+    retryable: bool = False
+
+
+class Turn(DomainModel):
+    """`turns/{turnId}`.
+
+    Owned by the *process*, not by the socket: `instanceId` records which Cloud Run
+    instance holds the generation task, and a reconnect landing elsewhere reads this
+    document rather than expecting a live broker (docs/04-api-contract.md).
+    """
+
+    id: str
+    session_id: str
+    owner_uid: str
+    status: TurnStatus = TurnStatus.RUNNING
+    started_at: datetime | None = None
+    #: Also the Firestore TTL field (7 days). A turn that never reaches a terminal state
+    #: would never expire, which is why the drain and the ledger sweep both set it.
+    ended_at: datetime | None = None
+    last_seq: int = 0
+    instance_id: str = ""
+    lease_expires_at: datetime | None = None
+    checkpoints: list[CheckpointSlice] = Field(default_factory=list)
+    error: TurnError | None = None
+
+    def replay_from(self, last_seq: int) -> list[tuple[int, str]]:
+        """`(seq, text)` pairs a client resuming at `last_seq` has not seen yet.
+
+        Trailing slices arrive whole; the one straddling `last_seq` is trimmed. Empty
+        results are dropped so a reconnect at the very end of a turn does not emit a
+        stream of blank deltas.
+        """
+        pending: list[tuple[int, str]] = []
+        for slice_ in self.checkpoints:
+            if slice_.to_seq <= last_seq:
+                continue
+            text = slice_.text_after(last_seq)
+            if text:
+                pending.append((slice_.to_seq, text))
+        return pending
+
+
+# --------------------------------------------------------------------------------------
+# Sessions
+# --------------------------------------------------------------------------------------
+
+
+class SessionSummary(DomainModel):
+    """`GET /api/sessions/{sid}` — metadata and linkage.
+
+    The session *document* is ADK-owned (docs/02-data-model.md); this is the view of it
+    the API contract promises, assembled by `SessionService` rather than stored.
+    """
+
+    id: str
+    project_id: str | None = None
+    task_id: str | None = None
+
+
+# --------------------------------------------------------------------------------------
+# Presence
+# --------------------------------------------------------------------------------------
+
+
+class Presence(DomainModel):
+    """`presence/{uid}`.
+
+    "Owner is working here" is `activeProjectId == projectId` and a heartbeat inside the
+    window — evaluated by the autonomous tick at M5, written by the WebSocket from M2.
+    """
+
+    uid: str
+    active_project_id: str | None = None
+    active_task_id: str | None = None
+    last_heartbeat_at: datetime | None = None
+    connections: int = 0

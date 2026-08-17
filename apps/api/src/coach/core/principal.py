@@ -18,9 +18,11 @@ from dataclasses import dataclass
 from typing import Literal
 
 #: How the principal was established. `dev` exists only under `ENV=local`
-#: (docs/04-api-contract.md#authentication); `system` is for background work executing on
-#: a user's behalf from an OIDC-authenticated /internal/* call (M5).
-PrincipalSource = Literal["id_token", "dev", "system"]
+#: (docs/04-api-contract.md#authentication); `ws_ticket` is a socket that redeemed a
+#: single-use ticket, which was itself minted from a revocation-checked ID token; and
+#: `system` is for background work executing on a user's behalf from an
+#: OIDC-authenticated /internal/* call (M5).
+PrincipalSource = Literal["id_token", "dev", "ws_ticket", "system"]
 
 
 @dataclass(frozen=True, slots=True)

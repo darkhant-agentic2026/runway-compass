@@ -73,6 +73,34 @@ def test_vertex_backend_needs_no_key() -> None:
 
 
 @pytest.mark.parametrize("env", ["dev", "prod"])
+def test_the_stub_model_backend_is_refused_outside_local(env: str) -> None:
+    """The end-to-end stub must never reach a deployed environment.
+
+    This is deliberate test-only code on the same footing as the `Bearer dev:<uid>` auth
+    path (docs/04-api-contract.md#authentication), and it gets a named regression test
+    for the same reason: its failure mode is *silent success*. A deployed revision
+    serving canned answers would reply, update the board, and look entirely healthy —
+    the only symptom would be someone eventually reading a transcript.
+    """
+    with pytest.raises(ValidationError) as excinfo:
+        Settings(env=env, model_backend="stub", **DEPLOYED)
+    assert "stub" in str(excinfo.value)
+
+
+def test_the_stub_model_backend_is_allowed_when_local() -> None:
+    assert Settings(env="local", model_backend="stub").model_backend == "stub"
+
+
+def test_the_stub_model_is_what_the_stub_backend_builds() -> None:
+    """Pins the wiring, not just the setting: the guard above is worthless if
+    `build_model` ignored the backend and returned Gemini anyway."""
+    from coach.integrations.model import build_model
+    from coach.integrations.stub_model import StubModel
+
+    assert isinstance(build_model(Settings(env="local", model_backend="stub")), StubModel)
+
+
+@pytest.mark.parametrize("env", ["dev", "prod"])
 def test_deployed_environments_require_their_configuration(env: str) -> None:
     with pytest.raises(ValidationError) as excinfo:
         Settings(env=env, google_cloud_project="coach-dev")

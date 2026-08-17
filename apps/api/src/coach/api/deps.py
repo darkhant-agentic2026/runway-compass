@@ -3,24 +3,58 @@
 Repositories and services are constructed once per process and hung off `app.state`, not
 rebuilt per request: they are stateless over a shared Firestore client, and rebuilding
 them would rebuild that client's gRPC channel too.
+
+From M2 the container also owns three things that are *not* stateless and must therefore
+be process-wide rather than per-request: the `TurnRegistry` holding in-flight generation
+tasks, the `StreamBroker` fanning their output out, and the `RunnerFactory`'s warm model
+client. A per-request container would drop generation tasks on the floor the moment the
+request that started them returned — which is the exact failure
+docs/04-api-contract.md#surviving-client-disconnects exists to prevent.
 """
 
 from __future__ import annotations
 
+import os
+import uuid
 from typing import Annotated
 
 from fastapi import Depends, Request
 
+from coach.adk_firestore import CoachSessionService
+from coach.agents.runner import RunnerFactory
 from coach.core.config import Settings
 from coach.core.principal import Principal
-from coach.repositories.firestore import Database
+from coach.integrations.storage import build_object_store
+from coach.repositories.firestore import Database, get_client
 from coach.repositories.idempotency import IdempotencyRepository
+from coach.repositories.presence import PresenceRepository
 from coach.repositories.projects import ProjectRepository
 from coach.repositories.tasks import TaskRepository
+from coach.repositories.tickets import TicketRepository
+from coach.repositories.turns import TurnRepository
+from coach.repositories.uploads import UploadRepository
 from coach.repositories.users import UserRepository
 from coach.services.projects import ProjectService
+from coach.services.sessions import SessionService
 from coach.services.tasks import TaskService
+from coach.services.turns import TurnService
+from coach.services.uploads import UploadService
 from coach.services.users import UserService
+from coach.ws.broker import StreamBroker
+from coach.ws.registry import TurnRegistry
+
+
+def instance_id() -> str:
+    """Which process this is, for `turns/{turnId}.instanceId`.
+
+    Cloud Run does not expose a stable per-instance identifier as an environment
+    variable, so this is a per-process uuid seeded from `K_REVISION` when it is
+    available. It only has to answer one question — "is the generation task here?" — and
+    a process-scoped value answers it exactly, since the registry it is compared against
+    is process-scoped too.
+    """
+    revision = os.environ.get("K_REVISION", "local")
+    return f"{revision}-{uuid.uuid4().hex[:12]}"
 
 
 class Container:
@@ -29,16 +63,49 @@ class Container:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.db = Database.from_settings(settings)
+        self.instance_id = instance_id()
 
         self.user_repository = UserRepository(self.db)
         self.project_repository = ProjectRepository(self.db)
         self.task_repository = TaskRepository(self.db)
         self.idempotency_repository = IdempotencyRepository(self.db)
+        self.turn_repository = TurnRepository(self.db)
+        self.upload_repository = UploadRepository(self.db)
+        self.presence_repository = PresenceRepository(self.db)
+        self.tickets = TicketRepository(self.db)
 
         self.users = UserService(self.user_repository)
         self.projects = ProjectService(self.project_repository, self.users)
         self.tasks = TaskService(
             self.db, self.task_repository, self.project_repository, self.projects
+        )
+
+        # The ADK session service shares the process's Firestore client rather than
+        # building its own: two clients would mean two gRPC channels to the same
+        # database, and the emulator wiring (`FIRESTORE_EMULATOR_HOST`) is read at client
+        # construction, so a second one is also a second thing to configure.
+        self.session_service = CoachSessionService(
+            client=get_client(settings),
+            root_collection=settings.adk_firestore_root_collection,
+        )
+        self.sessions = SessionService(
+            self.session_service, self.tasks, self.task_repository, self.projects
+        )
+
+        self.uploads = UploadService(self.upload_repository, build_object_store(settings))
+
+        self.registry = TurnRegistry()
+        self.broker = StreamBroker()
+        self.runners = RunnerFactory(settings, self.session_service)
+        self.turns = TurnService(
+            settings,
+            self.turn_repository,
+            self.sessions,
+            self.uploads,
+            self.runners,
+            self.registry,
+            self.broker,
+            instance_id=self.instance_id,
         )
 
 
@@ -64,9 +131,24 @@ def get_task_service(container: Container = Depends(get_container)) -> TaskServi
     return container.tasks
 
 
+def get_session_service(container: Container = Depends(get_container)) -> SessionService:
+    return container.sessions
+
+
+def get_turn_service(container: Container = Depends(get_container)) -> TurnService:
+    return container.turns
+
+
+def get_upload_service(container: Container = Depends(get_container)) -> UploadService:
+    return container.uploads
+
+
 Users = Annotated[UserService, Depends(get_user_service)]
 Projects = Annotated[ProjectService, Depends(get_project_service)]
 Tasks = Annotated[TaskService, Depends(get_task_service)]
+Sessions = Annotated[SessionService, Depends(get_session_service)]
+Turns = Annotated[TurnService, Depends(get_turn_service)]
+Uploads = Annotated[UploadService, Depends(get_upload_service)]
 SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
 
 # Re-exported so routers depend on one module.

@@ -20,8 +20,15 @@ import {
   problemSchema,
   projectListSchema,
   projectSchema,
+  sessionEventsSchema,
+  sessionResponseSchema,
   taskDetailSchema,
   taskMutationSchema,
+  turnAcceptedSchema,
+  turnStatusResponseSchema,
+  uploadCreatedSchema,
+  uploadFinalizedSchema,
+  wsTicketSchema,
   type GlobalPrefs,
   type Project,
   type ProjectPrefs,
@@ -220,4 +227,60 @@ export const api = {
       method: 'POST',
       body: { subtasks },
     }).then((response) => response.task),
+
+  // --- sessions & turns ---------------------------------------------------------------
+
+  /** Get-or-create. Every workspace open calls this, so it is not a create. */
+  openTaskSession: (taskId: string) =>
+    request(`/api/tasks/${taskId}/session`, sessionResponseSchema, { method: 'POST' }).then(
+      (response) => response.session,
+    ),
+
+  getSession: (sessionId: string) =>
+    request(`/api/sessions/${sessionId}`, sessionResponseSchema).then(
+      (response) => response.session,
+    ),
+
+  listSessionEvents: (sessionId: string, afterSeq = 0, limit = 50) =>
+    request(
+      `/api/sessions/${sessionId}/events?after_seq=${afterSeq}&limit=${limit}`,
+      sessionEventsSchema,
+    ),
+
+  /** 202. Generation continues in the background; the socket carries the stream. */
+  startTurn: (
+    sessionId: string,
+    body: { text: string; attachments?: { uploadId: string; mimeType: string }[] },
+    idempotencyKey?: string,
+  ) =>
+    request(`/api/sessions/${sessionId}/turns`, turnAcceptedSchema, {
+      method: 'POST',
+      body: { text: body.text, attachments: body.attachments ?? [] },
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    }),
+
+  cancelTurn: (sessionId: string, turnId: string) =>
+    request(
+      `/api/sessions/${sessionId}/turns/${turnId}/cancel`,
+      turnStatusResponseSchema,
+      { method: 'POST' },
+    ),
+
+  getTurn: (turnId: string) => request(`/api/turns/${turnId}`, turnStatusResponseSchema),
+
+  /**
+   * Mint a single-use, 60-second socket ticket.
+   *
+   * Never cached: a ticket is consumed on connect, so a second reconnect reusing one
+   * would be refused (docs/04-api-contract.md#authentication).
+   */
+  createWsTicket: () => request('/api/ws-ticket', wsTicketSchema, { method: 'POST' }),
+
+  // --- uploads --------------------------------------------------------------------------
+
+  createUpload: (body: { filename: string; mimeType: string; sizeBytes: number }) =>
+    request('/api/uploads', uploadCreatedSchema, { method: 'POST', body }),
+
+  finalizeUpload: (uploadId: string) =>
+    request(`/api/uploads/${uploadId}/finalize`, uploadFinalizedSchema, { method: 'POST' }),
 }

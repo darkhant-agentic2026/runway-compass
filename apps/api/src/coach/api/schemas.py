@@ -9,6 +9,7 @@ difference between "absent" and "null" matters.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
@@ -23,9 +24,11 @@ from coach.services.models import (
     Project,
     ProjectStatus,
     ResearchDepth,
+    SessionSummary,
     Task,
     TaskState,
     TaskWithSubtasks,
+    TurnStatus,
     Verbosity,
 )
 
@@ -180,3 +183,86 @@ class TaskDetailResponse(ResponseModel):
 class EffectivePrefsResponse(ResponseModel):
     project_id: str
     effective_prefs: EffectivePrefs
+
+
+# --- sessions & turns ------------------------------------------------------------------
+
+
+class SessionResponse(ResponseModel):
+    session: SessionSummary
+
+
+class SessionEventView(ResponseModel):
+    """One transcript row.
+
+    `event` is the serialized ADK `Event` verbatim, not a projection of it. The transcript
+    is ADK's data (docs/02-data-model.md nests the whole event under `event_data`), and
+    re-shaping it here would mean a second definition of a conversation turn that has to
+    be kept in step with a pinned dependency's model.
+    """
+
+    seq: int
+    event_id: str
+    event: dict[str, Any]
+
+
+class SessionEventsResponse(ResponseModel):
+    events: list[SessionEventView]
+    next_after_seq: int
+    has_more: bool
+
+
+class TurnAttachment(RequestModel):
+    upload_id: str
+    mime_type: str
+
+
+class TurnRequest(RequestModel):
+    """`POST /api/sessions/{sid}/turns`.
+
+    `idempotencyKey` is in the contract's example body; it is accepted here *and* as the
+    `Idempotency-Key` header, which is what `IdempotencyMiddleware` actually reads. The
+    body field is kept so a client following the contract's example is not silently
+    unprotected.
+    """
+
+    text: str = ""
+    attachments: list[TurnAttachment] = Field(default_factory=list)
+    idempotency_key: str | None = None
+
+
+class TurnAcceptedResponse(ResponseModel):
+    turn_id: str
+    session_id: str
+    status: TurnStatus
+    start_seq: int = 0
+
+
+class TurnStatusResponse(ResponseModel):
+    turn_id: str
+    status: TurnStatus
+    last_seq: int
+
+
+class WsTicketResponse(ResponseModel):
+    ticket: str
+    expires_at: datetime
+
+
+# --- uploads ---------------------------------------------------------------------------
+
+
+class UploadCreate(RequestModel):
+    filename: str = Field(min_length=1, max_length=255)
+    mime_type: str
+    size_bytes: int = Field(gt=0)
+
+
+class UploadCreated(ResponseModel):
+    upload_id: str
+    signed_url: str
+
+
+class UploadFinalized(ResponseModel):
+    upload_id: str
+    mime_type: str

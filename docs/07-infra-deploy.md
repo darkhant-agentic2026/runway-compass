@@ -388,7 +388,16 @@ with a missing-shared-object error rather than at install time.
 Local model access uses the **Gemini API** with a developer key in `.env.local` (fastest
 onboarding); production uses **Vertex AI** with the Cloud Run service account (no key to
 rotate, VPC-SC compatible, and per-project quotas). One `ModelProvider` abstraction,
-selected by `MODEL_BACKEND=gemini_api|vertex`. Cloud Tasks is stubbed by an in-process
+selected by `MODEL_BACKEND=gemini_api|vertex`.
+
+A third value, **`MODEL_BACKEND=stub`**, selects the deterministic model the end-to-end
+harness runs against ([08-testing.md](08-testing.md)); `docker-compose.e2e.yml` sets it, so
+e2e depends on no GCP project and no model nondeterminism. `Settings` **refuses it for any
+`ENV` other than `local`**, and a named regression test pins that. The guard is worth as
+much as the one on the `Bearer dev:<uid>` auth path and for the same reason: its failure
+mode is *silent success*. A deployed revision serving canned answers would reply, update
+the board, and look entirely healthy — the only symptom would be someone eventually
+reading a transcript. Cloud Tasks is stubbed by an in-process
 `JobQueue` implementation behind the same interface, so the full autonomous path runs on a
 laptop.
 
@@ -417,8 +426,9 @@ dev only. Unit tests fake the artifact service outright and touch neither GCS no
 ```
 ENV=local|dev|prod
 GOOGLE_CLOUD_PROJECT=…
-MODEL_BACKEND=vertex                          # vertex | gemini_api
+MODEL_BACKEND=vertex                          # vertex | gemini_api | stub (ENV=local only)
 MODEL_NAME=gemini-3.7-flash
+STUB_MODEL_DELAY_MS=40                        # only read by MODEL_BACKEND=stub
 VERTEX_LOCATION=us-central1
 GEMINI_API_KEY=…                              # required iff MODEL_BACKEND=gemini_api (local)
 FIRESTORE_DATABASE=(default)

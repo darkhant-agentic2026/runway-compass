@@ -118,6 +118,42 @@ about an uploaded screenshot on the deployed dev environment.
 
 ---
 
+## Status after M2
+
+**Met, locally.** The full disconnect matrix is green, including cross-instance resume
+(driven by two `Container`s over one emulator, which is what a second Cloud Run instance
+is). Golden flow #4 passes on all four Playwright projects — chromium, mobile-chrome,
+webkit, and mobile-safari — which is what installing WebKit early was for. 284 backend
+tests, 142 web, 52 Playwright specs.
+
+**Not met, and it needs a deploy:** *"a user can chat with the coach about an uploaded
+screenshot on the deployed dev environment."* Every piece is implemented and covered by
+tests, but three of them are only exercisable against real GCP and are therefore unproven:
+Vertex AI as the model backend (local and e2e both run a scripted or stub model), V4
+signed upload URLs (which need a real IAM signer — [07-infra-deploy.md](07-infra-deploy.md)
+calls storage one of the two local dependencies that are not emulated), and
+`GcsArtifactService`. Close this by deploying to `coach-dev` and doing it by hand;
+until then, treat the upload path as untested rather than working.
+
+**Decisions made during implementation** that the design documents did not fix:
+
+| Decision | Why | Where |
+| --- | --- | --- |
+| The cross-instance resume path **polls** `turns/{turnId}` every 400 ms instead of using a snapshot listener | [04-api-contract.md](04-api-contract.md#surviving-client-disconnects) says "follows the Firestore document with a snapshot listener", but `on_snapshot` is implemented only on the **synchronous** `DocumentReference`; on `AsyncDocumentReference` it inherits `BaseDocumentReference.on_snapshot`, which raises `NotImplementedError`. The async client is not optional — ADK's shipped session service is async throughout. Polling at the checkpoint interval delivers exactly the granularity that section already accepts for this path ("400 ms chunks instead of token-level, still correct"), so the promise is kept and the mechanism differs | `ws/manager.py` |
+| `checkpoints[].lengths` added to the turn document | Makes resume exact when `lastSeq` falls inside a slice, rather than duplicating or dropping text ([02-data-model.md](02-data-model.md#turnsturnid)) | `services/models.py` |
+| `ws_tickets/*` and `uploads/*` added to the collection map | Cross-instance state the contract needs and no existing collection holds ([02-data-model.md](02-data-model.md#collection-map)) | `repositories/` |
+| **`MODEL_BACKEND=stub`**, refused for any `ENV` other than `local` | [08-testing.md](08-testing.md) asks for "a stubbed model server"; a stubbed *model* is the same determinism for a fraction of the surface, since nothing in the socket, checkpoint, or resume path can tell where tokens came from. Guarded and regression-tested like the `Bearer dev:<uid>` path, because its failure mode is *silent success* | `integrations/stub_model.py` |
+| A cancelled turn is announced as `turn_error` with `code: "cancelled"`, `retryable: false` | The contract has no `turn_cancelled` frame, and the user asked for this — offering a retry would be wrong | `services/turns.py` |
+| `GET /api/turns/{turnId}` added | Lets a client with a dead socket tell a running turn from a finished one, so the "still working" state is truthful rather than hopeful | `api/routers/sessions.py` |
+| The `StreamBroker` keeps a per-turn ring buffer of recent frames | Deltas are published immediately but checkpointed up to 400 ms later; a client attaching in that window would find a frame in neither source. The buffer covers exactly that gap | `ws/broker.py` |
+
+**Deferred, and the milestone that needs it:** the `subscribe`-by-`runId` frame is
+accepted and answered with an explicit error until the run ledger lands (M5); tool-activity
+chips are rendered from the live stream but are not replayed on resume, since they are not
+checkpointed — a resumed client rebuilds them from the finalized transcript.
+
+---
+
 ## M3 — The coach acts on the board (~1.5 weeks)
 
 - Domain tools (`add_task`, `split_task`, `set_task_state`, `set_next_up`, `reorder_task`,

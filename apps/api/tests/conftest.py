@@ -168,6 +168,38 @@ def alice() -> Principal:
     return Principal(uid="u_alice", email="alice@localhost.dev", source="dev")
 
 
+# --- streaming -------------------------------------------------------------------------
+
+
+@pytest.fixture
+def scripted_model(container):
+    """Install a scripted model on the container's runner factory.
+
+    Everything else in the streaming path stays real (docs/08-testing.md); this replaces
+    only the token source. Returns the model so a test can rewrite `chunks`, `delay`, or
+    `fail_with` before starting a turn, and read `invocations` afterwards.
+    """
+    from streaming_doubles import ScriptedModel
+
+    model = ScriptedModel(chunks=["Hello", ", ", "world."], invocations=[])
+    container.runners.set_model(model)
+    return model
+
+
+@pytest.fixture
+async def session_id(client) -> str:
+    """A task session for the default test user, created through the real endpoints."""
+    project = (await client.post("/api/projects", json={"title": "Concurrency"})).json()
+    task = (
+        await client.post(
+            f"/api/projects/{project['id']}/tasks",
+            json={"title": "Read about locks", "estimatedMinutes": 45},
+        )
+    ).json()["task"]
+    response = await client.post(f"/api/tasks/{task['id']}/session")
+    return str(response.json()["session"]["id"])
+
+
 @pytest.fixture
 def mallory() -> Principal:
     return Principal(uid="u_mallory", email="mallory@localhost.dev", source="dev")
