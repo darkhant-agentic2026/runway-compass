@@ -120,22 +120,31 @@ jobs:
             --region="${{ env.REGION }}" \
             --no-traffic --tag=candidate \
             --quiet
-          # `--flatten` + `--filter` rather than a `.filter(...).extract(...)` expression
-          # inside `value()`: the latter yields a *list*, which gcloud renders as
-          # ['https://…'] — brackets and quotes included. curl then rejects it with
-          # "bad range specification", naming neither the cause nor the field. Flattening
-          # first makes each traffic target its own record, so `value()` prints a scalar.
-          url=$(gcloud run services describe "${{ env.SERVICE }}" \
+          # Read the tag/url pairs and pick the candidate here rather than asking gcloud
+          # to filter. Two constraints shape this:
+          #
+          #   * `--filter` is a *list*-command flag. `describe` returns one resource and
+          #     rejects it outright: "unrecognized arguments: --filter".
+          #   * a `value()` projection that selects across a repeated field yields a
+          #     list, which gcloud prints as its literal repr — ['https://…'], brackets
+          #     and quotes included — and curl then calls that a bad range specification.
+          #
+          # `--flatten` makes each traffic target its own record, so two scalar columns
+          # come back tab-separated, and awk picks the row. Untagged rows have an empty
+          # first column, which is why the separator is set explicitly.
+          traffic=$(gcloud run services describe "${{ env.SERVICE }}" \
             --region="${{ env.REGION }}" \
             --flatten="status.traffic[]" \
-            --filter="status.traffic.tag=candidate" \
-            --format="value(status.traffic.url)" | head -1)
+            --format="value(status.traffic.tag,status.traffic.url)")
+
+          url=$(printf '%s\n' "$traffic" |
+            awk -F'\t' '$1 == "candidate" { print $2; exit }')
 
           if [ -z "$url" ]; then
             echo "::error::No candidate revision URL found. The tagged revision may not"
             echo "::error::have been created, or the traffic tag may have a different name."
-            gcloud run services describe "${{ env.SERVICE }}" \
-              --region="${{ env.REGION }}" --format="yaml(status.traffic)"
+            echo "Traffic targets reported by Cloud Run:"
+            printf '%s\n' "$traffic"
             exit 1
           fi
 
