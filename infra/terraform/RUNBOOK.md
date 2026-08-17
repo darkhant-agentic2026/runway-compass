@@ -652,26 +652,61 @@ per project **and** per location, so a name that the design decided
 `gemini-3.7-flash`) can still 404 here. Nothing catches this before a turn runs, because
 nothing calls the model until a user does.
 
-Probe what this project can actually reach. A `GET` on the publisher-model resource is
-the same check the failing call makes, costs no tokens, and answers for both endpoints:
+**Probe by making the call, not by looking the model up.** There is no `GET` on
+`projects/{p}/locations/{l}/publishers/google/models/{m}` — publisher models are only
+addressable under that path on `:generateContent`. A `GET` there returns 404 for every
+name, available or not, which reads exactly like "no models exist" and is worth nothing.
+Issue the real request instead; it is definitionally the right test, because it is what
+the app does.
 
 ```bash
 PROJECT=$(gcloud config get-value project)
 TOKEN=$(gcloud auth print-access-token)
 
-for LOC in us-central1 global; do
+# 0. Is the API on at all? Empty output here explains every 404 below.
+gcloud services list --enabled --filter=aiplatform --format='value(config.name)'
+
+# 1. The call the app makes, one token of output.
+probe() {
+  local LOC=$1 M=$2 HOST OUT CODE
   HOST=$([ "$LOC" = global ] && echo aiplatform.googleapis.com || echo "$LOC-aiplatform.googleapis.com")
+  OUT=$(curl -s -w '\n%{http_code}' -X POST \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    "https://$HOST/v1/projects/$PROJECT/locations/$LOC/publishers/google/models/$M:generateContent" \
+    -d '{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":1}}')
+  CODE=$(tail -1 <<<"$OUT")
+  printf '%-12s %-22s %s\n' "$LOC" "$M" "$CODE"
+  [ "$CODE" = 200 ] || sed -n '1,8p' <<<"$OUT" | sed 's/^/    /'
+}
+
+for LOC in us-central1 global; do
   for M in gemini-3.7-flash gemini-3-flash gemini-3-pro gemini-2.5-flash gemini-2.5-pro; do
-    CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
-      "https://$HOST/v1/projects/$PROJECT/locations/$LOC/publishers/google/models/$M")
-    printf '%-12s %-20s %s\n' "$LOC" "$M" "$CODE"
+    probe "$LOC" "$M"
   done
 done
 ```
 
-`200` means reachable, `404` means not. Send me the table — the choice of model is a
-cost-and-quality decision and a change to a value `docs/00-overview.md` decided, so it is
-yours to make rather than mine to guess.
+Read the codes rather than only their presence:
+
+| Code | Meaning |
+| --- | --- |
+| `200` | Reachable. Usable as `model_name`. |
+| `404` | That name is not served to this project in this location. |
+| `403` | Entitlement or API problem, **not** the model name — check step 0 and the caller's roles. |
+| `401` | The token expired. `gcloud auth print-access-token` again. |
+
+**Whose credentials this uses matters.** `gcloud auth print-access-token` is *your* account;
+the service runs as `coach-api-sa`. They can differ. To test what the service will
+actually experience:
+
+```bash
+TOKEN=$(gcloud auth print-access-token \
+  --impersonate-service-account="coach-api-sa@$PROJECT.iam.gserviceaccount.com")
+```
+
+Send me the table with the error bodies. The choice of model is a cost-and-quality
+decision and a change to a value `docs/00-overview.md` decided, so it is yours to make
+rather than mine to guess.
 
 Applying whichever answer it gives, in `envs/dev/dev.tfvars`:
 
