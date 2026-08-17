@@ -41,7 +41,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from coach.agents.runner import APP_NAME
+from coach.core.app import APP_NAME
 from coach.core.clock import now
 from coach.core.errors import NotFound, ValidationProblem
 from coach.core.ids import upload_id as new_upload_id

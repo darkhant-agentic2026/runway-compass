@@ -71,6 +71,7 @@ or a row of user data.
 | `POST` | `/api/projects` | `{ title, goal? }` — creates project + an intake session (a session with `taskId: null`) |
 | `GET` | `/api/projects/{id}` | Includes `counts`, `nextUpTaskId` |
 | `PATCH` | `/api/projects/{id}` | title, goal, status, `prefs` patch |
+| `POST` | `/api/projects/{id}/session` | Get-or-create the project's **intake session** (the one with `taskId: null`). Added at M3: `POST /api/projects` creates it, and nothing else resolved a project back to it |
 | `GET` | `/api/projects/{id}/effective-prefs` | Resolved global ⊕ project — one source of truth for UI and agent |
 | `GET` | `/api/projects/{id}/tasks` | `?include_completed=false&include_discarded=false`; returns parents with nested `subtasks[]` and `rollup` |
 | `DELETE` | `/api/projects/{id}` | Soft-delete → `archived` |
@@ -117,6 +118,7 @@ without a refetch.
 // request
 { "text": "here's my attempt at the exercise",
   "attachments": [ { "uploadId": "…", "mimeType": "image/png" } ],
+  "confirmation": { "functionCallId": "…", "confirmed": true },   // M3; see below
   "idempotencyKey": "…" }
 
 // 202 response — returns immediately, generation continues in background
@@ -125,6 +127,14 @@ without a refetch.
 
 The handler creates `turns/{turnId}`, spawns a detached `asyncio.Task`, and returns. It
 does **not** await generation. Streaming is observed over the WebSocket.
+
+`confirmation` was added at M3 and answers a tool that asked first. `discard_task`
+"requires user confirmation" ([03-agent-design.md](03-agent-design.md)), which is
+implemented with ADK's `require_confirmation`: the turn proposing it ends with an
+`adk_request_confirmation` function call and the tool body runs only when a matching
+function *response* arrives. That response is a turn like any other, carrying the id of
+the call it answers — and **a turn carrying only a confirmation is valid**, since pressing
+a button sends no text and no attachment.
 
 #### `POST /api/sessions/{sid}/research`
 

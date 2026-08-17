@@ -1,0 +1,120 @@
+"""The stubbed model itself.
+
+`MODEL_BACKEND=stub` is one of the three test-only surfaces whose failure mode is *silent
+success* (CLAUDE.md, docs/07-infra-deploy.md), so it gets tests of its own rather than
+being trusted because the suites that use it pass. Two things are worth pinning:
+
+- **It reads the budget out of the rendered instruction.** That coupling is what makes
+  golden flow #7 evidence about the prompt rather than about the test's own arithmetic.
+  Asserted against a real `render_prefs` output, so a change to the wording that breaks
+  the parse fails here and not in a Playwright timeout.
+- **Its tool loop terminates.** The stub plans from this turn's function responses, and
+  the failure mode of getting that wrong is a turn that never completes — which surfaces
+  as a hung test with no message about why.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from coach.agents.prompt import render_prefs
+from coach.integrations.stub_model import (
+    DEFAULT_BUDGET_MINUTES,
+    budget_minutes,
+    requested_minutes,
+    split_plan,
+)
+from coach.services.models import EffectivePrefs
+
+
+def _prefs(minutes: int) -> EffectivePrefs:
+    return EffectivePrefs(
+        default_task_minutes=minutes,
+        guidance_style="socratic",
+        verbosity="balanced",
+        timezone="UTC",
+        research_depth="standard",
+        allow_videos=True,
+        preferred_sources=[],
+        avoid_sources=[],
+    )
+
+
+@pytest.mark.parametrize("minutes", [15, 45, 120, 480])
+def test_the_budget_survives_the_round_trip_through_the_prompt(minutes: int) -> None:
+    """`render_prefs` writes it; the stub reads it back. One test owns both ends."""
+    assert budget_minutes(render_prefs(_prefs(minutes))) == minutes
+
+
+def test_an_instruction_without_a_budget_falls_back_to_the_global_default() -> None:
+    assert budget_minutes("nothing useful here") == DEFAULT_BUDGET_MINUTES
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("about 4 hours of work", 240),
+        ("2h a week", 120),
+        ("90 minutes", 90),
+        ("give me 30 mins", 30),
+        ("I want to learn Rust", None),
+        ("chapter 3 of the book", None),
+    ],
+)
+def test_a_named_duration_is_what_makes_the_stub_plan(text: str, expected: int | None) -> None:
+    """No duration means no tool call, which is what keeps flow #1's first turn a question.
+
+    "chapter 3" is the case worth having: a bare number is not a duration, and a stub that
+    read one would add a three-minute task to every conversation about a book.
+    """
+    assert requested_minutes(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("minutes", "budget"), [(135, 45), (240, 120), (90, 45), (100, 45), (600, 45)]
+)
+def test_a_split_plan_fits_the_budget_and_sums_to_the_parent(minutes: int, budget: int) -> None:
+    plan = split_plan("Parent", minutes, budget)
+    sizes = [item["estimatedMinutes"] for item in plan]
+
+    assert 2 <= len(plan) <= 8
+    assert sum(sizes) == minutes
+    if minutes <= 8 * budget:
+        # Beyond eight subtasks the split cap binds and pieces are necessarily larger;
+        # `add_task`'s own guard is what keeps a parent from getting there.
+        assert all(size <= budget for size in sizes)
+
+
+async def test_the_tool_loop_ends_after_the_split(container, client: Any) -> None:
+    """One `add_task`, one `split_task`, then prose — asserted by counting the calls.
+
+    Driven through the real runner, because the thing that could hang is the interaction
+    between the stub's planning and ADK's function-response contents, not the planner in
+    isolation.
+    """
+    import asyncio
+
+    from coach.integrations.stub_model import StubModel
+
+    container.runners.set_model(StubModel())
+    project = (await client.post("/api/projects", json={"title": "Loop"})).json()
+    session_id = (await client.post(f"/api/projects/{project['id']}/session")).json()["id"]
+
+    started = await client.post(
+        f"/api/sessions/{session_id}/turns", json={"text": "roughly 3 hours of work"}
+    )
+    turn_id = started.json()["turnId"]
+    async with asyncio.timeout(20):
+        while (await client.get(f"/api/turns/{turn_id}")).json()["status"] == "running":
+            await asyncio.sleep(0.02)
+
+    events = (await client.get(f"/api/sessions/{session_id}/events?limit=100")).json()
+    calls = [
+        part["function_call"]["name"]
+        for stored in events["events"]
+        for part in (stored["event"].get("content") or {}).get("parts", [])
+        if "function_call" in part
+    ]
+    assert calls == ["add_task", "split_task"]

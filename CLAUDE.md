@@ -129,6 +129,11 @@ user's button calls.
   update depth exceeded"), which names the symptom and not the cause, and it only shows up
   in a built bundle. Return a module-level frozen constant instead — see `NO_ATTACHMENTS`
   in `stores/composer.ts` and `DEFAULT_FILTERS` in `stores/boardUi.ts`.
+- **A placeholder in the coach's instruction is only as good as its writer.**
+  `inject_session_state` raises `KeyError` on a `{key}` with no state key, while
+  assembling the LLM request — inside the detached generation task, on the first real turn
+  of a deployed revision. `tests/test_agent_prompt.py` reads the template and asserts every
+  placeholder has a writer; keep it reading the template rather than restating the list.
 - **Nothing in `ws/` may cancel generation.** `TurnRegistry` owns the task and a socket
   closing is a subscriber leaving. If `TurnService.start` ever grows an `await` on the
   generation task, or the task moves into a request handler's scope, the disconnect

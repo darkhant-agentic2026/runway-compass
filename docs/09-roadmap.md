@@ -221,6 +221,72 @@ subtasks with a correct parent rollup; project-level duration overrides are resp
 
 ---
 
+## Status after M3
+
+Complete locally; not yet verified on `coach-dev`. What follows is the carry-over a later
+milestone needs, recorded here because it is not derivable from the code.
+
+**Met.** Golden flows #1, #2, and #7 pass on all four Playwright projects, alongside the
+M1 and M2 specs — 23 specs, 92 runs. Asking for a four-hour task yields subtasks that each fit
+the budget with a parent rollup equal to their sum, and a project with a two-hour override
+sizes work differently from one on the 45-minute global default *in the same browser, from
+the same sentence*. 382 backend tests, 184 web.
+
+**The evidence in flow #7 is worth naming, because it is what makes the flow more than a
+staging exercise.** The stubbed model reads its task budget out of the *rendered system
+instruction* (`Default task length: 120 minutes`), so nothing in the browser or in the
+stub knows which project it is in. Subtasks that follow a project's override can therefore
+only have come from the prompt the server assembled, which is the thing
+"project-level duration overrides are respected" actually means.
+`tests/test_stub_model.py` owns both ends of that parse.
+
+**Deliberately deferred, and the milestone that needs it:**
+
+| Item | Needed by | Note |
+| --- | --- | --- |
+| `board_update` **across instances** | **M5** | `ws/hub.py` reaches the sockets on *this* process. For M3 that is the whole population: the tool runs inside the turn the user's own request started, and session affinity puts their socket there. A scheduled run executes wherever Cloud Tasks lands it, with no relation to where the owner is connected, so the ledger needs a cross-instance channel — Firestore, since one already exists |
+| Tool-activity chips on **resume** | M4+ | Unchanged from M2: chips render from the live stream but are not checkpointed, so a resumed client rebuilds them from the finalized transcript |
+| `list_tasks` as the model's **only** board read | — | The prompt also carries the board, so the tool is a refresh rather than the source. Cheap, and it keeps the first turn from costing a tool round trip; revisit if prompt size becomes the constraint |
+| Autonomous mode's **reduced tool set** | **M5** | docs/03-agent-design.md#safety-rails-on-autonomy forbids `discard_task`, `update_learner_profile`, and `update_project_prefs` in background work. There is no autonomous agent yet, so there is nothing to reduce; the `propose_tasks` subset is built there, from the same `DomainTools` |
+| Everything still open after M2 | as recorded | Content scanning (M7), `subscribe` by `runId` (M5), `turns` composite indexes (M5), nightly evalsets (M4-M6), `prod` and `terraform destroy` |
+
+**Endpoints in the API contract still unimplemented**: `POST /api/sessions/{sid}/research`
+and reports (M4), runs (M5), `PATCH /api/me/learner-profile`'s Settings UI (M6), and
+`DELETE /api/me` (M7).
+
+**Decisions made during implementation** that the design documents did not fix:
+
+| Decision | Why | Where |
+| --- | --- | --- |
+| `POST /api/projects/{id}/session` added | [04-api-contract.md](04-api-contract.md) has `POST /api/projects` *create* the intake session and nothing that resolves a project back to it. Every visit after the one that created it needs exactly that | `api/routers/projects.py` |
+| `projects/{id}.intakeSessionId` added | The alternative is a collection-group scan of the project's sessions on every board load. The scan survives as the fallback for projects created before the pointer, and repairs it when it runs | [02-data-model.md](02-data-model.md#projectsprojectid) |
+| The intake conversation lives **on the board screen** | [06-frontend.md](06-frontend.md#routes) gives the intake session no route of its own, and the board is the screen a new project lands on. Beside the board rather than on its own page is also what makes flow #1 legible — the learner watches cards appear as the coach proposes them | `pages/BoardPage.tsx` |
+| Prompt context is injected as **`temp:`** state | [03-agent-design.md](03-agent-design.md#coach_agent) says "injected as state"; `temp:` is the lifetime that means. Session `state` is stored as a JSON *string*, so a plain key would re-serialize the whole board onto the session document on every appended event. ADK trims `temp:` deltas before persistence. The cost is one contentless event per turn, which the transcript already drops | `agents/prompt.py` |
+| `add_task`'s per-run cap lives in `temp:` state too | The cap is "≤ 5/run". A persisted counter would make the sixth task of a *conversation* impossible rather than the sixth of a turn | `agents/context.py` |
+| A failed tool **returns** a result rather than raising | An exception out of a tool aborts the invocation, so a model that asked for a nine-hour task would end the turn instead of being told the number is too big. Guards answer `{"ok": false, "error": …}`; anything that is not a `CoachError` still propagates | `agents/tools.py` |
+| `update_project_prefs` takes named arguments, not a patch object | [03-agent-design.md](03-agent-design.md#domain-tools) says "whitelist of keys". Spelling the keys out as parameters *is* the whitelist, and an open patch argument would let the model write fields it invented onto the project document | `agents/tools.py` |
+| `discard_task` is gated with ADK's `require_confirmation`, and a turn may carry only a confirmation | The gate then holds whether or not the model cooperates — the tool call becomes `adk_request_confirmation` and the body runs on the answer. Answering is a turn with no text and no attachment, so `start`'s "a turn needs text, an attachment, or both" had to count a confirmation as content | `agents/tools.py`, `services/turns.py` |
+| `Principal.source` gained `"agent"` | Nothing branches on it; it is the audit label. Calling a tool call an `id_token` request would be a lie in the one place a reader goes to find out who did something | `core/principal.py` |
+| `APP_NAME` moved to `core/app.py` | It was in `agents/runner.py`, so `services/sessions.py` imported from `agents/` — an inversion of the layering that only became visible (as an import cycle) once `agents/` grew a module importing `services/` | `core/app.py` |
+| The stubbed model emits **scripted tool calls**, planned from this turn's function responses | Flows #1, #2, and #7 need the coach to act. Scoping the plan to the turn is the loop's termination argument: asked of the whole session history, "have I already split something?" answers yes forever; asked of nothing, the stub re-issues `split_task` until the turn never ends | `integrations/stub_model.py` |
+
+### What a green local run did not prove, again
+
+Two of M3's defects were of the kind [the M2 table](#what-a-green-local-run-does-not-prove)
+predicts, and both are already rows in it:
+
+- **A stored ADK event is not shaped the way the flow that produced it reads.** The
+  confirmation request is *second*-from-last — ADK appends a function-response event
+  carrying `requested_tool_confirmations` after it — so a reader that looked at the tail
+  found nothing and rendered no buttons. Every backend test passed, because they counted
+  function calls rather than asking what the UI would see. Fixed by cancelling requests
+  against answers rather than reading a position; `transcript.test.ts` pins the ordering.
+- **The composite collection-group query, avoided rather than hit.** `find_intake_session_id`
+  wants `projectId == …` *and* `taskId == null`; it filters the second in Python, and the
+  index table gained the row for the first in the same change.
+
+---
+
 ## M4 — Research (~1.5 weeks)
 
 - `search_agent` (grounded search) + `research_agent`; `fetch_url` with SSRF guards;

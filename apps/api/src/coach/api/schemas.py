@@ -217,6 +217,20 @@ class TurnAttachment(RequestModel):
     mime_type: str
 
 
+class TurnConfirmation(RequestModel):
+    """The learner's answer to a tool that asked before acting.
+
+    `discard_task` is gated by ADK's `require_confirmation` (docs/03-agent-design.md), so
+    the turn that proposes it ends with an `adk_request_confirmation` function call and
+    resumes only when a matching function *response* arrives. This is that response,
+    shaped as two fields rather than as a raw ADK part: the client should not be building
+    ADK payloads, and the call id is the only thing it has to carry back.
+    """
+
+    function_call_id: str
+    confirmed: bool
+
+
 class TurnRequest(RequestModel):
     """`POST /api/sessions/{sid}/turns`.
 
@@ -228,6 +242,7 @@ class TurnRequest(RequestModel):
 
     text: str = ""
     attachments: list[TurnAttachment] = Field(default_factory=list)
+    confirmation: TurnConfirmation | None = None
     idempotency_key: str | None = None
 
 

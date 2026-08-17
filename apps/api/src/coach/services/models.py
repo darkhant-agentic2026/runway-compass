@@ -219,6 +219,13 @@ class Project(DomainModel):
     prefs: ProjectPrefs = Field(default_factory=ProjectPrefs)
     #: Denormalized pointer, maintained transactionally alongside the `current` task.
     next_up_task_id: str | None = None
+    #: The intake session `POST /api/projects` opens (docs/04-api-contract.md). A pointer
+    #: rather than a query, because the alternative is a collection-group scan of every
+    #: session in the project to find the one with `taskId: null` — and that is a read on
+    #: every visit to the workspace, for a value that never changes after creation.
+    #: `SessionService.get_or_create_intake` falls back to the scan when it is absent,
+    #: which is what makes projects created before M3 keep working.
+    intake_session_id: str | None = None
     counts: ProjectCounts = Field(default_factory=ProjectCounts)
     last_autonomous_run_at: datetime | None = None
     created_at: datetime | None = None

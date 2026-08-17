@@ -77,6 +77,7 @@ async def websocket_endpoint(
         turns=container.turns,
         broker=container.broker,
         presence=container.presence_repository,
+        board_updates=container.board_updates,
     )
     logger.info("websocket connected", extra={"uid": uid})
     try:

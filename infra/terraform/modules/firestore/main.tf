@@ -164,6 +164,25 @@ resource "google_firestore_field" "sessions_task_id" {
   }
 }
 
+# "Session by project" — the fallback path in `SessionService.get_or_create_intake`, for a
+# project created before `projects/{id}.intakeSessionId` existed. One indexed filter, with
+# `taskId` and `appName` checked in Python: a second `where` would make this a composite
+# collection-group query, which the emulator answers happily and Firestore refuses. Added
+# at M3.
+resource "google_firestore_field" "sessions_project_id" {
+  project    = var.project_id
+  database   = google_firestore_database.this.name
+  collection = "sessions"
+  field      = "projectId"
+
+  index_config {
+    indexes {
+      order       = "ASCENDING"
+      query_scope = "COLLECTION_GROUP"
+    }
+  }
+}
+
 # --- TTL policies -----------------------------------------------------------------------
 # docs/02-data-model.md#retention.
 

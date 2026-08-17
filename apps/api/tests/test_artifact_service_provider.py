@@ -25,16 +25,20 @@ service and because faking the client is what lets it be built at all without cr
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from google.adk.artifacts.base_artifact_service import BaseArtifactService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 
-from coach.agents.runner import APP_NAME, RunnerFactory
+from coach.agents.prompt import PromptBuilder
+from coach.agents.runner import RunnerFactory
+from coach.agents.tools import DomainTools
+from coach.core.app import APP_NAME
 from coach.core.config import Settings
 from coach.integrations.artifacts import artifact_part_uri, artifact_service_provider
+from coach.ws.hub import BoardUpdateHub
 from test_import_without_credentials import DEPLOYED
 
 
@@ -91,6 +95,12 @@ async def test_a_runner_can_open_an_invocation_context(deployed_artifacts) -> No
         Settings(env="dev", google_cloud_project="coach-dev", **DEPLOYED),
         InMemorySessionService(),
         deployed_artifacts,
+        # Neither the tools nor the prompt builder is exercised here: this test opens
+        # an invocation context and looks at one field on it. They are built over no
+        # services rather than mocked, because a mock would imply they were part of what
+        # is under test.
+        tools=DomainTools(cast(Any, None), cast(Any, None), BoardUpdateHub()),
+        prompt=PromptBuilder(*(cast(Any, None),) * 4),
     )
     # A scripted model so that no model client is built either; the artifact service is
     # what is under test.

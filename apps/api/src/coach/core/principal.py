@@ -19,10 +19,14 @@ from typing import Literal
 
 #: How the principal was established. `dev` exists only under `ENV=local`
 #: (docs/04-api-contract.md#authentication); `ws_ticket` is a socket that redeemed a
-#: single-use ticket, which was itself minted from a revocation-checked ID token; and
-#: `system` is for background work executing on a user's behalf from an
-#: OIDC-authenticated /internal/* call (M5).
-PrincipalSource = Literal["id_token", "dev", "ws_ticket", "system"]
+#: single-use ticket, which was itself minted from a revocation-checked ID token;
+#: `agent` is a tool call inside an agent invocation, whose uid comes from the session
+#: the invocation is running in (`agents/context.py`); and `system` is for background work
+#: executing on a user's behalf from an OIDC-authenticated /internal/* call (M5).
+#:
+#: Nothing branches on the source — authorization is `owns()`, which reads the uid alone.
+#: It exists so that a log line or an audit trail can say how the caller was established.
+PrincipalSource = Literal["id_token", "dev", "ws_ticket", "agent", "system"]
 
 
 @dataclass(frozen=True, slots=True)

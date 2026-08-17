@@ -37,6 +37,12 @@ export const queryKeys = {
     ['tasks', projectId, filters] as const,
   task: (taskId: string) => ['task', taskId] as const,
   taskSession: (taskId: string) => ['task', taskId, 'session'] as const,
+  /**
+   * Deliberately *not* under the `['project', id]` prefix. `board_update` and every
+   * project mutation invalidate that prefix, and this key is a get-or-create POST — an
+   * invalidation would re-issue it on every board change for a value that never moves.
+   */
+  projectSession: (projectId: string) => ['project-session', projectId] as const,
   sessionEvents: (sessionId: string) => ['session', sessionId, 'events'] as const,
 }
 
@@ -282,6 +288,21 @@ export function useTaskSession(taskId: string) {
   })
 }
 
+/**
+ * The project's intake conversation.
+ *
+ * `staleTime: Infinity` for the same reason `useTaskSession` uses it: the session is
+ * created once and never changes, so revisiting the board must not re-POST.
+ */
+export function useProjectSession(projectId: string) {
+  return useQuery({
+    queryKey: queryKeys.projectSession(projectId),
+    queryFn: () => api.openProjectSession(projectId),
+    staleTime: Infinity,
+    enabled: projectId.length > 0,
+  })
+}
+
 export function useTask(taskId: string) {
   return useQuery({
     queryKey: queryKeys.task(taskId),
@@ -319,6 +340,8 @@ export interface StartTurnBody {
   text: string
   /** `filename` is used only by the optimistic echo; it is not sent to the server. */
   attachments?: { uploadId: string; mimeType: string; filename?: string }[]
+  /** The answer to a tool that asked first. A turn may carry this and nothing else. */
+  confirmation?: { functionCallId: string; confirmed: boolean }
 }
 
 /**

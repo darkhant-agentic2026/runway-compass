@@ -69,14 +69,20 @@ export function attachmentLabel(attachment: TranscriptAttachment): string {
 interface EventPart {
   text?: unknown
   thought?: unknown
-  function_call?: { name?: unknown }
-  functionCall?: { name?: unknown }
-  function_response?: { name?: unknown }
-  functionResponse?: { name?: unknown }
+  function_call?: FunctionCallLike
+  functionCall?: FunctionCallLike
+  function_response?: FunctionCallLike
+  functionResponse?: FunctionCallLike
   inline_data?: FileLike
   inlineData?: FileLike
   file_data?: FileLike
   fileData?: FileLike
+}
+
+interface FunctionCallLike {
+  name?: unknown
+  id?: unknown
+  args?: unknown
 }
 
 interface FileLike {
@@ -163,6 +169,66 @@ function str(...candidates: unknown[]): string | undefined {
 
 function fileOf(part: EventPart): FileLike | undefined {
   return part.file_data ?? part.fileData ?? part.inline_data ?? part.inlineData
+}
+
+/**
+ * ADK's own name for the synthetic call a `require_confirmation` tool produces.
+ *
+ * Mirrors `CONFIRMATION_FUNCTION_NAME` in `apps/api/src/coach/services/turns.py`, which
+ * mirrors `google.adk.flows.llm_flows.functions` — a private module the server restates
+ * and this file cannot import at all. The pair is on the ADK bump checklist.
+ */
+export const CONFIRMATION_FUNCTION_NAME = 'adk_request_confirmation'
+
+export interface PendingConfirmation {
+  /** The id of the `adk_request_confirmation` call, sent back to answer it. */
+  functionCallId: string
+  /** The tool waiting on the answer, e.g. `discard_task`. */
+  toolName: string
+  /** That tool's arguments, for saying *what* is about to happen. */
+  args: Record<string, unknown>
+}
+
+/**
+ * The question the transcript is waiting on, if any.
+ *
+ * A gated tool ends the turn with an `adk_request_confirmation` call and resumes only
+ * when a function *response* to that call arrives, so "pending" means exactly: a request
+ * exists and nothing has answered it.
+ *
+ * **It is not simply the last event.** ADK emits the request and then a function-response
+ * event carrying `requested_tool_confirmations`, so the request is second-from-last the
+ * moment it is created — a reader that looked only at the tail would find nothing and the
+ * buttons would never appear. Scanning newest-first and cancelling requests against
+ * answers is also what keeps an *older*, already-answered request from resurrecting its
+ * buttons later in the conversation.
+ */
+export function pendingConfirmation(events: SessionEvent[]): PendingConfirmation | null {
+  const answered = new Set<string>()
+
+  for (const stored of [...events].sort((a, b) => b.seq - a.seq)) {
+    for (const part of partsOf(stored.event)) {
+      const response = part.function_response ?? part.functionResponse
+      const responseId = str(response?.id)
+      if (response?.name === CONFIRMATION_FUNCTION_NAME && responseId) {
+        answered.add(responseId)
+      }
+
+      const call = part.function_call ?? part.functionCall
+      if (!call || call.name !== CONFIRMATION_FUNCTION_NAME) continue
+      const callId = str(call.id)
+      if (!callId || answered.has(callId)) continue
+
+      const args = (call.args ?? {}) as Record<string, unknown>
+      const original = (args.originalFunctionCall ?? {}) as FunctionCallLike
+      return {
+        functionCallId: callId,
+        toolName: str(original.name) ?? 'this change',
+        args: (original.args ?? {}) as Record<string, unknown>,
+      }
+    }
+  }
+  return null
 }
 
 function toolNameOf(part: EventPart): string | undefined {
