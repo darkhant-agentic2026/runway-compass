@@ -3,5 +3,5 @@ output "error_metric_name" {
 }
 
 output "uptime_check_id" {
-  value = google_monitoring_uptime_check_config.healthz.uptime_check_id
+  value = google_monitoring_uptime_check_config.livez.uptime_check_id
 }

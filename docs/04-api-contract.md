@@ -166,7 +166,7 @@ Accepted: `image/png`, `image/jpeg`, `image/webp`, `application/pdf`, `text/plai
 | --- | --- | --- |
 | `POST` | `/internal/tick` | Cloud Scheduler |
 | `POST` | `/internal/runs/{runId}/execute` | Cloud Tasks |
-| `GET` | `/healthz`, `/readyz` | Cloud Run probes |
+| `GET` | `/livez`, `/readyz` | Cloud Run probes. **Not `/healthz`** — Google's frontend intercepts that path on Cloud Run and answers it with its own 404 without forwarding to the container, which is invisible to the probes (they bypass the frontend) and to every local test |
 
 ## WebSocket protocol (`/ws`)
 

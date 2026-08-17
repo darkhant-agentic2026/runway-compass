@@ -86,10 +86,10 @@ diagnose() {
 }
 
 # --- liveness: must not touch a dependency -------------------------------------------
-fetch /healthz
+fetch /livez
 case "$HTTP_BODY" in
-  *'"status":"ok"'*) pass "/healthz  ${HTTP_BODY}" ;;
-  *) diagnose "/healthz did not return {\"status\":\"ok\"}" ;;
+  *'"status":"ok"'*) pass "/livez    ${HTTP_BODY}" ;;
+  *) diagnose "/livez did not return {\"status\":\"ok\"}" ;;
 esac
 
 # --- readiness: proves Firestore is reachable from the revision ----------------------

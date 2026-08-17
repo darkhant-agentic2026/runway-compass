@@ -86,7 +86,7 @@ class Database:
 
     The client is built on first use, not in the constructor. Constructing one resolves
     Application Default Credentials, and doing that at import time would mean the app
-    could not even be *imported* without credentials — which would break `/healthz`'s
+    could not even be *imported* without credentials — which would break `/livez`'s
     promise not to touch a dependency, and would make a missing credential look like a
     startup crash instead of a `/readyz` failure.
     """

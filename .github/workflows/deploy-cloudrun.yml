@@ -5,7 +5,7 @@ name: Deploy (Cloud Run)
 #   1. auth to GCP via Workload Identity Federation (no keys)
 #   2. docker build + push to Artifact Registry, tagged with the commit SHA
 #   3. gcloud run deploy --image ...:$SHA --no-traffic --tag=candidate
-#   4. smoke test the candidate revision URL: /healthz, /readyz, one authenticated round-trip
+#   4. smoke test the candidate revision URL: /livez, /readyz, one authenticated round-trip
 #   5. gcloud run services update-traffic --to-tags candidate=100  (or 10 -> 100 canary in prod)
 #   6. on smoke-test failure: leave traffic on the previous revision, fail loudly
 #
@@ -146,7 +146,7 @@ jobs:
           gcloud run services update-traffic "${{ env.SERVICE }}" \
             --region="${{ env.REGION }}" --to-tags candidate=10 --quiet
           sleep 120
-          curl -fsS --max-time 30 "${{ steps.candidate.outputs.url }}/healthz" >/dev/null
+          curl -fsS --max-time 30 "${{ steps.candidate.outputs.url }}/livez" >/dev/null
           gcloud run services update-traffic "${{ env.SERVICE }}" \
             --region="${{ env.REGION }}" --to-tags candidate=100 --quiet
 

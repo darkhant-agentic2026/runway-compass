@@ -154,10 +154,10 @@ async def test_a_project_pref_patch_does_not_clobber_siblings(
     assert prefs["allowVideos"] is False
 
 
-async def test_healthz_needs_no_authentication(app) -> None:
+async def test_livez_needs_no_authentication(app) -> None:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
-        assert (await c.get("/healthz")).json() == {"status": "ok"}
+        assert (await c.get("/livez")).json() == {"status": "ok"}
 
 
 async def test_readyz_reports_firestore_reachability(app) -> None:

@@ -1,18 +1,18 @@
 # Uptime check, a log-based error metric, and the alert policies.
 #
 # docs/07-infra-deploy.md: "Alert policies from docs/05-autonomous-runs.md, uptime check
-# on /healthz, log-based error metric."
+# on /livez, log-based error metric."
 
 # --- Uptime check -------------------------------------------------------------------
 
-resource "google_monitoring_uptime_check_config" "healthz" {
+resource "google_monitoring_uptime_check_config" "livez" {
   project      = var.project_id
-  display_name = "coach-api /healthz"
+  display_name = "coach-api /livez"
   timeout      = "10s"
   period       = "300s"
 
   http_check {
-    path         = "/healthz"
+    path         = "/livez"
     port         = 443
     use_ssl      = true
     validate_ssl = true
@@ -82,10 +82,10 @@ resource "google_monitoring_alert_policy" "uptime" {
   combiner     = "OR"
 
   conditions {
-    display_name = "/healthz failing"
+    display_name = "/livez failing"
 
     condition_threshold {
-      filter          = "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND resource.type=\"uptime_url\" AND metric.labels.check_id=\"${google_monitoring_uptime_check_config.healthz.uptime_check_id}\""
+      filter          = "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND resource.type=\"uptime_url\" AND metric.labels.check_id=\"${google_monitoring_uptime_check_config.livez.uptime_check_id}\""
       duration        = "600s"
       comparison      = "COMPARISON_LT"
       threshold_value = 1
