@@ -120,34 +120,11 @@ jobs:
             --region="${{ env.REGION }}" \
             --no-traffic --tag=candidate \
             --quiet
-          # Read the tag/url pairs and pick the candidate here rather than asking gcloud
-          # to filter. Two constraints shape this:
-          #
-          #   * `--filter` is a *list*-command flag. `describe` returns one resource and
-          #     rejects it outright: "unrecognized arguments: --filter".
-          #   * a `value()` projection that selects across a repeated field yields a
-          #     list, which gcloud prints as its literal repr — ['https://…'], brackets
-          #     and quotes included — and curl then calls that a bad range specification.
-          #
-          # `--flatten` makes each traffic target its own record, so two scalar columns
-          # come back tab-separated, and awk picks the row. Untagged rows have an empty
-          # first column, which is why the separator is set explicitly.
-          traffic=$(gcloud run services describe "${{ env.SERVICE }}" \
-            --region="${{ env.REGION }}" \
-            --flatten="status.traffic[]" \
-            --format="value(status.traffic.tag,status.traffic.url)")
-
-          url=$(printf '%s\n' "$traffic" |
-            awk -F'\t' '$1 == "candidate" { print $2; exit }')
-
-          if [ -z "$url" ]; then
-            echo "::error::No candidate revision URL found. The tagged revision may not"
-            echo "::error::have been created, or the traffic tag may have a different name."
-            echo "Traffic targets reported by Cloud Run:"
-            printf '%s\n' "$traffic"
-            exit 1
-          fi
-
+          # Which revision carries the tag is read by a script, not by an inline
+          # expression: this step has failed twice on gcloud output formatting, and
+          # inline the only way to test it is to merge and watch.
+          # `scripts/candidate_url.sh` is exercised against a stubbed gcloud instead.
+          url="$(./scripts/candidate_url.sh "${{ env.SERVICE }}" "${{ env.REGION }}")"
           echo "Candidate URL: $url"
           echo "url=$url" >> "$GITHUB_OUTPUT"
 
