@@ -5,6 +5,24 @@
 
 # --- Uptime check -------------------------------------------------------------------
 
+# The liveness path moved from /healthz to /livez, and this resource was renamed with it.
+# Without this block Terraform reads that as "destroy one, create another", and the
+# destroy fails:
+#
+#   Error 400: Request contains an invalid argument.
+#   - please ensure all associated Alert Policies are deleted.
+#
+# Cloud Monitoring refuses to delete an uptime check while an alert policy references it,
+# and `google_monitoring_alert_policy.uptime` does. `moved` tells Terraform this is the
+# same object under a new address, so the change becomes an in-place update of the path
+# and nothing is destroyed at all.
+#
+# Safe to delete once every environment has applied it once.
+moved {
+  from = google_monitoring_uptime_check_config.healthz
+  to   = google_monitoring_uptime_check_config.livez
+}
+
 resource "google_monitoring_uptime_check_config" "livez" {
   project      = var.project_id
   display_name = "coach-api /livez"
@@ -24,6 +42,14 @@ resource "google_monitoring_uptime_check_config" "livez" {
       project_id = var.project_id
       host       = var.service_host
     }
+  }
+
+  lifecycle {
+    # For a *genuine* replacement later — changing a field this resource cannot update in
+    # place — the same deletion block applies: the alert policy below would still
+    # reference the old check when Terraform tried to remove it. Creating the replacement
+    # first lets the policy be repointed before the old one goes.
+    create_before_destroy = true
   }
 }
 
