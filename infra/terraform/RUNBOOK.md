@@ -460,11 +460,12 @@ entirely unconfigured until you actually want one.
 ## 7. Verify
 
 ```bash
-curl -fsS "$(terraform output -raw service_url)/healthz"   # {"status":"ok"}
-curl -fsS "$(terraform output -raw service_url)/readyz"    # {"status":"ok"} — proves Firestore
-curl -si  "$(terraform output -raw service_url)/api/me" | head -1   # HTTP/2 401
-curl -fsS "$(terraform output -raw service_url)/" | head -1         # <!doctype html>
+./scripts/smoke.sh "$(terraform output -raw service_url)"
 ```
+
+That is the same script the deploy workflow runs before it shifts any traffic, so a green
+result here and a green deploy mean the same thing. It checks `/healthz`, `/readyz`, that
+an unauthenticated `/api/me` is a 401 in `problem+json`, and that `/` serves the SPA.
 
 The last two together are the M0 exit criterion's structural half: the SPA and the API are
 served from one origin, and the SPA catch-all is not shadowing `/api/*`.

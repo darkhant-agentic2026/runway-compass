@@ -120,31 +120,31 @@ jobs:
             --region="${{ env.REGION }}" \
             --no-traffic --tag=candidate \
             --quiet
+          # `--flatten` + `--filter` rather than a `.filter(...).extract(...)` expression
+          # inside `value()`: the latter yields a *list*, which gcloud renders as
+          # ['https://…'] — brackets and quotes included. curl then rejects it with
+          # "bad range specification", naming neither the cause nor the field. Flattening
+          # first makes each traffic target its own record, so `value()` prints a scalar.
           url=$(gcloud run services describe "${{ env.SERVICE }}" \
             --region="${{ env.REGION }}" \
-            --format='value(status.traffic.filter("tag=candidate").extract("url"))' | head -1)
+            --flatten="status.traffic[]" \
+            --filter="status.traffic.tag=candidate" \
+            --format="value(status.traffic.url)" | head -1)
+
+          if [ -z "$url" ]; then
+            echo "::error::No candidate revision URL found. The tagged revision may not"
+            echo "::error::have been created, or the traffic tag may have a different name."
+            gcloud run services describe "${{ env.SERVICE }}" \
+              --region="${{ env.REGION }}" --format="yaml(status.traffic)"
+            exit 1
+          fi
+
+          echo "Candidate URL: $url"
           echo "url=$url" >> "$GITHUB_OUTPUT"
 
       # --- 4. smoke test ------------------------------------------------------------
       - name: Smoke test the candidate
-        run: |
-          set -euo pipefail
-          url="${{ steps.candidate.outputs.url }}"
-          echo "Smoke testing $url"
-
-          curl -fsS --max-time 30 "$url/healthz" | tee /dev/stderr | grep -q '"status":"ok"'
-          curl -fsS --max-time 30 "$url/readyz"  | tee /dev/stderr | grep -q '"status":"ok"'
-
-          # One authenticated round-trip. An unauthenticated /api/me must be a 401 in
-          # problem+json — which also proves the SPA catch-all is not shadowing the API
-          # on the deployed revision, the thing docs/07-infra-deploy.md#container warns
-          # about and that only shows up in a real image.
-          status=$(curl -s -o /tmp/me.json -w '%{http_code}' --max-time 30 "$url/api/me")
-          test "$status" = "401"
-          grep -q 'application/problem' <(curl -sI --max-time 30 "$url/api/me")
-
-          # And the SPA itself is served at the root of the same origin.
-          curl -fsS --max-time 30 "$url/" | grep -qi '<!doctype html'
+        run: ./scripts/smoke.sh "${{ steps.candidate.outputs.url }}"
 
       # --- 5. shift traffic ---------------------------------------------------------
       - name: Shift traffic (dev - straight to 100%)
