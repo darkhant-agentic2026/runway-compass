@@ -24,7 +24,7 @@ from coach.adk_firestore import CoachSessionService
 from coach.agents.runner import RunnerFactory
 from coach.core.config import Settings
 from coach.core.principal import Principal
-from coach.integrations.artifacts import build_artifact_service
+from coach.integrations.artifacts import artifact_service_provider
 from coach.integrations.storage import build_object_store
 from coach.repositories.firestore import Database, LazyAsyncClient
 from coach.repositories.idempotency import IdempotencyRepository
@@ -104,13 +104,15 @@ class Container:
         # it on finalize and the agent reads them back through the `Runner`, so a second
         # instance would be a second client against the same bucket and a second place to
         # get the bucket name wrong.
-        self.artifact_service = build_artifact_service(settings)
+        #
+        # A callable, not the service: building the GCS-backed one resolves credentials,
+        # and it is handed to ADK, which type-checks it. `artifact_service_provider`
+        # explains why those two facts cannot both be satisfied by a proxy.
+        self.artifacts = artifact_service_provider(settings)
         # Held on the container as well as passed to the service, because the local-only
         # PUT receiver writes into this exact instance (`api/routers/local_storage.py`).
         self.object_store = build_object_store(settings)
-        self.uploads = UploadService(
-            self.upload_repository, self.object_store, self.artifact_service
-        )
+        self.uploads = UploadService(self.upload_repository, self.object_store, self.artifacts)
 
         # After `uploads`: serving an attachment's bytes for a preview goes through it.
         self.sessions = SessionService(
@@ -123,7 +125,7 @@ class Container:
 
         self.registry = TurnRegistry()
         self.broker = StreamBroker()
-        self.runners = RunnerFactory(settings, self.session_service, self.artifact_service)
+        self.runners = RunnerFactory(settings, self.session_service, self.artifacts)
         self.turns = TurnService(
             settings,
             self.turn_repository,

@@ -41,14 +41,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from google.adk.artifacts.base_artifact_service import BaseArtifactService
-
 from coach.agents.runner import APP_NAME
 from coach.core.clock import now
 from coach.core.errors import NotFound, ValidationProblem
 from coach.core.ids import upload_id as new_upload_id
 from coach.core.principal import Principal
-from coach.integrations.artifacts import register_upload
+from coach.integrations.artifacts import ArtifactServiceProvider, register_upload
 from coach.integrations.storage import SIGNED_URL_TTL, ObjectStore
 from coach.repositories.uploads import UploadRepository
 
@@ -93,10 +91,12 @@ class UploadService:
         self,
         uploads: UploadRepository,
         store: ObjectStore,
-        artifacts: BaseArtifactService,
+        artifacts: ArtifactServiceProvider,
     ) -> None:
         self._uploads = uploads
         self._store = store
+        # A provider, resolved when a request actually needs the bucket — constructing
+        # this service must not resolve credentials. See `artifact_service_provider`.
         self._artifacts = artifacts
 
     async def create(
@@ -166,7 +166,7 @@ class UploadService:
         # The move out of staging. Everything above only decided whether these bytes are
         # allowed to exist; this is what makes them last longer than a day.
         artifact = await register_upload(
-            self._artifacts,
+            self._artifacts(),
             app_name=APP_NAME,
             user_id=principal.uid,
             upload_id=upload_id,
@@ -224,7 +224,7 @@ class UploadService:
         if record is None or record.get("ownerUid") != principal.uid:
             raise NotFound("No attachment for that reference.")
 
-        part = await self._artifacts.load_artifact(
+        part = await self._artifacts().load_artifact(
             app_name=APP_NAME,
             user_id=principal.uid,
             filename=str(record["artifactFilename"]),

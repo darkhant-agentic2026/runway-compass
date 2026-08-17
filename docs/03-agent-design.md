@@ -123,7 +123,8 @@ What to re-verify against the newly installed source, and re-test:
 | `get_user_state`, `flush` | We override; upstream may start providing them | same |
 | `FirestoreMemoryService` keyword extraction, stop-word list, `search_memory` fan-out | Used as-is; a change moves retrieval quality | `adk_firestore/memory_service.py` |
 | `Runner` streaming event shape | Feeds delta `seq` assignment, checkpointing, and the resume path | `ws/`, `services/` |
-| `GcsArtifactService(bucket_name, **kwargs)` construction, `types.Part` file references | Upload and multimodal path | `integrations/` |
+| `GcsArtifactService(bucket_name, **kwargs)` construction, `_get_blob_name`, `types.Part` file references | Upload and multimodal path. `artifact_part_uri` reads the blob layout out of the private method deliberately, so a rename fails a test rather than a deploy | `integrations/` |
+| `InvocationContext`'s `artifact_service` and `session_service` fields, and where `Runner` builds the context | Pydantic validates both with `isinstance`. That is why the artifact service is deferred with a *provider* and not a proxy — a proxy passed every local test and failed every deployed turn | `integrations/artifacts.py`, `agents/runner.py` |
 | Tool and callback signatures | The tool catalogue below | `agents/` |
 | `_convert_tool_union_to_tools` / `canonical_tools` built-in-tool wrapping | Decides whether `google_search` may sit beside function tools. If a bump lifts the Gemini restriction, the explicit `search_agent` hop becomes deletable ([M1 spike result](#m1-spike-result-resolved-against-the-installed-270-source)) | `agents/` |
 
@@ -144,6 +145,12 @@ right for v1, but both are real.
 
 `GcsArtifactService` from ADK, pointed at `gs://{project}-coach-artifacts`. User uploads
 (images, PDFs) land there and are referenced as `types.Part` file parts. No custom work.
+
+One wiring constraint, learned in production: its constructor resolves credentials, so it
+cannot be built while the container is assembled — and it is handed to ADK, which
+`isinstance`-checks it, so it cannot be a proxy either. The container therefore holds a
+provider, `integrations/artifacts.artifact_service_provider`, and `UploadService` and
+`RunnerFactory` resolve it when a request first needs the bucket.
 
 ## Agent graph
 

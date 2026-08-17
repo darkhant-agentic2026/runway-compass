@@ -16,9 +16,27 @@ Eagerness buys nothing here in exchange. A constructor validates *credentials*, 
 bucket or database it was given, so nothing about a misconfiguration is caught earlier by
 building the client sooner — only by using it.
 
-`LazyProxy` forwards attribute access to an instance built on first use. Attribute access
-is the whole surface these clients present (`.collection`, `.bucket`, `.save_artifact`), so
-forwarding it is enough, and the factory is called at most once.
+`LazyProxy` forwards attribute access to an instance built on first use, and the factory is
+called at most once.
+
+**Only where attribute access is the whole surface.** It is enough for a client this
+project passes to code that just calls methods on it — a Firestore `AsyncClient`
+(`.collection`), a `storage.Client` behind our own `ObjectStore` protocol. It is *not*
+enough when the object crosses a boundary that inspects its type, and closing M2 shipped
+both halves of that lesson to production at once:
+
+- ADK's `InvocationContext` is a pydantic model that validates `artifact_service` with
+  `isinstance`, so a proxied artifact service failed the first turn of every deployed
+  conversation with `Input should be an instance of BaseArtifactService`.
+- `__getattr__` refuses underscore names below, to stay recursion-safe. A caller reading a
+  documented-private attribute — `GcsArtifactService._get_blob_name`, which
+  `integrations/artifacts.py` deliberately depends on — therefore gets `AttributeError`
+  through the proxy and quietly takes its fallback path.
+
+Neither is fixable inside the proxy: forwarding attributes cannot forward a type, and a
+`__getattr__` that forwards `_`-names cannot protect itself. Where a type is part of the
+surface, defer with a *provider* — a callable resolved at first use that hands out the
+real instance — as `integrations/artifacts.py` does.
 """
 
 from __future__ import annotations

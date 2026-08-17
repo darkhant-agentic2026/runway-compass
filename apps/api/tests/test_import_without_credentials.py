@@ -106,3 +106,22 @@ def test_touching_firestore_is_what_finally_needs_them(no_credentials: None) -> 
 
     with pytest.raises(DefaultCredentialsError):
         container.session_service.client.collection("adk-session")
+
+
+@pytest.mark.parametrize("env", ["dev", "prod"])
+def test_the_artifact_service_is_built_when_it_is_first_asked_for(
+    no_credentials: None, env: str
+) -> None:
+    """Same half, for the deferral that is a provider rather than a proxy.
+
+    `Container.artifacts` is a callable, so "deferred" here means *nothing calls it while
+    assembling the app* — a property that no type can enforce and that this asserts
+    directly: the deployed container above was built with no credentials, and asking its
+    provider for the service is what finally needs them. See
+    `integrations/artifacts.artifact_service_provider` for why it is not a `LazyProxy`,
+    and `test_artifact_service_provider.py` for what the proxy broke.
+    """
+    container = Container(Settings(env=env, google_cloud_project="coach-dev", **DEPLOYED))
+
+    with pytest.raises(DefaultCredentialsError):
+        container.artifacts()
