@@ -81,12 +81,12 @@ resource "google_cloud_run_v2_service" "this" {
         }
       }
 
-      # Liveness only — /healthz must not touch a dependency, or a Firestore blip gets
+      # Liveness only — /livez must not touch a dependency, or a Firestore blip gets
       # healthy instances killed. /readyz is the one that reaches Firestore, and it is
       # used by the deploy smoke test rather than by the platform.
       startup_probe {
         http_get {
-          path = "/healthz"
+          path = "/livez"
         }
         initial_delay_seconds = 5
         period_seconds        = 5
@@ -96,7 +96,7 @@ resource "google_cloud_run_v2_service" "this" {
 
       liveness_probe {
         http_get {
-          path = "/healthz"
+          path = "/livez"
         }
         period_seconds    = 30
         failure_threshold = 3

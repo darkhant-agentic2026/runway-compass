@@ -50,18 +50,53 @@ echo "Smoke testing ${URL}"
 # go it usually does not, which is exactly the kind of test that passes until the day it
 # does not.
 
+# Fetch a path, capturing status, headers, and body. `curl -f` is deliberately not used:
+# it collapses every failure into "exit 22" and throws the response away, so a 404 from
+# Cloud Run's frontend and a 404 from our own SPA catch-all look identical — and those
+# two have completely different causes.
+fetch() {
+  local path="$1"
+  HTTP_CODE="$(curl -sS --max-time 30 \
+    -o "${TMP}/body" -D "${TMP}/head" -w '%{http_code}' "${URL}${path}" 2>"${TMP}/err")" || {
+    printf '  \033[31mFAIL\033[0m %s could not be reached: %s\n' \
+      "$path" "$(cat "${TMP}/err")" >&2
+    exit 1
+  }
+  HTTP_BODY="$(head -c 400 "${TMP}/body")"
+}
+
+# Print everything known about a bad response. Whoever reads this next should not have to
+# re-run curl by hand to find out what happened.
+diagnose() {
+  {
+    printf '  \033[31mFAIL\033[0m %s\n' "$1"
+    echo "         status:  ${HTTP_CODE}"
+    echo "         server:  $(awk -F': ' 'tolower($1)=="server"{print $2}' "${TMP}/head" |
+      tr -d '\r')"
+    echo "         type:    $(awk -F': ' 'tolower($1)=="content-type"{print $2}' \
+      "${TMP}/head" | tr -d '\r')"
+    echo "         body:    ${HTTP_BODY}"
+    echo
+    echo "         A 404 from 'Google Frontend' with an HTML body means the request never"
+    echo "         reached the container — wrong host, or no revision serving this tag."
+    echo "         A 404 in application/problem+json means it did reach the app, and the"
+    echo "         SPA catch-all answered instead of the route."
+  } >&2
+  exit 1
+}
+
 # --- liveness: must not touch a dependency -------------------------------------------
-body="$(curl -fsS --max-time 30 "${URL}/healthz")" || fail "/healthz did not respond"
-case "$body" in
-  *'"status":"ok"'*) pass "/healthz  ${body}" ;;
-  *) fail "/healthz returned unexpected body: ${body}" ;;
+fetch /livez
+case "$HTTP_BODY" in
+  *'"status":"ok"'*) pass "/livez    ${HTTP_BODY}" ;;
+  *) diagnose "/livez did not return {\"status\":\"ok\"}" ;;
 esac
 
 # --- readiness: proves Firestore is reachable from the revision ----------------------
-body="$(curl -fsS --max-time 30 "${URL}/readyz")" || fail "/readyz did not respond"
-case "$body" in
-  *'"status":"ok"'*) pass "/readyz   ${body}" ;;
-  *) fail "/readyz returned unexpected body: ${body}" ;;
+fetch /readyz
+case "$HTTP_BODY" in
+  *'"status":"ok"'*) pass "/readyz   ${HTTP_BODY}" ;;
+  *) diagnose "/readyz did not return {\"status\":\"ok\"}" ;;
 esac
 
 # --- the API is reachable and is NOT the SPA -----------------------------------------
@@ -69,20 +104,17 @@ esac
 # code path, and an unauthenticated /api/me must be a 401 in problem+json. This is also
 # what proves the SPA catch-all is not shadowing /api/* on a real image, which
 # docs/07-infra-deploy.md#container warns about and which no unit test can see.
-code="$(curl -s -o "${TMP}/body" -D "${TMP}/head" -w '%{http_code}' --max-time 30 \
-  "${URL}/api/me")" || fail "/api/me did not respond"
-[ "$code" = "401" ] || fail "/api/me returned ${code}, expected 401"
+fetch /api/me
+[ "$HTTP_CODE" = "401" ] || diagnose "/api/me returned ${HTTP_CODE}, expected 401"
 grep -qi 'application/problem' "${TMP}/head" ||
-  fail "/api/me was not problem+json — the SPA catch-all may be shadowing it: $(
-    grep -i '^content-type' "${TMP}/head" || echo 'no content-type'
-  )"
+  diagnose "/api/me was not problem+json — the SPA catch-all may be shadowing it"
 pass "/api/me   401 application/problem+json"
 
 # --- the SPA is served from the same origin ------------------------------------------
-body="$(curl -fsS --max-time 30 "${URL}/")" || fail "/ did not respond"
-case "$body" in
+fetch /
+case "$HTTP_BODY" in
   *'<!doctype html'* | *'<!DOCTYPE html'*) pass "/         serves the SPA" ;;
-  *) fail "/ did not serve an HTML document" ;;
+  *) diagnose "/ did not serve an HTML document" ;;
 esac
 
 echo "Smoke tests passed."

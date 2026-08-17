@@ -63,7 +63,12 @@ user's button calls.
   "leftovers" and do not introduce a Firebase project. `roles/firebaseauth.admin` is likewise
   the correct IAM role.
 - **The SPA catch-all route registers last**, after every router, or it shadows `/api/*`,
-  `/ws`, `/internal/*`, `/healthz`, `/readyz`. `docs/07-infra-deploy.md`
+  `/ws`, `/internal/*`, `/livez`, `/readyz`. `docs/07-infra-deploy.md`
+- **Liveness is `/livez`, never `/healthz`.** Google's frontend intercepts `/healthz` on
+  Cloud Run and answers it with its own 404 without forwarding to the container. Cloud
+  Run's own probes bypass the frontend, so `/healthz` passes them and looks healthy
+  everywhere a developer can see; only the deploy smoke test and the uptime check notice,
+  and the uptime check fails silently. `tests/test_liveness_path.py`
 - **Theme: the inline `index.html` script and `useThemeStore` share a `localStorage` key and
   format.** Do not route it through Zustand `persist` — the envelope breaks the inline
   reader. `docs/06-frontend.md`

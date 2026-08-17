@@ -25,7 +25,7 @@ export default defineConfig({
       // (docs/01-architecture.md). Keep this list in step with `API_PREFIXES` in
       // `apps/api/src/coach/main.py`.
       '/api': 'http://127.0.0.1:8080',
-      '/healthz': 'http://127.0.0.1:8080',
+      '/livez': 'http://127.0.0.1:8080',
       '/readyz': 'http://127.0.0.1:8080',
       '/ws': { target: 'ws://127.0.0.1:8080', ws: true },
     },

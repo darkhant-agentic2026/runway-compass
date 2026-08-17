@@ -1,7 +1,7 @@
 """FastAPI application factory.
 
 **Route registration order is load-bearing.** The SPA catch-all is registered last, after
-every router, or it shadows `/api/*`, `/ws`, `/internal/*`, `/healthz`, and `/readyz`
+every router, or it shadows `/api/*`, `/ws`, `/internal/*`, `/livez`, and `/readyz`
 (docs/07-infra-deploy.md#container). `tests/test_spa_catchall.py` asserts this and is the
 reason a future refactor cannot quietly reorder the calls at the bottom of `create_app`.
 
@@ -36,7 +36,9 @@ STATIC_DIR = Path("static")
 
 #: Prefixes owned by a router. Anything under one of these must never reach the SPA
 #: fallback; the catch-all test enumerates exactly this list.
-API_PREFIXES = ("/api", "/ws", "/internal", "/healthz", "/readyz")
+# `/livez` rather than `/healthz`: Google's frontend intercepts the latter on Cloud
+# Run and never forwards it (coach.api.routers.health).
+API_PREFIXES = ("/api", "/ws", "/internal", "/livez", "/readyz")
 
 
 def _problem_response(request: Request, error: CoachError) -> JSONResponse:

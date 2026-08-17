@@ -36,7 +36,7 @@ test('the SPA and the API are served from one origin', async ({ signedIn: page }
   expect(spa.status()).toBe(200)
   expect(spa.headers()['content-type']).toContain('text/html')
 
-  const health = await page.request.get('/healthz')
+  const health = await page.request.get('/livez')
   expect(health.status()).toBe(200)
   expect(await health.json()).toEqual({ status: 'ok' })
 

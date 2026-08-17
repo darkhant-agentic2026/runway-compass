@@ -464,15 +464,22 @@ entirely unconfigured until you actually want one.
 ```
 
 That is the same script the deploy workflow runs before it shifts any traffic, so a green
-result here and a green deploy mean the same thing. It checks `/healthz`, `/readyz`, that
+result here and a green deploy mean the same thing. It checks `/livez`, `/readyz`, that
 an unauthenticated `/api/me` is a 401 in `problem+json`, and that `/` serves the SPA.
 
 The last two together are the M0 exit criterion's structural half: the SPA and the API are
 served from one origin, and the SPA catch-all is not shadowing `/api/*`.
 
-If `/healthz` fails on the very first request, try it once more before investigating — the
+If `/livez` fails on the very first request, try it once more before investigating — the
 service has just started and the first caller can beat it to the door. Cloud Run's startup
-probe hits `/healthz`, so an apply that succeeded is itself evidence the endpoint answers.
+probe hits `/livez`, so an apply that succeeded is itself evidence the endpoint answers.
+
+**Liveness is `/livez`, not `/healthz`.** Google's frontend intercepts `/healthz` on Cloud
+Run and answers it with its own HTML 404 without ever forwarding the request to the
+container. Cloud Run's own probes bypass the frontend, so `/healthz` satisfies them and
+the revision reports healthy; the only things that notice are an external smoke test and
+the uptime check, and the latter fails silently. If you see a Google-branded 404 for a
+path the app definitely serves, this is why.
 
 ### Sign-in — the other half of the exit criterion
 

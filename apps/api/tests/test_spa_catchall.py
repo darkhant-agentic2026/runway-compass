@@ -3,7 +3,7 @@
 docs/08-testing.md:
 
     **SPA catch-all does not shadow the API.** Asserts `/api/*`, `/ws`, `/internal/*`,
-    `/healthz`, and `/readyz` all resolve to their handlers rather than `index.html`, and
+    `/livez`, and `/readyz` all resolve to their handlers rather than `index.html`, and
     that an unknown path does serve the SPA. Guards the route-registration order that
     docs/07-infra-deploy.md#container depends on.
 
@@ -29,7 +29,7 @@ GUARDED_PATHS = [
     "/api/projects",
     "/ws",
     "/internal/tick",
-    "/healthz",
+    "/livez",
     "/readyz",
 ]
 

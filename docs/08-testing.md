@@ -32,7 +32,7 @@ algorithm), the gcloud Firestore emulator (`gcloud beta emulators firestore star
   drifts to whatever default a future refactor picks — in either direction, since one way
   costs a round-trip per request and the other widens the staleness window on sockets.
 - **SPA catch-all does not shadow the API.** Asserts `/api/*`, `/ws`, `/internal/*`,
-  `/healthz`, and `/readyz` all resolve to their handlers rather than `index.html`, and that
+  `/livez`, and `/readyz` all resolve to their handlers rather than `index.html`, and that
   an unknown path does serve the SPA. Guards the route-registration order that
   [07-infra-deploy.md](07-infra-deploy.md#container) depends on.
 

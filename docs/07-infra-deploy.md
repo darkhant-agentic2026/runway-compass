@@ -42,7 +42,7 @@ infra/terraform/
 | `google_iam_workload_identity_pool` | Keyless GitHub Actions → GCP auth |
 | `google_identity_platform_config` | Authorized domains = the Cloud Run service URL (+ custom domain in prod) |
 | `google_identity_platform_default_supported_idp_config` | `idp_id = "google.com"`, client ID/secret from the OAuth client below |
-| Monitoring | Alert policies from [05-autonomous-runs.md](05-autonomous-runs.md), uptime check on `/healthz`, log-based error metric |
+| Monitoring | Alert policies from [05-autonomous-runs.md](05-autonomous-runs.md), uptime check on `/livez`, log-based error metric |
 
 The SPA is served by the Cloud Run service itself (see [Container](#container)), so there is
 no hosting resource here.
@@ -189,7 +189,7 @@ skew structurally impossible — there is one artifact and one revision, so a ro
 back both halves together.
 
 In `coach/main.py` the static mount and the SPA fallback are registered **last**, after
-every router, so the catch-all cannot shadow `/api/*`, `/ws`, `/internal/*`, `/healthz`, or
+every router, so the catch-all cannot shadow `/api/*`, `/ws`, `/internal/*`, `/livez`, or
 `/readyz`:
 
 ```python
@@ -231,7 +231,7 @@ Environment protection rule requiring approval).
 1. auth to GCP via Workload Identity Federation (no keys)
 2. docker build + push to Artifact Registry, tagged with the commit SHA
 3. gcloud run deploy --image …:$SHA --no-traffic --tag=candidate
-4. smoke test the candidate revision URL: /healthz, /readyz, one authenticated round-trip
+3. smoke test the candidate revision URL: /livez, /readyz, one authenticated round-trip
 5. gcloud run services update-traffic --to-tags candidate=100   (or 10 → 100 canary in prod)
 6. on smoke-test failure: leave traffic on the previous revision, fail loudly
 ```
