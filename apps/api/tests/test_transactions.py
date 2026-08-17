@@ -18,13 +18,20 @@ import asyncio
 import pytest
 from google.api_core.exceptions import Aborted
 
+from coach.api.deps import Container
 from coach.repositories.firestore import TRANSACTION_RETRIES, Database
 from coach.services.models import TaskState
 
 
 async def test_a_burst_of_concurrent_writes_all_succeed(container, alice) -> None:
-    """Eight concurrent edits to one project, which is well past the point where the
-    client's own retry budget gives up on its own."""
+    """Eight concurrent edits to one project, through one service instance.
+
+    `TaskService` holds a per-project `asyncio.Lock`, so these queue rather than collide
+    and the result is deterministic — which is the point. Firestore resolves contention by
+    aborting and retrying, and under this much concurrency the retry budget runs out and a
+    valid write surfaces as a 500. This asserts that the common case, several writes to
+    one project on one instance, does not depend on that budget at all.
+    """
     project = await container.projects.create(alice, title="Contention")
     parent = await container.tasks.create_task(
         alice, project.id, title="Parent", estimated_minutes=120
@@ -52,6 +59,44 @@ async def test_a_burst_of_concurrent_writes_all_succeed(container, alice) -> Non
     assert refreshed.rollup is not None
     assert refreshed.rollup.subtask_count == 8
     assert refreshed.rollup.total_estimated_minutes == 8 * 45
+
+
+async def test_two_instances_contend_on_the_same_project(settings, alice) -> None:
+    """The guarantee the lock is *not* providing.
+
+    A second Cloud Run instance has its own locks and knows nothing of the first one's, so
+    cross-instance safety rests entirely on the Firestore transaction and the backoff
+    around it. Two independent `Container`s stand in for two instances: same emulator,
+    separate `TaskService`s, separate locks.
+
+    Kept to three writers rather than eight, because this one really does go through
+    contention and retry, and the point is to prove the path works — not to find the
+    concurrency at which a shared CI runner gives up.
+    """
+    left = Container(settings)
+    right = Container(settings)
+
+    project = await left.projects.create(alice, title="Cross-instance")
+    tasks = [
+        await left.tasks.create_task(alice, project.id, title=f"Task {index}")
+        for index in range(3)
+    ]
+
+    # Promotions from two different instances: the single-`current` invariant can only be
+    # enforced by the transaction here.
+    await asyncio.gather(
+        left.tasks.set_state(alice, tasks[0].id, TaskState.CURRENT),
+        right.tasks.set_state(alice, tasks[1].id, TaskState.CURRENT),
+        left.tasks.set_state(alice, tasks[2].id, TaskState.CURRENT),
+    )
+
+    board = await left.task_repository.list_all(project.id)
+    current = [t for t in board if t.state is TaskState.CURRENT]
+    assert len(current) == 1, [f"{t.id}={t.state}" for t in board]
+
+    refreshed = await left.project_repository.get(project.id)
+    assert refreshed is not None
+    assert refreshed.next_up_task_id == current[0].id
 
 
 async def test_concurrent_state_changes_all_land(container, alice) -> None:

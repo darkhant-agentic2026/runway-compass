@@ -183,6 +183,21 @@ its project: a collection-group query cannot filter on a document key by its tra
 segment, so there has to be a field to filter on. Ownership is then checked against the
 task's own `ownerUid`, which keeps that lookup to one query.
 
+Because invariant 5 makes every task write touch the parent's `rollup` and the project's
+`counts`, two concurrent writes to one project *always* contend on the same one or two
+documents. Firestore resolves that by aborting and retrying, which is correct but has a
+budget: under enough concurrency the budget runs out and a perfectly valid write surfaces
+as a 500.
+
+`TaskService` therefore holds a **per-project `asyncio.Lock`**, so writes to one project
+from one instance queue instead of colliding. This is the same move ADK's shipped
+`FirestoreSessionService` makes for the identical problem
+([03-agent-design.md](03-agent-design.md)), and it is an optimization rather than the
+guarantee: a second Cloud Run instance has its own locks, so cross-instance safety still
+rests entirely on the transaction, plus jittered backoff around it in
+`repositories/firestore.py`. Both layers are tested — the same-instance path for being
+deterministic, the cross-instance path by driving two service instances at once.
+
 Task nesting is **one level deep**. A subtask cannot have subtasks; if the agent thinks a
 subtask is still too big, it splits it into siblings. This keeps rollups, ordering, and UI
 simple, and matches how bite-sized work actually decomposes.

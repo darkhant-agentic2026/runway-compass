@@ -21,6 +21,7 @@ invariant a property of one consistent snapshot instead of a sequence of point r
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Any
 
@@ -156,6 +157,37 @@ class TaskService:
         self._tasks = tasks
         self._projects = projects
         self._project_service = project_service
+        self._project_locks: dict[str, asyncio.Lock] = {}
+
+    def _project_lock(self, project_id: str) -> asyncio.Lock:
+        """Serialize this instance's writes to one project.
+
+        Every mutation reads the project's whole board and writes the parent rollup and
+        the project counts, so two concurrent writes to the same project always contend
+        on the same one or two documents — that is what invariant 5 in
+        docs/02-data-model.md asks for, not an accident of implementation. Firestore
+        resolves that contention by aborting and retrying, which is correct but expensive,
+        and under enough concurrency the retry budget runs out and a perfectly valid write
+        surfaces as a 500.
+
+        Queueing them locally costs a few milliseconds and removes the collision
+        altogether. This is the same move ADK's shipped `FirestoreSessionService` makes
+        for the identical problem — a per-`(app, user, session)` lock around
+        `append_event`, so "concurrent appends within one instance queue rather than
+        collide" (docs/03-agent-design.md).
+
+        It is an optimization, not the guarantee. The transaction remains the thing that
+        makes the invariants true, because a second Cloud Run instance has its own locks
+        and knows nothing of this one's — which `tests/test_transactions.py` exercises by
+        driving two service instances at once.
+        """
+        # Bounded in practice by the number of distinct projects an instance touches
+        # before it is recycled; a lock is a few dozen bytes.
+        lock = self._project_locks.get(project_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._project_locks[project_id] = lock
+        return lock
 
     # --- reads ---------------------------------------------------------------------
 
@@ -299,7 +331,8 @@ class TaskService:
             await self._write_derived(transaction, project, tasks)
             return created
 
-        return await self._db.run(txn)
+        async with self._project_lock(project_id):
+            return await self._db.run(txn)
 
     async def update_task(
         self,
@@ -327,18 +360,20 @@ class TaskService:
             updates["needsResearch"] = needs_research
         if not updates:
             return task
+        project_id = task.project_id
 
         @async_transactional
         async def txn(transaction: AsyncTransaction) -> Task:
-            project, tasks = await self._read_board(transaction, task.project_id)
+            project, tasks = await self._read_board(transaction, project_id)
             if not any(t.id == task_id for t in tasks):
                 raise NotFound(f"No task {task_id!r}.")
-            await self._tasks.patch(task.project_id, task_id, updates, transaction=transaction)
+            await self._tasks.patch(project_id, task_id, updates, transaction=transaction)
             updated = _apply(tasks, task_id, updates)
             await self._write_derived(transaction, project, tasks)
             return updated
 
-        return await self._db.run(txn)
+        async with self._project_lock(project_id):
+            return await self._db.run(txn)
 
     async def set_state(
         self,
@@ -405,7 +440,8 @@ class TaskService:
             await self._write_derived(transaction, project, tasks)
             return updated
 
-        return await self._db.run(txn)
+        async with self._project_lock(project_id):
+            return await self._db.run(txn)
 
     async def reorder(
         self,
@@ -446,7 +482,8 @@ class TaskService:
             await self._write_derived(transaction, project, tasks)
             return next(t for t in tasks if t.id == task_id)
 
-        return await self._db.run(txn)
+        async with self._project_lock(project_id):
+            return await self._db.run(txn)
 
     async def split_task(
         self,
@@ -505,7 +542,8 @@ class TaskService:
                 subtasks=sorted(created, key=lambda t: t.order),
             )
 
-        return await self._db.run(txn)
+        async with self._project_lock(project_id):
+            return await self._db.run(txn)
 
     # --- transaction helpers -------------------------------------------------------
 
