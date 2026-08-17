@@ -120,22 +120,30 @@ about an uploaded screenshot on the deployed dev environment.
 
 ## Status after M2
 
+**M2 is met.** The last exit criterion was verified by hand on `coach-dev` on 2026-08-17:
+a signed-in user chats with the coach, attaches a screenshot by paperclip and by
+drag-and-drop, gets a reply that demonstrably sees the image, reloads, and sends a further
+turn in the same session. Vertex AI, V4 signed upload URLs, and `GcsArtifactService` are
+therefore all exercised for real, which no local test can do.
+
+Six defects only reachable in a deployed environment were found and fixed doing it; they
+are itemised under *Fixed after the first M2 pass* below. That is the number worth
+remembering when planning M4 and M5 — a green local gate said nothing about any of them.
+
+
 **Met, locally.** The full disconnect matrix is green, including cross-instance resume
 (driven by two `Container`s over one emulator, which is what a second Cloud Run instance
 is). Golden flow #4 passes on all four Playwright projects — chromium, mobile-chrome,
 webkit, and mobile-safari — which is what installing WebKit early was for. 284 backend
 tests, 142 web, 52 Playwright specs.
 
-**Not met, and it needs a deploy:** *"a user can chat with the coach about an uploaded
-screenshot on the deployed dev environment."* Every piece is implemented and covered by
-tests, but four of them are only exercisable against real GCP and are therefore unproven:
-Vertex AI as the model backend (local and e2e both run a scripted or stub model), V4
-signed upload URLs (which need a real IAM signer — [07-infra-deploy.md](07-infra-deploy.md)
-calls storage one of the two local dependencies that are not emulated),
-`GcsArtifactService`, and whether Vertex actually resolves the `gs://` artifact URI the
-turn attaches. Close this by deploying to `coach-dev` and doing it by hand — the steps are
-in [infra/terraform/RUNBOOK.md](../infra/terraform/RUNBOOK.md#closing-the-m2-exit-criterion).
-Until then, treat the upload path as untested rather than working.
+**How the last criterion was closed:** by deploying to `coach-dev` and doing it by hand,
+following [RUNBOOK.md section 8](../infra/terraform/RUNBOOK.md#8-closing-the-m2-exit-criterion).
+Four things on that path have no local equivalent — Vertex AI as the model backend (local
+and e2e both run a scripted or stub model), V4 signed upload URLs (which need a real IAM
+signer), `GcsArtifactService`, and whether Vertex resolves the `gs://` artifact URI a turn
+attaches — so the deploy was not a formality, and each of the four had a real defect
+behind it.
 
 **Decisions made during implementation** that the design documents did not fix:
 
@@ -236,6 +244,24 @@ tests, which is why neither showed up as a failure:
   production and is a fixed string in it, since an exception message can carry a bucket
   name, a query, or a row of user data. The rest of M7's error-handling pass —
   retryability, wording, empty states — is still M7's.
+- **Two transcript defects, found by using the thing.** Neither is deployment-specific;
+  both are the kind only visible in a real conversation.
+
+  The sender's own message did not appear until the turn *completed*. ADK writes the user
+  event during generation and the transcript is refetched on `turn_complete`, so for the
+  whole reply the sender saw nothing but "Your coach is thinking…" — no record of what
+  they had asked. Now echoed optimistically into the events query, which is the shape
+  [06-frontend.md](06-frontend.md#tanstack-query-server-state) prescribes for interactions
+  that must feel instant, and which also avoids a duplicate: the refetch replaces the
+  whole array, so the synthetic event is swapped for the stored one in one render rather
+  than torn down in a second step.
+
+  Attachments were invisible in history. `toMessages` reduced them to a count and then
+  dropped it, so a message carrying both a question and a screenshot rendered as the
+  question alone. Attachments are now carried through and rendered as chips — by filename
+  while the message is in flight, and by kind afterwards, because a stored event holds a
+  `gs://` artifact URI and no human filename. Writing the test for this also surfaced that
+  an event carrying *only* tool calls became an empty bubble; those are dropped now.
 - **`gemini-3.7-flash` is served to `coach-dev` on the `global` endpoint, not in
   `us-central1`.** Every turn failed with `NOT_FOUND` naming the model. The model choice
   in [00-overview.md](00-overview.md#model-configuration) is unchanged and correct — the

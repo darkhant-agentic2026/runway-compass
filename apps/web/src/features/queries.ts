@@ -315,12 +315,75 @@ export function useSessionEvents(sessionId: string) {
   })
 }
 
+export interface StartTurnBody {
+  text: string
+  /** `filename` is used only by the optimistic echo; it is not sent to the server. */
+  attachments?: { uploadId: string; mimeType: string; filename?: string }[]
+}
+
+/**
+ * The synthetic event that stands in for a message the server has not stored yet.
+ *
+ * `seq` is one past the highest known, so it sorts last; the id is marked `pending:` so
+ * it cannot collide with an ADK event id.
+ */
+export function pendingUserEvent(existing: SessionEvent[], body: StartTurnBody): SessionEvent {
+  const parts: Record<string, unknown>[] = []
+  if (body.text) parts.push({ text: body.text })
+  for (const attachment of body.attachments ?? []) {
+    parts.push({
+      fileData: { mimeType: attachment.mimeType, fileUri: '' },
+      // Not part of ADK's event shape; `toMessages` reads it when it is there, which is
+      // only ever on this synthetic event. History has no filename to show.
+      displayName: attachment.filename,
+    })
+  }
+  const highest = existing.reduce((max, event) => Math.max(max, event.seq), 0)
+  return {
+    seq: highest + 1,
+    eventId: `pending:${crypto.randomUUID()}`,
+    event: { author: 'user', content: { role: 'user', parts } },
+  }
+}
+
+/**
+ * Start a turn, echoing the user's message into the transcript immediately.
+ *
+ * Without the echo the message is invisible until the turn *completes*: ADK writes the
+ * user event during generation and the transcript is only refetched on `turn_complete`,
+ * so the sender watches "Your coach is thinking…" with no record of what they asked.
+ *
+ * An optimistic cache patch rather than a Zustand buffer, which is the shape
+ * docs/06-frontend.md prescribes for interactions that must feel instant — and here it
+ * also avoids a duplicate: the refetch on `turn_complete` replaces the whole array, so
+ * the synthetic event is swapped for the stored one in a single render. A parallel copy
+ * in the stream store would have to be torn down in a second step, and the frame in
+ * between would show the message twice.
+ */
 export function useStartTurn(sessionId: string) {
-  return useMutation({
-    mutationFn: (body: {
-      text: string
-      attachments?: { uploadId: string; mimeType: string }[]
-    }) => api.startTurn(sessionId, body, newIdempotencyKey()),
+  const queryClient = useQueryClient()
+  const key = queryKeys.sessionEvents(sessionId)
+
+  return useMutation<
+    Awaited<ReturnType<typeof api.startTurn>>,
+    Error,
+    StartTurnBody,
+    { previous: SessionEvent[] | undefined }
+  >({
+    mutationFn: (body) => api.startTurn(sessionId, body, newIdempotencyKey()),
+    onMutate(body) {
+      const previous = queryClient.getQueryData<SessionEvent[]>(key)
+      queryClient.setQueryData<SessionEvent[]>(key, (current) => [
+        ...(current ?? []),
+        pendingUserEvent(current ?? [], body),
+      ])
+      return { previous }
+    },
+    onError(_error, _body, context) {
+      // The message was never accepted, so it must not sit in the transcript looking as
+      // though it had been.
+      if (context?.previous) queryClient.setQueryData(key, context.previous)
+    },
     onSuccess(turn) {
       // Register the turn before any frame arrives, so a socket that reconnects in the
       // gap between the 202 and the first delta still has something to resume.

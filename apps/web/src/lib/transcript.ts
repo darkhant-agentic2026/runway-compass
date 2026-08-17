@@ -22,6 +22,33 @@ export interface TranscriptMessage {
   author: string
   text: string
   toolNames: string[]
+  attachments: TranscriptAttachment[]
+}
+
+export interface TranscriptAttachment {
+  mimeType: string
+  /**
+   * Known only for a message still being sent.
+   *
+   * A stored event carries a `gs://` URI ending in the artifact name — `user:up_01J…/0` —
+   * and no human filename, because the display name lives on `uploads/{uploadId}` rather
+   * than in the transcript. So history shows the *kind* of file and the composer's
+   * optimistic echo shows its name, which is the most either source honestly knows.
+   */
+  filename?: string
+}
+
+const MIME_LABELS: Record<string, string> = {
+  'image/png': 'Image',
+  'image/jpeg': 'Image',
+  'image/webp': 'Image',
+  'application/pdf': 'PDF',
+  'text/plain': 'Text file',
+  'text/markdown': 'Markdown',
+}
+
+export function attachmentLabel(attachment: TranscriptAttachment): string {
+  return attachment.filename ?? MIME_LABELS[attachment.mimeType] ?? 'Attachment'
 }
 
 interface EventPart {
@@ -31,6 +58,12 @@ interface EventPart {
   functionResponse?: { name?: unknown }
   inlineData?: unknown
   fileData?: { fileUri?: unknown; mimeType?: unknown }
+  /**
+   * Not an ADK field. Present only on the synthetic event the composer inserts while a
+   * message is in flight (`features/queries.ts`), which is the one moment the filename is
+   * known.
+   */
+  displayName?: unknown
 }
 
 function partsOf(event: Record<string, unknown>): EventPart[] {
@@ -53,8 +86,13 @@ function roleOf(event: Record<string, unknown>, author: string): 'user' | 'model
  *
  * Events carrying only a function call or response become no message at all — tool
  * activity is a chip during the stream and is not part of the transcript afterwards
- * (docs/06-frontend.md renders it as "inline status chips"). An event with neither text
- * nor a tool is dropped rather than rendered as an empty bubble.
+ * (docs/06-frontend.md renders it as "inline status chips"). An event with neither text,
+ * a tool, nor an attachment is dropped rather than rendered as an empty bubble.
+ *
+ * **Attachments are carried through, not counted.** An earlier version reduced them to a
+ * number and then dropped it, so a message with both a question and a screenshot rendered
+ * as the question alone — the transcript gave no sign that a file had ever been sent, and
+ * a user rereading the conversation could not tell what the coach had been looking at.
  */
 export function toMessages(events: SessionEvent[]): TranscriptMessage[] {
   const messages: TranscriptMessage[] = []
@@ -72,22 +110,36 @@ export function toMessages(events: SessionEvent[]): TranscriptMessage[] {
       .map((part) => part.functionCall?.name)
       .filter((name): name is string => typeof name === 'string')
 
-    const attachments = parts.filter((part) => part.fileData || part.inlineData).length
-    if (!text && toolNames.length === 0 && attachments === 0) continue
+    const attachments = attachmentsOf(parts)
+    // Text or an attachment is what makes a bubble. An event carrying *only* tool calls
+    // is not a message: rendering one produces an empty bubble, since the transcript shows
+    // tool activity nowhere. `toolNames` still rides along on messages that have content
+    // too, so M3 can surface "and it updated your board" once the agent has tools.
+    if (!text && attachments.length === 0) continue
 
     messages.push({
       id: stored.eventId,
       seq: stored.seq,
       role: roleOf(event, author),
       author,
-      text: text || (attachments > 0 ? '' : ''),
+      text,
       toolNames,
+      attachments,
     })
   }
   return messages
 }
 
-/** How many attachments an event carried, for the "sent a file" affordance. */
-export function attachmentCount(stored: SessionEvent): number {
-  return partsOf(stored.event).filter((part) => part.fileData || part.inlineData).length
+function attachmentsOf(parts: EventPart[]): TranscriptAttachment[] {
+  const attachments: TranscriptAttachment[] = []
+  for (const part of parts) {
+    const data = part.fileData ?? (part.inlineData as { mimeType?: unknown } | undefined)
+    if (!data) continue
+    const filename = typeof part.displayName === 'string' ? part.displayName : undefined
+    attachments.push({
+      mimeType: typeof data.mimeType === 'string' ? data.mimeType : '',
+      ...(filename ? { filename } : {}),
+    })
+  }
+  return attachments
 }

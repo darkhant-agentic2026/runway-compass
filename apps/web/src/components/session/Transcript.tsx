@@ -12,11 +12,12 @@
  * appearing twice for the moment between the frame and the refetch.
  */
 
+import { Paperclip } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 
 import { ToolChips } from '@/components/session/ToolChips'
+import { attachmentLabel, type TranscriptMessage } from '@/lib/transcript'
 import { cn } from '@/lib/utils'
-import type { TranscriptMessage } from '@/lib/transcript'
 import type { StreamState } from '@/stores/stream'
 
 export function Transcript({
@@ -51,11 +52,26 @@ export function Transcript({
 
       {messages.map((message) => (
         <Bubble key={message.id} role={message.role}>
-          {message.text ? (
-            <p className="whitespace-pre-wrap">{message.text}</p>
-          ) : (
-            <p className="text-muted-foreground italic">Attachment sent</p>
-          )}
+          {message.text ? <p className="whitespace-pre-wrap">{message.text}</p> : null}
+          {message.attachments.length > 0 ? (
+            <ul
+              className={cn('flex flex-wrap gap-1.5', message.text && 'mt-2')}
+              data-testid="message-attachments"
+            >
+              {message.attachments.map((attachment, index) => (
+                <li
+                  key={`${message.id}-${index}`}
+                  className={cn(
+                    'flex items-center gap-1 rounded-full px-2 py-0.5 text-xs',
+                    message.role === 'user' ? 'bg-primary-foreground/15' : 'bg-background/60',
+                  )}
+                >
+                  <Paperclip className="size-3 shrink-0" aria-hidden="true" />
+                  <span>{attachmentLabel(attachment)}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </Bubble>
       ))}
 

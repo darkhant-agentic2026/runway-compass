@@ -67,6 +67,43 @@ test('a turn streams into the transcript and settles there', async ({ signedIn: 
   })
 })
 
+test('the sender sees their own message immediately, not when the reply lands', async ({
+  signedIn: page,
+}) => {
+  // The reply takes a couple of seconds, and for that whole time the transcript used to
+  // show only "Your coach is thinking…" — no record of what had been asked. ADK writes
+  // the user event during generation and the transcript is refetched on `turn_complete`,
+  // so without an optimistic echo the sender's own message is invisible until the end.
+  await openWorkspace(page, 'Echo', 'See my own message')
+
+  await send(page, 'is this visible yet?')
+
+  const own = page.getByTestId('transcript').locator('[data-role="user"]')
+  // Asserted *before* any assistant text exists, which is the whole point.
+  await expect(own.last()).toHaveText('is this visible yet?', { timeout: 5_000 })
+  await expect(page.getByTestId('still-working')).toBeVisible()
+
+  // And it survives the handoff: the echo is replaced by the stored event, not duplicated.
+  await expect(assistantBubbles(page).last()).toHaveText(stubReply('is this visible yet?'), {
+    timeout: 30_000,
+  })
+  await expect(own).toHaveCount(1)
+})
+
+test('the sent message survives a reload, once', async ({ signedIn: page }) => {
+  await openWorkspace(page, 'Echo reload', 'Persist my own message')
+  await send(page, 'remember this')
+  await expect(assistantBubbles(page).last()).toHaveText(stubReply('remember this'), {
+    timeout: 30_000,
+  })
+
+  await page.reload()
+
+  const own = page.getByTestId('transcript').locator('[data-role="user"]')
+  await expect(own).toHaveCount(1)
+  await expect(own.first()).toHaveText('remember this')
+})
+
 test('a disconnect mid-stream resumes and produces the identical message', async ({
   signedIn: page,
   context,

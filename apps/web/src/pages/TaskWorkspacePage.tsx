@@ -166,6 +166,8 @@ export default function TaskWorkspacePage() {
               startTurn.mutate({ text, attachments })
               resetComposer(sessionId)
             }}
+            // `attachments` carries `filename` for the optimistic echo; `api.startTurn`
+            // strips it, because `TurnAttachment` forbids unknown fields.
             onCancel={() => {
               if (live) cancelTurn.mutate(live.turnId)
             }}

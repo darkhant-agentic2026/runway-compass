@@ -29,7 +29,15 @@ export function Composer({
   sending: boolean
   /** A turn is in flight; the send button becomes cancel. */
   streaming: boolean
-  onSend: (text: string, attachments: { uploadId: string; mimeType: string }[]) => void
+  /**
+   * `filename` rides along for the optimistic echo only. The API's `TurnAttachment`
+   * forbids unknown fields, so the caller strips it before sending — the display name is
+   * already on `uploads/{uploadId}` and does not belong in the turn body.
+   */
+  onSend: (
+    text: string,
+    attachments: { uploadId: string; mimeType: string; filename: string }[],
+  ) => void
   onCancel: () => void
 }) {
   const draft = useComposerStore((state) => state.drafts[sessionId] ?? '')
@@ -53,6 +61,7 @@ export function Composer({
       ready.map((attachment) => ({
         uploadId: attachment.uploadId,
         mimeType: attachment.mimeType,
+        filename: attachment.filename,
       })),
     )
   }

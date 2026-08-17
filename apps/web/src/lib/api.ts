@@ -250,12 +250,24 @@ export const api = {
   /** 202. Generation continues in the background; the socket carries the stream. */
   startTurn: (
     sessionId: string,
-    body: { text: string; attachments?: { uploadId: string; mimeType: string }[] },
+    body: {
+      text: string
+      attachments?: { uploadId: string; mimeType: string; filename?: string }[]
+    },
     idempotencyKey?: string,
   ) =>
     request(`/api/sessions/${sessionId}/turns`, turnAcceptedSchema, {
       method: 'POST',
-      body: { text: body.text, attachments: body.attachments ?? [] },
+      body: {
+        text: body.text,
+        // Projected down to the two fields the contract defines. `TurnAttachment` sets
+        // `extra="forbid"`, so passing `filename` through — which the caller carries for
+        // its optimistic echo — would be a 422.
+        attachments: (body.attachments ?? []).map((attachment) => ({
+          uploadId: attachment.uploadId,
+          mimeType: attachment.mimeType,
+        })),
+      },
       ...(idempotencyKey ? { idempotencyKey } : {}),
     }),
 
