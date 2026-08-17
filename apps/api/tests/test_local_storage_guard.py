@@ -56,18 +56,23 @@ def _paths(app) -> set[str]:
 
 
 def _deployed_app(settings, tmp_path, monkeypatch, env: str):
-    """A `create_app` for a deployed `ENV`, with the cloud clients stubbed out.
+    """A `create_app` for a deployed `ENV`.
 
-    `static/assets` has to exist: outside `ENV=local` the SPA mount is unconditional, so a
-    missing build fails the container at import time. That is the documented early-failure
-    behaviour (docs/07-infra-deploy.md#container), not something to work around — so the
-    directory is created rather than the mount made conditional.
+    No cloud client is stubbed, and that is worth stating: an earlier version of this
+    helper monkeypatched `build_object_store` and `build_artifact_service` because they
+    resolved credentials eagerly. That workaround hid the problem — `test_auth_local_bypass`
+    builds a deployed app too and does *not* patch anything, so it failed in CI while this
+    file passed. Both clients are lazy now (`coach.core.lazy`), so nothing needs patching
+    and both tests exercise the same construction.
+
+    `static/assets` still has to exist: outside `ENV=local` the SPA mount is unconditional,
+    so a missing build fails the container at construction. That is the documented
+    early-failure behaviour (docs/07-infra-deploy.md#container), not something to work
+    around.
     """
     (tmp_path / "static" / "assets").mkdir(parents=True, exist_ok=True)
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("FIRESTORE_EMULATOR_HOST", raising=False)
-    monkeypatch.setattr("coach.api.deps.build_object_store", lambda _s: object())
-    monkeypatch.setattr("coach.api.deps.build_artifact_service", lambda _s: object())
     return create_app(
         settings.model_copy(update={"env": env, "firestore_emulator_host": None, **DEPLOYED})
     )

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import cast
 
 from google.adk.artifacts.artifact_util import get_artifact_uri
 from google.adk.artifacts.base_artifact_service import BaseArtifactService
@@ -24,6 +25,7 @@ from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactServ
 from google.genai import types
 
 from coach.core.config import Settings
+from coach.core.lazy import LazyProxy
 
 logger = logging.getLogger(__name__)
 
@@ -129,10 +131,12 @@ async def register_upload(
 def build_artifact_service(settings: Settings) -> BaseArtifactService:
     """The artifact service for this environment.
 
-    Constructing `GcsArtifactService` builds a `storage.Client` eagerly, which resolves
-    Application Default Credentials — so it is only reached when a bucket is actually
-    configured. A local run without `ARTIFACT_BUCKET` gets the in-memory service and
-    works; a deployed run always has one, because `Settings` refuses to start without it.
+    A local run without `ARTIFACT_BUCKET` gets the in-memory service; a deployed run always
+    has one, because `Settings` refuses to start without it.
+
+    The GCS-backed one is wrapped in a `LazyProxy`, because `GcsArtifactService` builds a
+    `storage.Client` in its constructor and that resolves Application Default Credentials.
+    Assembling the container must not do that — see `coach.core.lazy`.
     """
     if not settings.artifact_bucket:
         if not settings.is_local:  # pragma: no cover - Settings rejects this earlier
@@ -140,9 +144,14 @@ def build_artifact_service(settings: Settings) -> BaseArtifactService:
         logger.info("no ARTIFACT_BUCKET set; using the in-memory artifact service")
         return InMemoryArtifactService()
 
-    from google.adk.artifacts.gcs_artifact_service import GcsArtifactService
+    bucket = settings.artifact_bucket
 
-    return GcsArtifactService(bucket_name=settings.artifact_bucket)
+    def _build() -> BaseArtifactService:
+        from google.adk.artifacts.gcs_artifact_service import GcsArtifactService
+
+        return GcsArtifactService(bucket_name=bucket)
+
+    return cast("BaseArtifactService", LazyProxy(_build))
 
 
 __all__ = [

@@ -15,12 +15,13 @@ import functools
 import logging
 import random
 from collections.abc import Awaitable, Callable
-from typing import Any, TypeVar
+from typing import TypeVar
 
 from google.api_core.exceptions import Aborted
 from google.cloud.firestore import AsyncClient, AsyncTransaction
 
 from coach.core.config import Settings
+from coach.core.lazy import LazyProxy
 
 logger = logging.getLogger(__name__)
 
@@ -77,38 +78,17 @@ def get_client(settings: Settings) -> AsyncClient:
     return _client_for(settings.google_cloud_project, settings.firestore_database)
 
 
-class LazyAsyncClient:
-    """An `AsyncClient` that is not built until something asks it to do work.
+class LazyAsyncClient(LazyProxy):
+    """A Firestore client that is not built until something asks it to do work.
 
     `Database` gets this for free by exposing `client` as a property. Anything that has to
     be *handed* a client — ADK's `FirestoreSessionService`, whose constructor takes one —
-    needs this instead, and for the same reason spelled out on `Database`: constructing an
-    `AsyncClient` resolves Application Default Credentials, so doing it while assembling
-    the container means the application cannot be **imported** without credentials.
-
-    That is not a theoretical cost. `coach.main` creates the app at module scope, because
-    `uvicorn coach.main:app` needs it to exist, so any eager client turns `import
-    coach.main` into a credentials check. It passes on a developer's machine only because
-    `FIRESTORE_EMULATOR_HOST` is exported before the process starts, which makes the client
-    anonymous — and it fails in CI, where the emulator is started by a pytest fixture *after*
-    collection has already imported the app. It would equally fail any tool that imports the
-    module to read its routes.
-
-    Attribute access is the whole surface a Firestore client presents to its callers
-    (`.collection`, `.collection_group`, `.transaction`, `.batch`, `.get_all`), so
-    forwarding it is enough. `get_client` is itself cached, so this holds no state and
-    every proxy resolves to the same client.
+    needs this instead. See `coach.core.lazy` for why deferring matters, and
+    `tests/test_import_without_credentials.py` for the invariant it protects.
     """
 
     def __init__(self, settings: Settings) -> None:
-        self._settings = settings
-
-    def __getattr__(self, name: str) -> Any:
-        # `_settings` is set in `__init__`, so it never routes through here; guarding
-        # anyway, because a `__getattr__` that can recurse fails unreadably.
-        if name.startswith("_"):
-            raise AttributeError(name)
-        return getattr(get_client(self._settings), name)
+        super().__init__(lambda: get_client(settings))
 
 
 class Database:

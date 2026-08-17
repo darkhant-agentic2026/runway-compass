@@ -6,12 +6,17 @@ Application Default Credentials — and `coach.main` creates the app at module s
 `uvicorn coach.main:app` needs it to exist. An eager client therefore turns
 `import coach.main` into a credentials check.
 
-M2 broke it by handing `get_client(settings)` to `CoachSessionService`, whose constructor
-takes a client rather than making one. **Every local test still passed**, because
-`./scripts/dev.sh test api` exports `FIRESTORE_EMULATOR_HOST` before pytest starts and the
-client goes anonymous when it is set. CI has no such variable at *collection* time — the
-emulator there is started by a session fixture, which runs after collection has already
-imported the app — so four modules failed to import with `DefaultCredentialsError`.
+M2 broke it twice. First by handing `get_client(settings)` to `CoachSessionService`, whose
+constructor takes a client rather than making one; then — after that was fixed — by leaving
+`GcsArtifactService` and `GcsObjectStore` eager, which resolves credentials for any
+*deployed* `ENV`, where a bucket is configured.
+
+**Every local test passed both times.** `./scripts/dev.sh test api` exports
+`FIRESTORE_EMULATOR_HOST` before pytest starts, which makes the Firestore client anonymous,
+and this machine happens to have ADC, which satisfies the storage clients. CI has neither.
+
+So the cases below cover `local` *and* deployed settings: the second failure was invisible
+to the first version of this file, which only built a local container.
 
 These tests are written against a **forced** absence of credentials rather than a real
 one, so they fail on a developer's laptop too. A test that only fails on a machine without
@@ -46,9 +51,35 @@ def no_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     firestore._client_for.cache_clear()
 
 
+#: The configuration `Settings` demands before it will validate a deployed `ENV`.
+DEPLOYED = {
+    "artifact_bucket": "coach-dev-coach-artifacts",
+    "upload_bucket": "coach-dev-coach-uploads",
+    "tasks_queue": "projects/p/locations/l/queues/q",
+    "tasks_target_url": "https://coach-dev.example/internal/runs",
+    "tasks_invoker_sa": "coach-tasks-sa@coach-dev.iam.gserviceaccount.com",
+    "allowed_scheduler_sa": "coach-scheduler-sa@coach-dev.iam.gserviceaccount.com",
+    "allowed_tasks_sa": "coach-tasks-sa@coach-dev.iam.gserviceaccount.com",
+    "oauth_client_id": "1234.apps.googleusercontent.com",
+}
+
+
 def test_the_container_can_be_built_without_credentials(no_credentials: None) -> None:
     """The whole dependency graph, including the ADK session service."""
     Container(Settings(env="local", google_cloud_project="demo-coach-test"))
+
+
+@pytest.mark.parametrize("env", ["dev", "prod"])
+def test_a_deployed_container_can_be_built_without_credentials(
+    no_credentials: None, env: str
+) -> None:
+    """The case the first fix missed.
+
+    A deployed `ENV` has both buckets set, so `build_artifact_service` and
+    `build_object_store` reach their GCS-backed branches — and those constructors resolve
+    credentials unless the client is deferred.
+    """
+    Container(Settings(env=env, google_cloud_project="coach-dev", **DEPLOYED))
 
 
 def test_the_app_can_be_created_without_credentials(

@@ -175,8 +175,9 @@ regenerate committed cross-language fixtures: `gen-ordering-vectors` and
 **`dev.sh test api` is a *weaker* gate than CI in one respect**: it exports
 `FIRESTORE_EMULATOR_HOST` before pytest, so anything resolved at import time gets an
 anonymous Firestore client. CI has no such variable until a fixture starts the emulator,
-which is after collection. Keep cloud-client construction out of constructors — see
-`LazyAsyncClient` and `tests/test_import_without_credentials.py`.
+which is after collection. It also usually has ADC, which CI does not. Keep cloud-client construction out of
+constructors — `coach/core/lazy.py` explains why and
+`tests/test_import_without_credentials.py` pins it.
 
 **Reach for `dev.sh` before reaching for the underlying tool.** `dev.sh test api` starts the
 emulator and exports `ENV`, `GOOGLE_CLOUD_PROJECT`, and `FIRESTORE_EMULATOR_HOST` before

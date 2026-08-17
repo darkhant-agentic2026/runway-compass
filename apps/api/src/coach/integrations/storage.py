@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import logging
 from datetime import timedelta
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from coach.core.clock import now
 from coach.core.config import Settings
+from coach.core.lazy import LazyProxy
 
 logger = logging.getLogger(__name__)
 
@@ -264,7 +265,11 @@ def build_object_store(settings: Settings) -> ObjectStore:
             raise ValueError("UPLOAD_BUCKET is required outside ENV=local.")
         logger.info("no UPLOAD_BUCKET set; uploads use the in-memory object store")
         return InMemoryObjectStore()
-    return GcsObjectStore(settings.upload_bucket)
+
+    # Lazy, because `GcsObjectStore.__init__` builds a `storage.Client` and that resolves
+    # Application Default Credentials — see `coach.core.lazy`.
+    bucket = settings.upload_bucket
+    return cast("ObjectStore", LazyProxy(lambda: GcsObjectStore(bucket)))
 
 
 __all__ = [
