@@ -4,19 +4,34 @@ name: Deploy (Cloud Run)
 #
 #   1. auth to GCP via Workload Identity Federation (no keys)
 #   2. docker build + push to Artifact Registry, tagged with the commit SHA
-#   3. terraform plan (fails the job on unexpected drift) -> terraform apply
-#   4. gcloud run deploy --image ...:$SHA --no-traffic --tag=candidate
-#   5. smoke test the candidate revision URL: /healthz, /readyz, one authenticated round-trip
-#   6. gcloud run services update-traffic --to-tags candidate=100  (or 10 -> 100 canary in prod)
-#   7. on smoke-test failure: leave traffic on the previous revision, fail loudly
+#   3. gcloud run deploy --image ...:$SHA --no-traffic --tag=candidate
+#   4. smoke test the candidate revision URL: /healthz, /readyz, one authenticated round-trip
+#   5. gcloud run services update-traffic --to-tags candidate=100  (or 10 -> 100 canary in prod)
+#   6. on smoke-test failure: leave traffic on the previous revision, fail loudly
 #
 # Rollback is `update-traffic --to-revisions <previous>=100`. Because the SPA lives in the
 # same image, a rollback reverts the frontend with it.
 #
-# NOTE: this workflow has never been executed. It is authored and syntax-checked only —
-# running it touches a real GCP project, which is out of scope for the milestone that
-# landed it. The two manual bootstrap steps in docs/07-infra-deploy.md and
-# `infra/terraform/RUNBOOK.md` must be done first, or step 3 fails on Identity Platform.
+# THIS WORKFLOW DOES NOT RUN TERRAFORM, deliberately.
+#
+# docs/07 originally described a `terraform plan -> apply` step here while its
+# "IAM (least privilege)" table granted `github-deployer-sa` only `run.admin`,
+# `artifactregistry.writer`, and `iam.serviceAccountUser` — the two halves of the document
+# disagreed. Applying this stack means creating service accounts, project IAM bindings, a
+# Firestore database, and Secret Manager secrets, which is near-admin over the project
+# plus write access to the state bucket.
+#
+# The disagreement was settled in favour of the IAM table: CI ships images, and
+# infrastructure changes are an operator action run from `infra/terraform/RUNBOOK.md`.
+# A bad merge can therefore deploy a bad image, which the smoke test below catches and
+# which `update-traffic` reverses in seconds — it cannot rewrite IAM or delete the
+# database. Drift is covered by the nightly Terraform plan check in
+# docs/08-testing.md#ci-wiring, which runs somewhere that can hold read credentials.
+#
+# The consequence to remember: **the running image is chosen here, not by Terraform.**
+# `var.image` only seeds the service at creation, and the Cloud Run module ignores
+# subsequent image changes so a later `terraform apply` cannot roll production back to
+# whatever tag an operator last passed on the command line.
 
 on:
   push:
@@ -32,7 +47,7 @@ on:
         options: [dev, prod]
 
 concurrency:
-  # Never two deploys to one environment at once: step 6 would race on traffic.
+  # Never two deploys to one environment at once: step 5 would race on traffic.
   group: deploy-${{ inputs.environment || (startsWith(github.ref, 'refs/tags/v') && 'prod' || 'dev') }}
   cancel-in-progress: false
 
@@ -95,37 +110,7 @@ jobs:
           docker push "$IMAGE:${{ github.sha }}"
           echo "image=$IMAGE:${{ github.sha }}" >> "$GITHUB_OUTPUT"
 
-      # --- 3. terraform -------------------------------------------------------------
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: '1.15.8'
-          terraform_wrapper: false
-
-      # The state bucket comes from `backend.hcl` rather than `backend.tf`: a backend
-      # block cannot reference variables, and GCS bucket names are globally unique so
-      # hard-coding one makes the repo usable by exactly one project.
-      - name: terraform init
-        run: |
-          terraform -chdir=infra/terraform/envs/${{ env.ENVIRONMENT }} init -input=false \
-            -backend-config=backend.hcl
-
-      # `-detailed-exitcode`: 0 = no changes, 2 = changes present, 1 = error. Unexpected
-      # drift should be visible in the log before it is applied.
-      - name: terraform plan
-        id: plan
-        run: |
-          terraform -chdir=infra/terraform/envs/${{ env.ENVIRONMENT }} plan \
-            -input=false -detailed-exitcode \
-            -var-file="${{ env.ENVIRONMENT }}.tfvars" \
-            -var="image=${{ steps.build.outputs.image }}" \
-            -out=tfplan || [ $? -eq 2 ]
-
-      - name: terraform apply
-        run: |
-          terraform -chdir=infra/terraform/envs/${{ env.ENVIRONMENT }} apply \
-            -input=false -auto-approve tfplan
-
-      # --- 4. deploy the candidate with no traffic ----------------------------------
+      # --- 3. deploy the candidate with no traffic ----------------------------------
       - name: Deploy candidate revision
         id: candidate
         run: |
@@ -140,7 +125,7 @@ jobs:
             --format='value(status.traffic.filter("tag=candidate").extract("url"))' | head -1)
           echo "url=$url" >> "$GITHUB_OUTPUT"
 
-      # --- 5. smoke test ------------------------------------------------------------
+      # --- 4. smoke test ------------------------------------------------------------
       - name: Smoke test the candidate
         run: |
           set -euo pipefail
@@ -161,7 +146,7 @@ jobs:
           # And the SPA itself is served at the root of the same origin.
           curl -fsS --max-time 30 "$url/" | grep -qi '<!doctype html'
 
-      # --- 6. shift traffic ---------------------------------------------------------
+      # --- 5. shift traffic ---------------------------------------------------------
       - name: Shift traffic (dev - straight to 100%)
         if: env.ENVIRONMENT == 'dev'
         run: |
@@ -179,7 +164,7 @@ jobs:
           gcloud run services update-traffic "${{ env.SERVICE }}" \
             --region="${{ env.REGION }}" --to-tags candidate=100 --quiet
 
-      # --- 7. fail loudly, leaving traffic where it was -----------------------------
+      # --- 6. fail loudly, leaving traffic where it was -----------------------------
       - name: Report a failed rollout
         if: failure()
         run: |

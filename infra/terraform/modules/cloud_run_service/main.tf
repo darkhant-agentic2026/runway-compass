@@ -113,7 +113,19 @@ resource "google_cloud_run_v2_service" "this" {
   lifecycle {
     # The deploy workflow moves traffic with `gcloud run services update-traffic` after a
     # smoke test, so Terraform must not fight it back to LATEST on the next apply.
-    ignore_changes = [traffic, client, client_version]
+    #
+    # `image` is ignored for the same reason, and it matters more. CI owns which image
+    # runs (docs/07-infra-deploy.md#deploy-cloudrunyml); Terraform owns the shape of the
+    # service around it. Without this, an operator running `terraform apply -var
+    # image=...` with whatever tag was in their shell would roll the service back to it —
+    # silently deploying an old build as a side effect of an unrelated infrastructure
+    # change. `var.image` therefore only seeds the service at creation.
+    ignore_changes = [
+      traffic,
+      client,
+      client_version,
+      template[0].containers[0].image,
+    ]
   }
 }
 

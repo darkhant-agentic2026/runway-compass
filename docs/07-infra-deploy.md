@@ -82,7 +82,7 @@ by design.
 | ” — `iam.serviceAccountUser` **on `coach-tasks-sa`** | Creating a Cloud Task that carries an OIDC token as `coach-tasks-sa` requires acting as that account |
 | `coach-scheduler-sa` | `run.invoker` on the service (OIDC audience = service URL) |
 | `coach-tasks-sa` | `run.invoker` on the service |
-| `github-deployer-sa` | `run.admin`, `artifactregistry.writer`, `iam.serviceAccountUser` |
+| `github-deployer-sa` | `run.admin`, `artifactregistry.writer`, `iam.serviceAccountUser` — enough to build, push, and deploy an image, and deliberately not enough to apply Terraform ([why](#ci-does-not-run-terraform)) |
 
 `roles/firebaseauth.admin` is the IAM role governing Identity Platform; `coach-api-sa` needs
 it so the `DELETE /api/me` cascade can remove the identity record. Token *verification* needs
@@ -230,12 +230,36 @@ Environment protection rule requiring approval).
 ```
 1. auth to GCP via Workload Identity Federation (no keys)
 2. docker build + push to Artifact Registry, tagged with the commit SHA
-3. terraform plan (fails the job on unexpected drift) → terraform apply
-4. gcloud run deploy --image …:$SHA --no-traffic --tag=candidate
-5. smoke test the candidate revision URL: /healthz, /readyz, one authenticated round-trip
-6. gcloud run services update-traffic --to-tags candidate=100   (or 10 → 100 canary in prod)
-7. on smoke-test failure: leave traffic on the previous revision, fail loudly
+3. gcloud run deploy --image …:$SHA --no-traffic --tag=candidate
+4. smoke test the candidate revision URL: /healthz, /readyz, one authenticated round-trip
+5. gcloud run services update-traffic --to-tags candidate=100   (or 10 → 100 canary in prod)
+6. on smoke-test failure: leave traffic on the previous revision, fail loudly
 ```
+
+#### CI does not run Terraform
+
+An earlier revision of this document put `terraform plan → terraform apply` between steps
+2 and 3, and that contradicted the [IAM table](#iam-least-privilege) two sections down,
+which grants `github-deployer-sa` only `run.admin`, `artifactregistry.writer`, and
+`iam.serviceAccountUser`. Those roles deploy an image; they come nowhere near applying
+this stack, which creates service accounts, project IAM bindings, a Firestore database,
+and Secret Manager secrets. Reconciling the two would have meant either granting CI
+near-admin over the project plus write access to the state bucket, or dropping the apply.
+
+**Resolved in favour of the IAM table.** The deployer's roles are unchanged, it has no
+access to the state bucket, and infrastructure changes are an operator action run from
+[infra/terraform/RUNBOOK.md](../infra/terraform/RUNBOOK.md).
+
+What that buys: a bad merge can ship a bad image — caught by the smoke test at step 4 and
+reversed by `update-traffic` in seconds — and cannot rewrite IAM or delete the Firestore
+database. What it costs: nothing detects infrastructure drift on the deploy path, which is
+what the nightly Terraform plan check in [08-testing.md](08-testing.md#ci-wiring) is for.
+That job can hold read credentials because it is not triggered by a merge.
+
+The consequence worth remembering is that **the running image is chosen by CI, not by
+Terraform.** `var.image` seeds the service at creation and the Cloud Run module then
+ignores changes to it, so an operator applying an unrelated change cannot silently roll
+the service back to whatever tag was last in their shell.
 
 Rollback is `update-traffic --to-revisions <previous>=100`; revisions are immutable and
 retained — and because the SPA lives in the same image, a rollback reverts the frontend
