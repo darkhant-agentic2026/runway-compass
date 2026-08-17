@@ -284,11 +284,7 @@ class TurnService:
         except Exception as exc:
             logger.exception("turn generation failed", extra={"turn_id": turn.id})
             seq += 1
-            error = TurnError(
-                code=type(exc).__name__,
-                message=str(exc) or "Generation failed.",
-                retryable=True,
-            )
+            error = classify_generation_error(exc)
             await self._turns.finish(turn.id, TurnStatus.FAILED, last_seq=seq, error=error)
             await self._broker.publish(
                 turn.id,
@@ -396,6 +392,44 @@ class TurnService:
                 logger.warning("cancellation poll failed", extra={"turn_id": turn_id})
 
 
+#: Model-side 4xx codes that a retry can actually resolve. Everything else in the 4xx
+#: range describes the *request* — a model that does not exist, a payload that is too
+#: large, credentials that are not entitled — and will fail identically forever.
+_RETRYABLE_CLIENT_CODES = frozenset({408, 409, 425, 429})
+
+
+def classify_generation_error(exc: BaseException) -> TurnError:
+    """Turn an exception from the model into a `turn_error` the UI can act on.
+
+    `retryable` drives whether the user is offered "You can try again", so getting it
+    wrong is not cosmetic — it is the difference between a useful prompt and an
+    instruction to keep doing something that cannot work. A misconfigured `MODEL_NAME`
+    surfaced exactly that: Vertex answered `404 … Publisher model … was not found`, and
+    the UI invited the user to retry it.
+
+    The message is the provider's own sentence rather than the whole response body. For
+    the 404 above that sentence names the model, the project, and the docs page for
+    regional availability, which is the diagnosis; the full payload is on the log line
+    above, where it belongs.
+    """
+    from google.genai import errors as genai_errors
+
+    if isinstance(exc, genai_errors.APIError):
+        code = int(exc.code or 0)
+        retryable = code >= 500 or code in _RETRYABLE_CLIENT_CODES
+        message = str(exc.message or "").strip() or f"The model returned {code}."
+        return TurnError(code=f"model-{code}", message=message, retryable=retryable)
+
+    # Anything else — a bug of ours, a dropped connection — is assumed transient. Being
+    # wrong in this direction costs a pointless retry; the other way round it silently
+    # strands a user whose next attempt would have worked.
+    return TurnError(
+        code=type(exc).__name__,
+        message=str(exc) or "Generation failed.",
+        retryable=True,
+    )
+
+
 def _text_of(event: Event) -> str:
     """Every text part of an event, concatenated. Thought parts are not transcript."""
     if event.content is None or not event.content.parts:
@@ -407,4 +441,10 @@ def _text_of(event: Event) -> str:
     )
 
 
-__all__ = ["CANCELLED_CODE", "CANCEL_POLL_SECONDS", "MAX_TURN_TEXT", "TurnService"]
+__all__ = [
+    "CANCELLED_CODE",
+    "CANCEL_POLL_SECONDS",
+    "MAX_TURN_TEXT",
+    "TurnService",
+    "classify_generation_error",
+]

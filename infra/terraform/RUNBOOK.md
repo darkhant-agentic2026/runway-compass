@@ -644,6 +644,53 @@ so you would see a failed revision rather than bad answers — but check anyway.
    model on every turn, so a broken attachment reference fails *here* rather than at
    step 4.
 
+### 8.5 If a turn fails with `NOT_FOUND: Publisher model … was not found`
+
+The service is fine; the model name or its location is not. Vertex model availability is
+per project **and** per location, so a name that the design decided
+([docs/00-overview.md](../../docs/00-overview.md#model-configuration) picks
+`gemini-3.7-flash`) can still 404 here. Nothing catches this before a turn runs, because
+nothing calls the model until a user does.
+
+Probe what this project can actually reach. A `GET` on the publisher-model resource is
+the same check the failing call makes, costs no tokens, and answers for both endpoints:
+
+```bash
+PROJECT=$(gcloud config get-value project)
+TOKEN=$(gcloud auth print-access-token)
+
+for LOC in us-central1 global; do
+  HOST=$([ "$LOC" = global ] && echo aiplatform.googleapis.com || echo "$LOC-aiplatform.googleapis.com")
+  for M in gemini-3.7-flash gemini-3-flash gemini-3-pro gemini-2.5-flash gemini-2.5-pro; do
+    CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+      "https://$HOST/v1/projects/$PROJECT/locations/$LOC/publishers/google/models/$M")
+    printf '%-12s %-20s %s\n' "$LOC" "$M" "$CODE"
+  done
+done
+```
+
+`200` means reachable, `404` means not. Send me the table — the choice of model is a
+cost-and-quality decision and a change to a value `docs/00-overview.md` decided, so it is
+yours to make rather than mine to guess.
+
+Applying whichever answer it gives, in `envs/dev/dev.tfvars`:
+
+```hcl
+# Only if a different name is reachable:
+model_name = "<the name that returned 200>"
+
+# Only if the name is reachable at `global` but not at us-central1:
+vertex_location = "global"
+```
+
+Then `terraform apply -var-file=dev.tfvars`. Both are plain environment variables on the
+Cloud Run service, so the apply is a new revision and needs no image rebuild — the
+running image is unchanged and CI still owns it.
+
+`vertex_location` defaults to `var.region` and exists precisely because the two need not
+agree: a new Gemini model is often reachable only on the `global` endpoint for a while
+after release, and before this variable the region served both purposes.
+
 ### What to send me
 
 Whatever happened, plus these — they are what I would need to diagnose anything:

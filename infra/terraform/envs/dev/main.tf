@@ -236,7 +236,7 @@ module "cloud_run" {
     GOOGLE_CLOUD_PROJECT          = var.project_id
     MODEL_BACKEND                 = "vertex"
     MODEL_NAME                    = var.model_name
-    VERTEX_LOCATION               = var.region
+    VERTEX_LOCATION               = coalesce(var.vertex_location, var.region)
     FIRESTORE_DATABASE            = module.firestore.database_name
     ADK_FIRESTORE_ROOT_COLLECTION = "adk-session"
     ARTIFACT_BUCKET               = module.storage.artifact_bucket

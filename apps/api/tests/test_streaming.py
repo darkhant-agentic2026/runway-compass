@@ -413,6 +413,63 @@ async def test_deltas_at_or_below_last_seq_are_never_sent(
 # --- Failure ---------------------------------------------------------------------------
 
 
+def test_a_model_404_is_not_offered_as_retryable() -> None:
+    """`retryable` is what the UI turns into "You can try again".
+
+    A misconfigured `MODEL_NAME` reached a deployed revision and produced exactly this:
+    Vertex answered `404 … Publisher model … was not found`, and the workspace invited
+    the user to retry a model that does not exist. A 404 describes the request, not the
+    moment, so no number of retries changes it.
+    """
+    from google.genai import errors as genai_errors
+
+    from coach.services.turns import classify_generation_error
+
+    error = classify_generation_error(
+        genai_errors.ClientError(
+            404, {"error": {"code": 404, "message": "Publisher model … was not found."}}
+        )
+    )
+
+    assert error.retryable is False
+    assert error.code == "model-404"
+    # The provider's sentence, not the whole payload: it names the model and the project.
+    assert "Publisher model" in error.message
+    assert "{" not in error.message
+
+
+def test_a_model_429_is_retryable() -> None:
+    """Rate limiting is the 4xx that a retry genuinely resolves."""
+    from google.genai import errors as genai_errors
+
+    from coach.services.turns import classify_generation_error
+
+    error = classify_generation_error(
+        genai_errors.ClientError(429, {"error": {"code": 429, "message": "Quota exceeded."}})
+    )
+
+    assert error.retryable is True
+
+
+def test_a_model_500_is_retryable() -> None:
+    from google.genai import errors as genai_errors
+
+    from coach.services.turns import classify_generation_error
+
+    error = classify_generation_error(
+        genai_errors.ServerError(503, {"error": {"code": 503, "message": "Overloaded."}})
+    )
+
+    assert error.retryable is True
+
+
+def test_an_unrecognised_failure_is_assumed_transient() -> None:
+    """Wrong in this direction costs a pointless retry; the other way strands a user."""
+    from coach.services.turns import classify_generation_error
+
+    assert classify_generation_error(RuntimeError("socket died")).retryable is True
+
+
 async def test_a_model_failure_ends_the_turn_as_failed_and_retryable(
     client, container, session_id: str, scripted_model: ScriptedModel, socket_for, alice
 ) -> None:
