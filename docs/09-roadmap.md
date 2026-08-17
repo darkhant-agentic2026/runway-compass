@@ -245,7 +245,6 @@ only have come from the prompt the server assembled, which is the thing
 | Item | Needed by | Note |
 | --- | --- | --- |
 | `board_update` **across instances** | **M5** | `ws/hub.py` reaches the sockets on *this* process. For M3 that is the whole population: the tool runs inside the turn the user's own request started, and session affinity puts their socket there. A scheduled run executes wherever Cloud Tasks lands it, with no relation to where the owner is connected, so the ledger needs a cross-instance channel — Firestore, since one already exists |
-| Tool-activity chips on **resume** | M4+ | Unchanged from M2: chips render from the live stream but are not checkpointed, so a resumed client rebuilds them from the finalized transcript |
 | `list_tasks` as the model's **only** board read | — | The prompt also carries the board, so the tool is a refresh rather than the source. Cheap, and it keeps the first turn from costing a tool round trip; revisit if prompt size becomes the constraint |
 | Autonomous mode's **reduced tool set** | **M5** | docs/03-agent-design.md#safety-rails-on-autonomy forbids `discard_task`, `update_learner_profile`, and `update_project_prefs` in background work. There is no autonomous agent yet, so there is nothing to reduce; the `propose_tasks` subset is built there, from the same `DomainTools` |
 | Everything still open after M2 | as recorded | Content scanning (M7), `subscribe` by `runId` (M5), `turns` composite indexes (M5), nightly evalsets (M4-M6), `prod` and `terraform destroy` |
@@ -268,6 +267,9 @@ and reports (M4), runs (M5), `PATCH /api/me/learner-profile`'s Settings UI (M6),
 | `discard_task` is gated with ADK's `require_confirmation`, and a turn may carry only a confirmation | The gate then holds whether or not the model cooperates — the tool call becomes `adk_request_confirmation` and the body runs on the answer. Answering is a turn with no text and no attachment, so `start`'s "a turn needs text, an attachment, or both" had to count a confirmation as content | `agents/tools.py`, `services/turns.py` |
 | `Principal.source` gained `"agent"` | Nothing branches on it; it is the audit label. Calling a tool call an `id_token` request would be a lie in the one place a reader goes to find out who did something | `core/principal.py` |
 | `APP_NAME` moved to `core/app.py` | It was in `agents/runner.py`, so `services/sessions.py` imported from `agents/` — an inversion of the layering that only became visible (as an import cycle) once `agents/` grew a module importing `services/` | `core/app.py` |
+| Tool activity is part of the **stored transcript**, not only of the live stream | M2 deferred this as "a resumed client rebuilds them from the finalized transcript", which was not true: `toMessages` dropped every event carrying only a function call, so a finished turn erased every record that the coach had touched the board. Calls and outcomes are separate stored events and are paired by call id | `lib/transcript.ts`, `components/session/ToolChips.tsx` |
+| A chip has **three** outcomes, not two | A refused guard is a result (`{"ok": false}`), and ADK's answer to a call awaiting confirmation is neither — `null` renders as neither a tick nor a cross, because both would be a claim the transcript cannot support | `lib/transcript.ts` |
+| `tool_result`'s `ok` is read from the tool's result | It was hard-coded `True`, so a guard refusing a change announced it as done | `services/turns.py` |
 | The stubbed model emits **scripted tool calls**, planned from this turn's function responses | Flows #1, #2, and #7 need the coach to act. Scoping the plan to the turn is the loop's termination argument: asked of the whole session history, "have I already split something?" answers yes forever; asked of nothing, the stub re-issues `split_task` until the turn never ends | `integrations/stub_model.py` |
 
 ### What a green local run did not prove, again
@@ -284,6 +286,18 @@ predicts, and both are already rows in it:
 - **The composite collection-group query, avoided rather than hit.** `find_intake_session_id`
   wants `projectId == …` *and* `taskId == null`; it filters the second in Python, and the
   index table gained the row for the first in the same change.
+
+A third arrived from a user rather than from a test, and is the same row again — *a
+stored ADK event is not shaped the way the code that produced it reads*. Tool chips were
+rendered from `useStreamStore`, which is cleared on `turn_complete`, and the transcript
+dropped every event that carried only a function call. So the chips were correct for the
+few seconds a turn was streaming and gone for good afterwards: a reload, or coming back
+to the session, showed a conversation in which tasks had appeared by themselves. Nothing
+in the suite could see it, because the backend tests counted function calls in the stored
+events and the web tests fed `toMessages` one event at a time — and a call and its
+outcome are two events, so the pairing they were meant to prove was never exercised.
+`session-event-vectors.json` now carries a call/response pair and the parity suite
+replays the vectors as **one transcript**.
 
 ---
 

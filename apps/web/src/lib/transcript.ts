@@ -21,8 +21,26 @@ export interface TranscriptMessage {
   role: 'user' | 'model'
   author: string
   text: string
-  toolNames: string[]
+  /** What the coach did on this event. Rendered as chips, exactly like the live stream. */
+  tools: TranscriptTool[]
   attachments: TranscriptAttachment[]
+}
+
+export interface TranscriptTool {
+  /** ADK's function-call id; the key the outcome is paired on. */
+  callId: string
+  name: string
+  /**
+   * `true`/`false` from the tool's own result, `null` when no outcome was recorded.
+   *
+   * `null` is a real state and not a placeholder for "fine". Two things produce it: a
+   * turn that ended before the response was stored, and a call waiting on the learner —
+   * ADK answers a `require_confirmation` call with `{"error": "…requires confirmation…"}`
+   * rather than with a result, and rendering that as a failure would tell the user their
+   * task had not been discarded *because something went wrong*, when in fact nothing has
+   * happened yet and the buttons are still on screen.
+   */
+  ok: boolean | null
 }
 
 export interface TranscriptAttachment {
@@ -83,6 +101,8 @@ interface FunctionCallLike {
   name?: unknown
   id?: unknown
   args?: unknown
+  /** Present on a function *response*: whatever the tool returned. */
+  response?: unknown
 }
 
 interface FileLike {
@@ -111,12 +131,20 @@ function roleOf(event: Record<string, unknown>, author: string): 'user' | 'model
 }
 
 /**
- * One message per stored event, in `seq` order.
+ * One entry per stored event that has something to show, in `seq` order.
  *
- * Events carrying only a function call or response become no message at all — tool
- * activity is a chip during the stream and is not part of the transcript afterwards
- * (docs/06-frontend.md renders it as "inline status chips"). An event with neither text,
- * a tool, nor an attachment is dropped rather than rendered as an empty bubble.
+ * **A tool call is something to show.** It did not use to be: an event carrying only
+ * function calls was dropped, on the reasoning that tool activity is a chip during the
+ * stream. But the chips live in `useStreamStore`, which is cleared on `turn_complete` —
+ * so the moment a turn finished, every record that the coach had touched the board
+ * vanished, and a reload or a revisit showed a conversation in which tasks had appeared
+ * by themselves. docs/06-frontend.md renders tool activity "as inline status chips"; this
+ * is the half of that sentence the transcript owes.
+ *
+ * The calls and their outcomes arrive as *separate* events — ADK stores the model's
+ * `function_call` event and then a `function_response` event — so responses are collected
+ * in a first pass and paired by call id. Emitting an entry for the response event too
+ * would show every chip twice.
  *
  * **Attachments are carried through, not counted.** An earlier version reduced them to a
  * number and then dropped it, so a message with both a question and a screenshot rendered
@@ -124,8 +152,11 @@ function roleOf(event: Record<string, unknown>, author: string): 'user' | 'model
  * a user rereading the conversation could not tell what the coach had been looking at.
  */
 export function toMessages(events: SessionEvent[]): TranscriptMessage[] {
+  const ordered = [...events].sort((a, b) => a.seq - b.seq)
+  const outcomes = outcomesByCallId(ordered)
   const messages: TranscriptMessage[] = []
-  for (const stored of [...events].sort((a, b) => a.seq - b.seq)) {
+
+  for (const stored of ordered) {
     const event = stored.event
     const author = typeof event.author === 'string' ? event.author : 'model'
     const parts = partsOf(event)
@@ -135,16 +166,12 @@ export function toMessages(events: SessionEvent[]): TranscriptMessage[] {
       .map((part) => part.text as string)
       .join('')
 
-    const toolNames = parts
-      .map(toolNameOf)
-      .filter((name): name is string => name !== undefined)
-
+    const tools = toolsOf(parts, outcomes)
     const attachments = attachmentsOf(parts)
-    // Text or an attachment is what makes a bubble. An event carrying *only* tool calls
-    // is not a message: rendering one produces an empty bubble, since the transcript shows
-    // tool activity nowhere. `toolNames` still rides along on messages that have content
-    // too, so M3 can surface "and it updated your board" once the agent has tools.
-    if (!text && attachments.length === 0) continue
+    // An event with none of the three is not a bubble — the contentless event the prompt
+    // builder's state delta produces every turn is the common case, and rendering it
+    // would put an empty box in the transcript once per message.
+    if (!text && attachments.length === 0 && tools.length === 0) continue
 
     messages.push({
       id: stored.eventId,
@@ -152,11 +179,58 @@ export function toMessages(events: SessionEvent[]): TranscriptMessage[] {
       role: roleOf(event, author),
       author,
       text,
-      toolNames,
+      tools,
       attachments,
     })
   }
   return messages
+}
+
+/**
+ * Call id to outcome, across the whole transcript.
+ *
+ * `ok` is read from the tool's own `{"ok": …}` result and from nothing else. A payload
+ * without it — ADK's confirmation placeholder, or a shape a future tool invents — is
+ * `null` rather than assumed good: see `TranscriptTool.ok`.
+ */
+function outcomesByCallId(events: SessionEvent[]): Map<string, boolean | null> {
+  const outcomes = new Map<string, boolean | null>()
+  for (const stored of events) {
+    for (const part of partsOf(stored.event)) {
+      const response = part.function_response ?? part.functionResponse
+      const callId = str(response?.id)
+      if (!response || !callId) continue
+      const payload = response.response
+      const ok =
+        payload && typeof payload === 'object' && typeof (payload as Ok).ok === 'boolean'
+          ? ((payload as Ok).ok as boolean)
+          : null
+      outcomes.set(callId, ok)
+    }
+  }
+  return outcomes
+}
+
+interface Ok {
+  ok?: unknown
+}
+
+function toolsOf(
+  parts: EventPart[],
+  outcomes: Map<string, boolean | null>,
+): TranscriptTool[] {
+  const tools: TranscriptTool[] = []
+  for (const part of parts) {
+    const call = part.function_call ?? part.functionCall
+    const name = str(call?.name)
+    const callId = str(call?.id)
+    // The confirmation request is not tool activity — it is a question, and
+    // `ConfirmationPrompt` is its UI. A chip for it would say the coach had done
+    // something called "adk request confirmation".
+    if (!name || !callId || name === CONFIRMATION_FUNCTION_NAME) continue
+    tools.push({ callId, name, ok: outcomes.get(callId) ?? null })
+  }
+  return tools
 }
 
 /** First of the candidates that is actually a string. */
@@ -229,13 +303,6 @@ export function pendingConfirmation(events: SessionEvent[]): PendingConfirmation
     }
   }
   return null
-}
-
-function toolNameOf(part: EventPart): string | undefined {
-  return str(
-    part.function_call?.name,
-    part.functionCall?.name,
-  )
 }
 
 function attachmentsOf(parts: EventPart[]): TranscriptAttachment[] {

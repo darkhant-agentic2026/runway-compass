@@ -15,10 +15,30 @@
 import { useEffect, useRef } from 'react'
 
 import { AttachmentPreview } from '@/components/session/AttachmentPreview'
-import { ToolChips } from '@/components/session/ToolChips'
+import { ToolChips, type ChipView } from '@/components/session/ToolChips'
 import type { TranscriptMessage } from '@/lib/transcript'
 import { cn } from '@/lib/utils'
-import type { StreamState } from '@/stores/stream'
+import type { StreamState, ToolChip } from '@/stores/stream'
+
+/** A settled message's tools. Stored chips are always closed — the turn is over. */
+function settledChips(message: TranscriptMessage): ChipView[] {
+  return message.tools.map((tool) => ({
+    id: tool.callId,
+    name: tool.name,
+    done: true,
+    ok: tool.ok,
+  }))
+}
+
+/** The live buffer's chips, which may still be open. Keyed by the `seq` they arrived on. */
+function liveChips(tools: ToolChip[]): ChipView[] {
+  return tools.map((chip) => ({
+    id: String(chip.seq),
+    name: chip.name,
+    done: chip.done,
+    ok: chip.ok,
+  }))
+}
 
 export function Transcript({
   messages,
@@ -54,33 +74,44 @@ export function Transcript({
       ) : null}
 
       {messages.map((message) => (
-        <Bubble key={message.id} role={message.role}>
-          {message.text ? <p className="whitespace-pre-wrap">{message.text}</p> : null}
-          {message.attachments.length > 0 ? (
-            <ul
-              className={cn('flex flex-wrap items-end gap-2', message.text && 'mt-2')}
-              data-testid="message-attachments"
-            >
-              {message.attachments.map((attachment, index) => (
-                <AttachmentPreview
-                  key={`${message.id}-${index}`}
-                  attachment={attachment}
-                  sessionId={sessionId}
-                  // A message still in flight has no stored event to fetch bytes from, so
-                  // `seq: 0` tells the preview to stay a chip until the refetch replaces it.
-                  seq={message.id.startsWith('pending:') ? 0 : message.seq}
-                  index={index}
-                  tone={message.role}
-                />
-              ))}
-            </ul>
+        <div key={message.id} className="space-y-2">
+          {/*
+            Above the bubble, matching the live stream's order: the coach says what it is
+            about to do, does it, then reports. Reading the settled transcript top to
+            bottom should feel like having watched it happen.
+          */}
+          <ToolChips tools={settledChips(message)} />
+          {message.text || message.attachments.length > 0 ? (
+            <Bubble role={message.role}>
+              {message.text ? <p className="whitespace-pre-wrap">{message.text}</p> : null}
+              {message.attachments.length > 0 ? (
+                <ul
+                  className={cn('flex flex-wrap items-end gap-2', message.text && 'mt-2')}
+                  data-testid="message-attachments"
+                >
+                  {message.attachments.map((attachment, index) => (
+                    <AttachmentPreview
+                      key={`${message.id}-${index}`}
+                      attachment={attachment}
+                      sessionId={sessionId}
+                      // A message still in flight has no stored event to fetch bytes
+                      // from, so `seq: 0` tells the preview to stay a chip until the
+                      // refetch replaces it.
+                      seq={message.id.startsWith('pending:') ? 0 : message.seq}
+                      index={index}
+                      tone={message.role}
+                    />
+                  ))}
+                </ul>
+              ) : null}
+            </Bubble>
           ) : null}
-        </Bubble>
+        </div>
       ))}
 
       {live ? (
         <div className="space-y-2" data-testid="live-turn">
-          <ToolChips tools={live.tools} />
+          <ToolChips tools={liveChips(live.tools)} />
           {live.text ? (
             <Bubble role="model">
               {/*

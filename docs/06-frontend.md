@@ -138,6 +138,15 @@ Left — **task detail**:
 Right — **session chat**:
 - Streamed markdown with syntax highlighting; tool activity as inline status chips
   ("Searching the web…", "Checking video lengths…") built from `tool_call`/`tool_result`.
+
+  **The chips are part of the transcript, not only of the stream.** A turn's live buffer
+  is cleared on `turn_complete`, so chips rendered only from `useStreamStore` exist for
+  the few seconds a turn is generating and then vanish — leaving a conversation in which
+  the board changed by itself. `lib/transcript.ts` therefore rebuilds them from the
+  stored events, pairing each `function_call` with its `function_response` by call id.
+  Three outcomes, not two: a tick, a cross for a tool that refused, and a neutral mark
+  for one whose outcome was never recorded — an interrupted turn, or a call still waiting
+  on the confirmation prompt below.
 - Composer with drag-and-drop upload (image/PDF/text), preview thumbnails, paste-image
   support. **The drop target is the whole chat pane, not the composer strip** — a
   two-line strip is a target people miss, and missing it is worse than having none,

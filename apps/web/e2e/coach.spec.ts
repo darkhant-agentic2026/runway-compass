@@ -117,6 +117,31 @@ test('flow #7: a project override changes how work is sized', async ({ signedIn:
   await expect(cards(page).first()).toContainText(duration(135))
 })
 
+test('what the coach did stays in the conversation', async ({ signedIn: page }) => {
+  // The regression this exists for: chips rendered while the turn streamed and vanished
+  // on `turn_complete`, because they lived only in `useStreamStore` and the transcript
+  // dropped every event that carried a tool call. Reopening the session showed a
+  // conversation in which tasks had appeared by themselves.
+  await createProject(page, 'A record of the work')
+
+  await say(page, 'The parser is about 4 hours of work')
+  await expect(cards(page)).toHaveCount(1)
+
+  const chips = page.getByTestId('transcript').getByTestId('tool-chips')
+  await expect(chips.locator('[data-tool="add_task"]')).toBeVisible()
+  await expect(chips.locator('[data-tool="split_task"]')).toBeVisible()
+
+  // Still there once the turn has settled into the transcript — the live buffer is gone
+  // by now, so anything visible is coming from the stored events.
+  await expect(page.getByTestId('live-turn')).toHaveCount(0)
+  await expect(chips.locator('[data-tool="add_task"]')).toBeVisible()
+
+  // And after a full reload, which is the state a user comes back to tomorrow.
+  await page.reload()
+  await expect(chips.locator('[data-tool="add_task"]')).toBeVisible()
+  await expect(chips.locator('[data-tool="split_task"]')).toBeVisible()
+})
+
 test('discarding a task waits for the learner to say so', async ({ signedIn: page }) => {
   await createProject(page, 'Housekeeping')
   await page.getByLabel('New task').fill('Something obsolete')

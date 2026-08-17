@@ -402,7 +402,10 @@ class TurnService:
             await self._broker.publish(
                 turn.id,
                 ToolResult(
-                    turn_id=turn.id, seq=seq, name=response.name or "", ok=True
+                    turn_id=turn.id,
+                    seq=seq,
+                    name=response.name or "",
+                    ok=_tool_succeeded(response.response),
                 ).to_wire(),
             )
             await self._turns.advance_seq(turn.id, seq)
@@ -462,6 +465,23 @@ def classify_generation_error(exc: BaseException) -> TurnError:
         message=str(exc) or "Generation failed.",
         retryable=True,
     )
+
+
+def _tool_succeeded(payload: object) -> bool:
+    """Whether a tool result reports success, for the `tool_result` frame's `ok`.
+
+    Domain tools answer `{"ok": …}` — a refused guard is a *result*, not an exception
+    (`agents/tools.py`) — so a frame that hard-coded `True` told the user their board had
+    been changed when the change had been turned down.
+
+    Anything without a boolean `ok` counts as success here, because the alternative reads
+    worse: ADK's own placeholder for a call awaiting confirmation would render as a failed
+    step. The stored transcript makes the finer distinction, where it has the whole turn
+    to look at rather than one frame (`lib/transcript.ts`, `TranscriptTool.ok`).
+    """
+    if isinstance(payload, dict) and isinstance(payload.get("ok"), bool):
+        return bool(payload["ok"])
+    return True
 
 
 def _text_of(event: Event) -> str:
