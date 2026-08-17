@@ -131,9 +131,9 @@ user's button calls.
 
 ## A green local gate is weaker evidence than it looks
 
-Six of the eight defects fixed while closing M2 were invisible to a fully passing local
+Seven of the nine defects fixed while closing M2 were invisible to a fully passing local
 run. The failure modes, what each looks like, and where each is likely to recur are
-tabulated in `docs/09-roadmap.md#what-only-a-deployed-environment-catches`. **Read that
+tabulated in `docs/09-roadmap.md#what-a-green-local-run-does-not-prove`. **Read that
 table before writing anything that queries Firestore, calls a second Google API, or reads a
 stored ADK event** — M3 onwards does all three.
 
@@ -171,6 +171,12 @@ the manual verification. What is worth knowing when something fails there:
 `docs/07-infra-deploy.md` for what each does and for the machine prerequisites. Two more
 regenerate committed cross-language fixtures: `gen-ordering-vectors` and
 `gen-event-vectors`.
+
+**`dev.sh test api` is a *weaker* gate than CI in one respect**: it exports
+`FIRESTORE_EMULATOR_HOST` before pytest, so anything resolved at import time gets an
+anonymous Firestore client. CI has no such variable until a fixture starts the emulator,
+which is after collection. Keep cloud-client construction out of constructors — see
+`LazyAsyncClient` and `tests/test_import_without_credentials.py`.
 
 **Reach for `dev.sh` before reaching for the underlying tool.** `dev.sh test api` starts the
 emulator and exports `ENV`, `GOOGLE_CLOUD_PROJECT`, and `FIRESTORE_EMULATOR_HOST` before

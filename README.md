@@ -9,7 +9,7 @@ a streaming conversation with the coach about an uploaded screenshot on a Cloud 
 environment; generation survives a dropped socket and resumes across instances. CI builds,
 tests, and deploys on merge. The design is in [`docs/`](docs/);
 [09-roadmap.md](docs/09-roadmap.md#status-after-m2) records what is deferred, what was
-decided during implementation, and the six failure modes that a fully green local test run
+decided during implementation, and the seven failure modes a fully green local test run
 did not catch.
 
 ## What it does
@@ -80,6 +80,7 @@ coach acts on the board. Domain tools wrapping the service layer, Socratic proje
 in the session `POST /api/projects` already opens, prompt assembly from the effective
 prefs, and tool-activity chips driving `board_update` invalidations.
 
-Read [Status after M2](docs/09-roadmap.md#status-after-m2) first — particularly *What only
-a deployed environment catches*. M3 adds the first agent tools and therefore the first
-queries and writes the emulator will happily accept and production will not.
+Read [Status after M2](docs/09-roadmap.md#status-after-m2) first — particularly
+[What a green local run does not prove](docs/09-roadmap.md#what-a-green-local-run-does-not-prove).
+M3 adds the first agent tools, and therefore the first queries and writes the emulator will
+happily accept and production will not.

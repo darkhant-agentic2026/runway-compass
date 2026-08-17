@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated, cast
 
 from fastapi import Depends, Request
 
@@ -26,7 +26,7 @@ from coach.core.config import Settings
 from coach.core.principal import Principal
 from coach.integrations.artifacts import build_artifact_service
 from coach.integrations.storage import build_object_store
-from coach.repositories.firestore import Database, get_client
+from coach.repositories.firestore import Database, LazyAsyncClient
 from coach.repositories.idempotency import IdempotencyRepository
 from coach.repositories.presence import PresenceRepository
 from coach.repositories.projects import ProjectRepository
@@ -43,6 +43,9 @@ from coach.services.uploads import UploadService
 from coach.services.users import UserService
 from coach.ws.broker import StreamBroker
 from coach.ws.registry import TurnRegistry
+
+if TYPE_CHECKING:
+    from google.cloud.firestore import AsyncClient
 
 
 def instance_id() -> str:
@@ -86,7 +89,15 @@ class Container:
         # database, and the emulator wiring (`FIRESTORE_EMULATOR_HOST`) is read at client
         # construction, so a second one is also a second thing to configure.
         self.session_service = CoachSessionService(
-            client=get_client(settings),
+            # Lazy, so that assembling the container resolves no credentials — see
+            # `LazyAsyncClient`. Passing `get_client(settings)` here is the obvious thing
+            # and makes `import coach.main` require credentials, which fails in CI at
+            # collection time and passes locally only because the emulator host is
+            # already exported.
+            # `cast` because ADK's constructor is annotated for a real client; the proxy
+            # forwards every attribute it uses, and typing that faithfully would mean
+            # restating `AsyncClient`'s surface for no benefit.
+            client=cast("AsyncClient", LazyAsyncClient(settings)),
             root_collection=settings.adk_firestore_root_collection,
         )
         # One artifact service for the process. `UploadService` writes user uploads into

@@ -173,13 +173,12 @@ developer running locally against a real Gemini key will find text works and att
 not. Not worked around, because the workaround is a second multimodal path production would
 never exercise.
 
-### What only a deployed environment catches
+### What a green local run does not prove
 
-Eight defects were fixed closing this milestone. **Six of them were invisible to a fully
-green local gate** — 291 backend tests, the disconnect matrix, and 52 Playwright specs all
-passed against code that could not work in production. The individual incidents are in the
-git history; what generalises is below, and M4 and M5 add query surface and integrations to
-every row of it.
+Nine defects were fixed closing this milestone. **Seven were invisible to a fully green
+local gate** — the whole suite passed against code that could not run in CI or in
+production. The individual incidents are in the git history; what generalises is below, and
+M4 and M5 add query surface and integrations to every row of it.
 
 | Trap | How it presents | Where it will recur |
 | --- | --- | --- |
@@ -189,6 +188,7 @@ every row of it.
 | **Model availability is per project *and* per location** | `NOT_FOUND` naming a model the design chose, with nothing before the first turn detecting it | Any model change, and `prod` when it exists |
 | **A stored ADK event is `snake_case`** | `Event` declares camelCase aliases, but `append_event` stores `model_dump()` with the default `by_alias=False`. A reader that assumes the aliases silently finds nothing | M3's tool chips and M4's report events, both read from stored events. [02-data-model.md](02-data-model.md#sessions--events-adk-owned-layout) states the shape; `session-event-vectors.json` pins it |
 | **A hand-written fixture can encode the same wrong assumption as the code** | Every test passes and the feature is broken | Anywhere a test fixture stands in for a shape this project does not define. Generate it instead — `gen_event_vectors.py`, `gen_ordering_vectors.py` |
+| **`dev.sh` exports `FIRESTORE_EMULATOR_HOST`; CI does not, until a fixture starts one** | Anything resolved at *import* time gets an anonymous client locally and hits real ADC in CI, so four modules failed to import there while every local run was green | Any constructor that builds a cloud client. `Database` and `LazyAsyncClient` exist to keep client construction out of import; `tests/test_import_without_credentials.py` pins it |
 
 ---
 
