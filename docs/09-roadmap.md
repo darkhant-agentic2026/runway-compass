@@ -195,6 +195,15 @@ tests, which is why neither showed up as a failure:
   emulator not enforcing index requirements is the single widest gap between the local
   gate and a deployed environment**, and it is worth assuming it will bite again at M4
   and M5, which add the research and run queries.
+- **`gemini-3.7-flash` is served to `coach-dev` on the `global` endpoint, not in
+  `us-central1`.** Every turn failed with `NOT_FOUND` naming the model. The model choice
+  in [00-overview.md](00-overview.md#model-configuration) is unchanged and correct — the
+  design simply never said where to call it, and `VERTEX_LOCATION` was hardwired to the
+  Cloud Run region. It is now a `vertex_location` variable, set to `global` in
+  `envs/dev/dev.tfvars` and deliberately left unset in `prod`, where `global` would be a
+  data-residency decision rather than a configuration one. Also fixed alongside: the 404
+  was reported to the user as retryable, so the UI invited a retry of a model that does
+  not exist.
 
 **Deferred, and the milestone that needs it:** the `subscribe`-by-`runId` frame is
 accepted and answered with an explicit error until the run ledger lands (M5); tool-activity

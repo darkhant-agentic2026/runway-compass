@@ -390,6 +390,19 @@ onboarding); production uses **Vertex AI** with the Cloud Run service account (n
 rotate, VPC-SC compatible, and per-project quotas). One `ModelProvider` abstraction,
 selected by `MODEL_BACKEND=gemini_api|vertex`.
 
+**`VERTEX_LOCATION` is not `var.region`.** It defaults to it, but the two are separate
+variables because model availability is per project *and* per location, and a new Gemini
+model is often served on the `global` endpoint before any specific region. Measured in
+`coach-dev` on 2026-08-17: `gemini-3.7-flash` answered `200` at `global` and `404` in
+`us-central1`, while `gemini-2.5-flash` answered `200` in both. `envs/dev/dev.tfvars`
+therefore sets `vertex_location = "global"`.
+
+Nothing detects this before the first turn. The revision starts, `/readyz` passes, the
+board and the sockets work, and only a user sending a message finds out — which is why the
+probe is a numbered runbook step ([RUNBOOK](../infra/terraform/RUNBOOK.md#85-if-a-turn-fails-with-not_found-publisher-model--was-not-found))
+rather than a paragraph to remember. Note also that `global` is a data-residency choice, so
+it is not a setting to copy into `prod` without deciding that separately.
+
 A third value, **`MODEL_BACKEND=stub`**, selects the deterministic model the end-to-end
 harness runs against ([08-testing.md](08-testing.md)); `docker-compose.e2e.yml` sets it, so
 e2e depends on no GCP project and no model nondeterminism. `Settings` **refuses it for any
