@@ -13,6 +13,8 @@ which is the same reasoning `ProjectService.require_owned` uses.
 
 from __future__ import annotations
 
+from typing import Any
+
 from coach.adk_firestore import CoachSessionService, SessionLinkage, StoredEvent
 from coach.agents.runner import APP_NAME
 from coach.core.errors import NotFound
@@ -21,6 +23,7 @@ from coach.repositories.tasks import TaskRepository
 from coach.services.models import SessionSummary
 from coach.services.projects import ProjectService
 from coach.services.tasks import TaskService
+from coach.services.uploads import UploadService
 
 #: `GET /api/sessions/{sid}/events?limit=` ceiling. A transcript page is for hydrating a
 #: view, not for exporting a conversation.
@@ -34,11 +37,13 @@ class SessionService:
         tasks: TaskService,
         task_repository: TaskRepository,
         projects: ProjectService,
+        uploads: UploadService,
     ) -> None:
         self._sessions = sessions
         self._tasks = tasks
         self._task_repository = task_repository
         self._projects = projects
+        self._uploads = uploads
 
     # --- reads ---------------------------------------------------------------------
 
@@ -73,6 +78,35 @@ class SessionService:
             after_seq=after_seq,
             limit=min(limit, MAX_EVENTS_PAGE),
         )
+
+    async def attachment_bytes(
+        self, principal: Principal, session_id: str, seq: int, index: int
+    ) -> tuple[bytes, str, str]:
+        """`(data, mimeType, filename)` for one attachment on one transcript event.
+
+        Addressed by `(session, seq, index)` rather than by artifact name or `gs://` URI,
+        and that is the security design rather than a convenience: a session lives under
+        the caller's own uid, so reaching *any* event through this method already proves
+        ownership. A URI parameter would have to be validated, and validating a
+        caller-supplied storage path is the kind of check that is one refactor away from
+        being wrong.
+        """
+        await self.require_owned(principal, session_id)
+        events = await self._sessions.list_events(
+            app_name=APP_NAME,
+            user_id=principal.uid,
+            session_id=session_id,
+            after_seq=seq - 1,
+            limit=1,
+        )
+        event = next((stored for stored in events if stored.seq == seq), None)
+        if event is None:
+            raise NotFound(f"No event {seq} in session {session_id!r}.")
+
+        uri = _attachment_uri(event.event_data, index)
+        if uri is None:
+            raise NotFound(f"Event {seq} has no attachment at index {index}.")
+        return await self._uploads.bytes_for_artifact_uri(principal, uri)
 
     # --- writes --------------------------------------------------------------------
 
@@ -120,6 +154,35 @@ class SessionService:
             app_name=APP_NAME, user_id=principal.uid, project_id=project_id, task_id=None
         )
         return SessionSummary(id=session.id, project_id=project_id, task_id=None)
+
+
+def _attachment_uri(event_data: dict[str, Any], index: int) -> str | None:
+    """The `file_uri` of the `index`-th file part of a stored event.
+
+    `snake_case`, because that is what `append_event` writes — `Event.model_dump()`
+    defaults to `by_alias=False` despite the model's camelCase aliases. Both spellings are
+    accepted for the same reason `transcript.ts` accepts both: the shape belongs to a
+    pinned dependency, not to us.
+    """
+    content = event_data.get("content")
+    if not isinstance(content, dict):
+        return None
+    parts = content.get("parts")
+    if not isinstance(parts, list):
+        return None
+
+    files = []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        data = part.get("file_data") or part.get("fileData")
+        if isinstance(data, dict):
+            files.append(data)
+
+    if not 0 <= index < len(files):
+        return None
+    uri = files[index].get("file_uri") or files[index].get("fileUri")
+    return str(uri) if uri else None
 
 
 __all__ = ["MAX_EVENTS_PAGE", "SessionService"]

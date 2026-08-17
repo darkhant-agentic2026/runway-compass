@@ -225,13 +225,29 @@ class InMemoryObjectStore:
     def declare(
         self, object_name: str, size_bytes: int, mime_type: str, content: bytes = b""
     ) -> None:
-        """Stand in for a PUT that never happened."""
+        """Stand in for a PUT that never happened. For unit tests."""
         self._declared[object_name] = (size_bytes, mime_type)
         self._content[object_name] = content
 
+    def put(self, object_name: str, content: bytes, mime_type: str) -> None:
+        """Record a PUT that *did* happen, via `api/routers/local_storage.py`.
+
+        The size and type recorded here are the ones actually received, so `finalize`'s
+        checks do real work locally instead of agreeing with whatever the client declared.
+        """
+        self._declared[object_name] = (len(content), mime_type)
+        self._content[object_name] = content
+
     async def signed_put_url(self, object_name: str, *, mime_type: str) -> str:
+        """A URL on this service rather than on GCS.
+
+        Same-origin, so a browser can PUT to it without CORS, and reachable — which the
+        previous `https://storage.local/…` placeholder was not, leaving the whole upload
+        path without end-to-end coverage. The receiving route exists only under
+        `ENV=local`; see `api/routers/local_storage.py`.
+        """
         stamp = int(now().timestamp())
-        return f"https://storage.local/{self._bucket_name}/{object_name}?upload={stamp}"
+        return f"/api/local-storage/{object_name}?upload={stamp}"
 
     async def stat(self, object_name: str) -> tuple[int, str] | None:
         return self._declared.get(object_name)

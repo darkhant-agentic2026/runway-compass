@@ -331,11 +331,15 @@ export function pendingUserEvent(existing: SessionEvent[], body: StartTurnBody):
   const parts: Record<string, unknown>[] = []
   if (body.text) parts.push({ text: body.text })
   for (const attachment of body.attachments ?? []) {
+    // `snake_case`, matching what `append_event` stores, so this echo and the event that
+    // replaces it are read by the same code path rather than two
+    // (`session-event-vectors.json` pins the stored shape).
     parts.push({
-      fileData: { mimeType: attachment.mimeType, fileUri: '' },
-      // Not part of ADK's event shape; `toMessages` reads it when it is there, which is
-      // only ever on this synthetic event. History has no filename to show.
-      displayName: attachment.filename,
+      file_data: {
+        mime_type: attachment.mimeType,
+        file_uri: '',
+        display_name: attachment.filename,
+      },
     })
   }
   const highest = existing.reduce((max, event) => Math.max(max, event.seq), 0)

@@ -15,12 +15,92 @@
 
 import { describe, expect, it } from 'vitest'
 
+import vectors from '@/lib/session-event-vectors.json'
 import { attachmentLabel, toMessages } from '@/lib/transcript'
 import type { SessionEvent } from '@/lib/schemas'
 
 function event(seq: number, body: Record<string, unknown>): SessionEvent {
   return { seq, eventId: `e_${seq}`, event: body }
 }
+
+/**
+ * Against events dumped by the Python side, not by hand.
+ *
+ * This block exists because hand-written fixtures let a real bug through. `Event` declares
+ * `alias_generator=to_camel`, so its *aliases* are camelCase — but `append_event` stores
+ * `model_dump(...)` with the default `by_alias=False`, so the keys are `file_data` and
+ * `mime_type`. The reader looked for `fileData`, found nothing, and rendered messages with
+ * no sign they had ever carried a file. Every test passed, because the fixtures repeated
+ * the same wrong assumption.
+ *
+ * Regenerate with `./scripts/dev.sh gen-event-vectors` after an ADK bump.
+ */
+describe('parity with events as the server stores them', () => {
+  for (const vector of vectors.events) {
+    it(vector.name, () => {
+      const messages = toMessages([event(1, vector.event as Record<string, unknown>)])
+      const expected = vector.expect as Record<string, unknown>
+
+      if (expected.dropped) {
+        expect(messages).toHaveLength(0)
+        return
+      }
+
+      expect(messages).toHaveLength(1)
+      const message = messages[0]!
+      expect(message.role).toBe(expected.role)
+      expect(message.text).toBe(expected.text)
+      expect(message.attachments).toHaveLength(expected.attachments as number)
+      if (expected.attachmentMimeType) {
+        expect(message.attachments[0]?.mimeType).toBe(expected.attachmentMimeType)
+      }
+      if (expected.attachmentFilename) {
+        expect(message.attachments[0]?.filename).toBe(expected.attachmentFilename)
+      }
+      if (expected.toolNames) {
+        expect(message.toolNames).toEqual(expected.toolNames)
+      }
+    })
+  }
+})
+
+describe('the stored spelling, spelled out', () => {
+  it('reads snake_case file_data, which is what is actually in Firestore', () => {
+    const messages = toMessages([
+      event(1, {
+        author: 'user',
+        content: {
+          role: 'user',
+          parts: [
+            { text: 'look' },
+            {
+              file_data: {
+                mime_type: 'image/png',
+                file_uri: 'gs://b/coach/u/user/user:up_1/0',
+                display_name: 'shot.png',
+              },
+            },
+          ],
+        },
+      }),
+    ])
+
+    expect(messages[0]?.attachments).toEqual([
+      { mimeType: 'image/png', filename: 'shot.png' },
+    ])
+  })
+
+  it('still reads camelCase, so a future ADK change is not a regression', () => {
+    const messages = toMessages([
+      event(1, {
+        author: 'user',
+        content: { parts: [{ fileData: { mimeType: 'application/pdf' } }] },
+      }),
+    ])
+
+    expect(messages[0]?.attachments).toEqual([{ mimeType: 'application/pdf' }])
+  })
+})
 
 function userText(seq: number, text: string): SessionEvent {
   return event(seq, { author: 'user', content: { role: 'user', parts: [{ text }] } })
@@ -66,64 +146,20 @@ describe('text', () => {
 })
 
 describe('attachments', () => {
-  it('keeps an attachment alongside the text of the same message', () => {
-    const messages = toMessages([
-      event(1, {
-        author: 'user',
-        content: {
-          role: 'user',
-          parts: [
-            { text: 'what do you make of this?' },
-            { fileData: { mimeType: 'image/png', fileUri: 'gs://b/coach/u/user/user:up_1/0' } },
-          ],
-        },
-      }),
-    ])
-
-    expect(messages[0]?.text).toBe('what do you make of this?')
-    expect(messages[0]?.attachments).toEqual([{ mimeType: 'image/png' }])
-  })
-
-  it('renders a message that is nothing but an attachment', () => {
-    const messages = toMessages([
-      event(1, {
-        author: 'user',
-        content: { role: 'user', parts: [{ fileData: { mimeType: 'application/pdf' } }] },
-      }),
-    ])
-
-    expect(messages).toHaveLength(1)
-    expect(messages[0]?.attachments).toEqual([{ mimeType: 'application/pdf' }])
-  })
-
   it('reads inline data as an attachment too', () => {
     const messages = toMessages([
-      event(1, { author: 'user', content: { parts: [{ inlineData: { mimeType: 'image/jpeg' } }] } }),
+      event(1, {
+        author: 'user',
+        content: { parts: [{ inline_data: { mime_type: 'image/jpeg' } }] },
+      }),
     ])
 
     expect(messages[0]?.attachments).toEqual([{ mimeType: 'image/jpeg' }])
   })
 
-  it('carries the filename when the synthetic in-flight event supplies one', () => {
-    // Only the optimistic echo knows it; a stored event has a `gs://` URI and no name.
-    const messages = toMessages([
-      event(1, {
-        author: 'user',
-        content: {
-          parts: [{ fileData: { mimeType: 'image/png' }, displayName: 'screenshot.png' }],
-        },
-      }),
-    ])
-
-    expect(messages[0]?.attachments[0]).toEqual({
-      mimeType: 'image/png',
-      filename: 'screenshot.png',
-    })
-  })
-
   it('survives an attachment with no mime type at all', () => {
     const messages = toMessages([
-      event(1, { author: 'user', content: { parts: [{ fileData: {} }] } }),
+      event(1, { author: 'user', content: { parts: [{ file_data: {} }] } }),
     ])
 
     expect(messages[0]?.attachments).toEqual([{ mimeType: '' }])
@@ -135,7 +171,7 @@ describe('what is not a message', () => {
     // Tool activity is a chip during the stream, not part of the transcript after it
     // (docs/06-frontend.md).
     const messages = toMessages([
-      event(1, { author: 'coach', content: { parts: [{ functionCall: { name: 'add_task' } }] } }),
+      event(1, { author: 'coach', content: { parts: [{ function_call: { name: 'add_task' } }] } }),
     ])
 
     expect(messages).toHaveLength(0)

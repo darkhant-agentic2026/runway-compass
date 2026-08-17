@@ -51,18 +51,41 @@ export function attachmentLabel(attachment: TranscriptAttachment): string {
   return attachment.filename ?? MIME_LABELS[attachment.mimeType] ?? 'Attachment'
 }
 
+/**
+ * One part of an event's content, **as stored**.
+ *
+ * The keys are `snake_case`, and that is the whole subtlety of this module. ADK's `Event`
+ * declares `alias_generator=to_camel`, so the aliases are camelCase and it is natural to
+ * assume the JSON is too — but `append_event` stores
+ * `event.model_dump(exclude_none=True, mode="json")`, and `model_dump` defaults to
+ * `by_alias=False`. Reading `fileData` instead of `file_data` finds nothing and silently
+ * renders a message with no sign it ever carried a file, which is exactly what happened.
+ *
+ * Both spellings are accepted here because the shape is not ours to fix: a future ADK
+ * version could serialize by alias, and the synthetic in-flight event built in
+ * `features/queries.ts` is ours to write either way. `session-event-vectors.json` pins the
+ * shape that is actually stored today.
+ */
 interface EventPart {
   text?: unknown
   thought?: unknown
+  function_call?: { name?: unknown }
   functionCall?: { name?: unknown }
+  function_response?: { name?: unknown }
   functionResponse?: { name?: unknown }
-  inlineData?: unknown
-  fileData?: { fileUri?: unknown; mimeType?: unknown }
-  /**
-   * Not an ADK field. Present only on the synthetic event the composer inserts while a
-   * message is in flight (`features/queries.ts`), which is the one moment the filename is
-   * known.
-   */
+  inline_data?: FileLike
+  inlineData?: FileLike
+  file_data?: FileLike
+  fileData?: FileLike
+}
+
+interface FileLike {
+  file_uri?: unknown
+  fileUri?: unknown
+  mime_type?: unknown
+  mimeType?: unknown
+  /** The user's own filename, set by `TurnService._build_content`. */
+  display_name?: unknown
   displayName?: unknown
 }
 
@@ -107,8 +130,8 @@ export function toMessages(events: SessionEvent[]): TranscriptMessage[] {
       .join('')
 
     const toolNames = parts
-      .map((part) => part.functionCall?.name)
-      .filter((name): name is string => typeof name === 'string')
+      .map(toolNameOf)
+      .filter((name): name is string => name !== undefined)
 
     const attachments = attachmentsOf(parts)
     // Text or an attachment is what makes a bubble. An event carrying *only* tool calls
@@ -130,14 +153,33 @@ export function toMessages(events: SessionEvent[]): TranscriptMessage[] {
   return messages
 }
 
+/** First of the candidates that is actually a string. */
+function str(...candidates: unknown[]): string | undefined {
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate) return candidate
+  }
+  return undefined
+}
+
+function fileOf(part: EventPart): FileLike | undefined {
+  return part.file_data ?? part.fileData ?? part.inline_data ?? part.inlineData
+}
+
+function toolNameOf(part: EventPart): string | undefined {
+  return str(
+    part.function_call?.name,
+    part.functionCall?.name,
+  )
+}
+
 function attachmentsOf(parts: EventPart[]): TranscriptAttachment[] {
   const attachments: TranscriptAttachment[] = []
   for (const part of parts) {
-    const data = part.fileData ?? (part.inlineData as { mimeType?: unknown } | undefined)
-    if (!data) continue
-    const filename = typeof part.displayName === 'string' ? part.displayName : undefined
+    const file = fileOf(part)
+    if (!file) continue
+    const filename = str(file.display_name, file.displayName)
     attachments.push({
-      mimeType: typeof data.mimeType === 'string' ? data.mimeType : '',
+      mimeType: str(file.mime_type, file.mimeType) ?? '',
       ...(filename ? { filename } : {}),
     })
   }

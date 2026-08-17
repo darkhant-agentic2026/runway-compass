@@ -1,0 +1,250 @@
+{
+  "events": [
+    {
+      "event": {
+        "actions": {
+          "artifact_delta": {},
+          "requested_auth_configs": {},
+          "requested_tool_confirmations": {},
+          "state_delta": {}
+        },
+        "author": "user",
+        "content": {
+          "parts": [
+            {
+              "text": "why does this deadlock?"
+            }
+          ],
+          "role": "user"
+        },
+        "id": "37dac403-c8dc-4cd2-9b63-de2e28041023",
+        "invocation_id": "inv_1",
+        "node_info": {
+          "path": ""
+        },
+        "timestamp": 1786979780.9572294
+      },
+      "expect": {
+        "attachments": 0,
+        "role": "user",
+        "text": "why does this deadlock?"
+      },
+      "name": "user text"
+    },
+    {
+      "event": {
+        "actions": {
+          "artifact_delta": {},
+          "requested_auth_configs": {},
+          "requested_tool_confirmations": {},
+          "state_delta": {}
+        },
+        "author": "coach_agent",
+        "content": {
+          "parts": [
+            {
+              "text": "Because both hold a lock."
+            }
+          ],
+          "role": "model"
+        },
+        "id": "aa489977-06c4-4909-8cac-7e0e8d8e86dd",
+        "invocation_id": "inv_1",
+        "node_info": {
+          "path": ""
+        },
+        "timestamp": 1786979780.9573565
+      },
+      "expect": {
+        "attachments": 0,
+        "role": "model",
+        "text": "Because both hold a lock."
+      },
+      "name": "model text"
+    },
+    {
+      "event": {
+        "actions": {
+          "artifact_delta": {},
+          "requested_auth_configs": {},
+          "requested_tool_confirmations": {},
+          "state_delta": {}
+        },
+        "author": "user",
+        "content": {
+          "parts": [
+            {
+              "text": "what do you make of this?"
+            },
+            {
+              "file_data": {
+                "display_name": "screenshot.png",
+                "file_uri": "gs://coach-dev-coach-artifacts/coach/u_alice/user/user:up_01J7Z8/0",
+                "mime_type": "image/png"
+              }
+            }
+          ],
+          "role": "user"
+        },
+        "id": "4b824377-d535-4fc7-a8f0-b33e4a32b0ea",
+        "invocation_id": "inv_2",
+        "node_info": {
+          "path": ""
+        },
+        "timestamp": 1786979780.957783
+      },
+      "expect": {
+        "attachmentFilename": "screenshot.png",
+        "attachmentMimeType": "image/png",
+        "attachments": 1,
+        "role": "user",
+        "text": "what do you make of this?"
+      },
+      "name": "user text with a named image attachment"
+    },
+    {
+      "event": {
+        "actions": {
+          "artifact_delta": {},
+          "requested_auth_configs": {},
+          "requested_tool_confirmations": {},
+          "state_delta": {}
+        },
+        "author": "user",
+        "content": {
+          "parts": [
+            {
+              "file_data": {
+                "file_uri": "gs://coach-dev-coach-artifacts/coach/u_alice/user/user:up_01J7Z8/0",
+                "mime_type": "image/png"
+              }
+            }
+          ],
+          "role": "user"
+        },
+        "id": "6ed91307-f561-44bd-8b7b-4d596130f412",
+        "invocation_id": "inv_3",
+        "node_info": {
+          "path": ""
+        },
+        "timestamp": 1786979780.95787
+      },
+      "expect": {
+        "attachmentMimeType": "image/png",
+        "attachments": 1,
+        "role": "user",
+        "text": ""
+      },
+      "name": "attachment with no text"
+    },
+    {
+      "event": {
+        "actions": {
+          "artifact_delta": {},
+          "requested_auth_configs": {},
+          "requested_tool_confirmations": {},
+          "state_delta": {}
+        },
+        "author": "user",
+        "content": {
+          "parts": [
+            {
+              "file_data": {
+                "file_uri": "gs://coach-dev-coach-artifacts/coach/u_alice/user/user:up_01J7Z8/0",
+                "mime_type": "application/pdf"
+              }
+            }
+          ],
+          "role": "user"
+        },
+        "id": "8f18e23e-c6da-469d-b1b9-69aa6ac2b9ed",
+        "invocation_id": "inv_4",
+        "node_info": {
+          "path": ""
+        },
+        "timestamp": 1786979780.9579413
+      },
+      "expect": {
+        "attachmentMimeType": "application/pdf",
+        "attachments": 1,
+        "role": "user",
+        "text": ""
+      },
+      "name": "pdf attachment"
+    },
+    {
+      "event": {
+        "actions": {
+          "artifact_delta": {},
+          "requested_auth_configs": {},
+          "requested_tool_confirmations": {},
+          "state_delta": {}
+        },
+        "author": "coach_agent",
+        "content": {
+          "parts": [
+            {
+              "function_call": {
+                "args": {
+                  "title": "Read about locks"
+                },
+                "name": "add_task"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        "id": "f0c1f2ac-2cd8-4c7c-95d0-03c32bfdcb87",
+        "invocation_id": "inv_5",
+        "node_info": {
+          "path": ""
+        },
+        "timestamp": 1786979780.9588919
+      },
+      "expect": {
+        "dropped": true
+      },
+      "name": "tool call only, which is not a message"
+    },
+    {
+      "event": {
+        "actions": {
+          "artifact_delta": {},
+          "requested_auth_configs": {},
+          "requested_tool_confirmations": {},
+          "state_delta": {}
+        },
+        "author": "coach_agent",
+        "content": {
+          "parts": [
+            {
+              "text": "Adding that now."
+            },
+            {
+              "function_call": {
+                "args": {},
+                "name": "add_task"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        "id": "872c11c7-3e98-419d-81ee-84e0a851eafb",
+        "invocation_id": "inv_6",
+        "node_info": {
+          "path": ""
+        },
+        "timestamp": 1786979780.9589791
+      },
+      "expect": {
+        "attachments": 0,
+        "role": "model",
+        "text": "Adding that now.",
+        "toolNames": [
+          "add_task"
+        ]
+      },
+      "name": "text alongside a tool call"
+    }
+  ]
+}

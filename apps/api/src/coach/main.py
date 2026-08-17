@@ -207,6 +207,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(uploads.router)
     app.include_router(ws.router)
 
+    if settings.is_local:
+        # ------------------------------------------------------------------------------
+        # DELIBERATE LOCAL-ONLY SURFACE. It stands in for the GCS bucket a signed PUT
+        # targets, so the upload path is reachable from a Playwright flow at all — see
+        # `api/routers/local_storage.py`. Guarded by this one check, exactly like the
+        # `Bearer dev:<uid>` path, and pinned for every other `ENV` by
+        # `tests/test_local_storage_guard.py`.
+        # ------------------------------------------------------------------------------
+        from coach.api.routers import local_storage
+
+        app.include_router(local_storage.router)
+
     # --- SPA, registered LAST ---------------------------------------------------------
     _mount_spa(app, settings)
 

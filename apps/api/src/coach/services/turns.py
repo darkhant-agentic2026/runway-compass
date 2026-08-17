@@ -229,7 +229,14 @@ class TurnService:
             parts.append(types.Part(text=text))
         for attachment in attachments:
             upload = await self._uploads.resolve(principal, attachment["uploadId"])
-            parts.append(types.Part.from_uri(file_uri=upload.uri, mime_type=upload.mime_type))
+            part = types.Part.from_uri(file_uri=upload.uri, mime_type=upload.mime_type)
+            # `display_name` is the only place the user's own filename survives into the
+            # transcript. The artifact is named `user:{uploadId}` and the `gs://` URI has
+            # no human segment, so without this a reopened conversation can say that a
+            # file was attached but not which one.
+            if part.file_data is not None and upload.filename:
+                part.file_data.display_name = upload.filename
+            parts.append(part)
         return types.Content(role="user", parts=parts) if parts else None
 
     async def _generate(self, turn: Turn, principal: Principal, content: types.Content) -> None:

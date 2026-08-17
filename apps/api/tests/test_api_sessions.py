@@ -244,7 +244,9 @@ async def test_an_upload_returns_a_signed_url(client) -> None:
     assert response.status_code == 201
     body = response.json()
     assert body["uploadId"]
-    assert body["signedUrl"].startswith("https://")
+    # Same-origin under ENV=local, so a browser can actually PUT to it — see
+    # `api/routers/local_storage.py`. A deployed environment returns a signed GCS URL.
+    assert body["signedUrl"].startswith("/api/local-storage/")
 
 
 @pytest.mark.parametrize("mime_type", ["application/zip", "text/html", "video/mp4"])

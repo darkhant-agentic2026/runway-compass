@@ -18,6 +18,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from google.cloud.firestore_v1.base_query import FieldFilter
+
 from coach.core.clock import now
 from coach.repositories.firestore import Database
 
@@ -63,6 +65,28 @@ class UploadRepository:
         if not snapshot.exists:
             return None
         return snapshot.to_dict() or {}
+
+    async def find_by_artifact_uri(self, artifact_uri: str) -> dict[str, Any] | None:
+        """The upload behind a `gs://` reference in a transcript.
+
+        A stored event carries only the artifact URI, so this is how a preview request
+        gets back to the artifact's name and version without the caller parsing ADK's blob
+        layout out of the URI.
+
+        **One filter, deliberately.** `ownerUid` is checked by the service on the result
+        rather than added here: a second `where` would make this a composite query needing
+        an index that does not exist, and real Firestore answers that with
+        `FAILED_PRECONDITION` while the emulator answers correctly
+        (see `CLAUDE.md`, and `CoachSessionService.find_session_id_for_task`).
+        """
+        query = (
+            self._db.client.collection(UPLOADS)
+            .where(filter=FieldFilter("artifactUri", "==", artifact_uri))
+            .limit(2)
+        )
+        async for document in query.stream():
+            return document.to_dict() or {}
+        return None
 
     async def finalize(
         self,

@@ -126,9 +126,10 @@ drag-and-drop, gets a reply that demonstrably sees the image, reloads, and sends
 turn in the same session. Vertex AI, V4 signed upload URLs, and `GcsArtifactService` are
 therefore all exercised for real, which no local test can do.
 
-Six defects only reachable in a deployed environment were found and fixed doing it; they
-are itemised under *Fixed after the first M2 pass* below. That is the number worth
-remembering when planning M4 and M5 — a green local gate said nothing about any of them.
+Eight defects were found and fixed closing it, six of them reachable only in a deployed
+environment; all are itemised under *Fixed after the first M2 pass* below. That is the
+number worth remembering when planning M4 and M5 — a green local gate said nothing about
+any of the six.
 
 
 **Met, locally.** The full disconnect matrix is green, including cross-instance resume
@@ -262,6 +263,30 @@ tests, which is why neither showed up as a failure:
   while the message is in flight, and by kind afterwards, because a stored event holds a
   `gs://` artifact URI and no human filename. Writing the test for this also surfaced that
   an event carrying *only* tool calls became an empty bubble; those are dropped now.
+- **…and the chip then vanished from *reopened* conversations.** That fix worked in the
+  session that sent the file and nowhere else, because those are two different sources:
+  the optimistic echo, which this project writes, and the stored event, which ADK does.
+  `Event` declares `alias_generator=to_camel`, so its aliases are camelCase — but
+  `append_event` stores `model_dump(exclude_none=True, mode="json")`, and `model_dump`
+  defaults to `by_alias=False`. Firestore holds `file_data` / `mime_type`; the reader
+  looked for `fileData` and found nothing.
+
+  Every unit test passed, because the fixtures had been invented from the same wrong
+  assumption — so the fix is not only the reader. `scripts/gen_event_vectors.py` dumps real
+  events from the Python side into `session-event-vectors.json` and `transcript.test.ts`
+  replays them, the same generated-parity approach the fractional index already uses:
+  **an observed fixture cannot repeat the mistake that produced it.**
+  `TurnService._build_content` also sets `file_data.display_name`, so a reopened
+  conversation names the file rather than only its kind.
+
+  Added at the same time, and **not in any milestone**: image attachments render as
+  thumbnails rather than labels
+  ([06-frontend.md](06-frontend.md#task-workspace-projectsprojectidtaskstaskid)) — docs
+  asked for preview thumbnails on the *composer* and said nothing about the transcript.
+  That needed one new endpoint,
+  `GET /api/sessions/{sid}/events/{seq}/attachments/{index}`, addressed by position rather
+  than by artifact name or URI so that reaching an event at all proves ownership and no
+  caller-supplied storage path is ever validated.
 - **`gemini-3.7-flash` is served to `coach-dev` on the `global` endpoint, not in
   `us-central1`.** Every turn failed with `NOT_FOUND` naming the model. The model choice
   in [00-overview.md](00-overview.md#model-configuration) is unchanged and correct — the
@@ -272,15 +297,12 @@ tests, which is why neither showed up as a failure:
   was reported to the user as retryable, so the UI invited a retry of a model that does
   not exist.
 
-**The upload path still has no end-to-end coverage.** The e2e harness runs
-`InMemoryObjectStore`, whose signed URL points at a host the browser cannot PUT to, so no
-Playwright flow exercises attaching a file. The signing bug above was unreachable locally
-by construction — storage is one of the two dependencies
-[07-infra-deploy.md](07-infra-deploy.md#the-two-local-dependencies-that-are-not-emulated)
-says is not emulated — but the missing `<Toaster />` was not: a flow that attaches a file
-and asserts a chip appears would have caught it. Closing this means a local-only PUT
-receiver behind the same `ENV=local` guard as `MODEL_BACKEND=stub`, which is new surface
-and therefore its own decision rather than something to add in passing.
+**The upload path now has end-to-end coverage**, via a local-only PUT receiver behind the
+same `ENV=local` guard as `MODEL_BACKEND=stub` (`api/routers/local_storage.py`,
+[08-testing.md](08-testing.md#end-to-end-playwright)). `e2e/attachments.spec.ts` attaches
+by picker and by drop, sends, **reopens the workspace**, and asserts the attachment and its
+preview are still there. Signing remains uncovered and unreachable locally, which is
+inherent: it needs a real signer.
 
 **Deferred, and the milestone that needs it:** the `subscribe`-by-`runId` frame is
 accepted and answered with an explicit error until the run ledger lands (M5); tool-activity

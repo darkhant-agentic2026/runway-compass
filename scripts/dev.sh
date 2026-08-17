@@ -9,6 +9,7 @@
 #   ./scripts/dev.sh lint                  ruff --fix, ruff format, eslint --fix, tsc
 #   ./scripts/dev.sh doctor                check the machine prerequisites
 #   ./scripts/dev.sh gen-ordering-vectors  regenerate the cross-language order-key vectors
+#   ./scripts/dev.sh gen-event-vectors     regenerate the stored-ADK-event vectors
 #
 set -euo pipefail
 
@@ -246,6 +247,15 @@ cmd_lint() {
   fi
 }
 
+cmd_gen_event_vectors() {
+  # `apps/web/src/lib/transcript.ts` reads a shape this project does not define — the
+  # serialized ADK `Event`, returned verbatim by GET /api/sessions/{sid}/events. This dumps
+  # real events from the Python side so the web tests replay an observed shape rather than
+  # an assumed one. Written after attachments silently vanished from reopened conversations
+  # because the fixtures said `fileData` and Firestore says `file_data`.
+  "$API_DIR/.venv/bin/python" "$REPO_ROOT/scripts/gen_event_vectors.py"
+}
+
 cmd_gen_ordering_vectors() {
   # The board's optimistic reorder is only correct while the Python and TypeScript
   # fractional-index implementations agree exactly. This regenerates the shared vectors
@@ -268,6 +278,7 @@ main() {
     lint) cmd_lint "$@" ;;
     doctor) doctor ;;
     gen-ordering-vectors) cmd_gen_ordering_vectors ;;
+    gen-event-vectors) cmd_gen_event_vectors ;;
     ''|-h|--help|help) usage ;;
     *) fail "Unknown command: $command"$'\n'"$(usage)" ;;
   esac

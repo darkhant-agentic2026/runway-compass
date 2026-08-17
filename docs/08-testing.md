@@ -195,6 +195,27 @@ Playwright fixture injects a `dev:<uid>` token so every flow starts authenticate
 here is testing Google's sign-in popup, and seeding keeps the suite fast and deterministic.
 Real token verification is covered by the nightly job below.
 
+**Uploads are exercised for real, via a local-only PUT receiver.** `ENV=local` serves the
+target of the signed URL itself (`api/routers/local_storage.py`), recording the bytes and
+content type in the process's `InMemoryObjectStore`. Before that, the in-memory store handed
+the browser a `https://storage.local/…` URL and no flow could complete an upload — the
+picker, the drop zone, finalize, and the transcript had no end-to-end coverage at all, and
+two defects reached a deployed environment through the gap (a missing `<Toaster />`, and
+attachments vanishing from reopened conversations). The receiver is guarded and
+regression-tested for every other `ENV`, exactly like the `Bearer dev:<uid>` path. Signing
+is still not covered, and cannot be without a real signer.
+
+**The transcript's reader is tested against generated vectors, not hand-written fixtures.**
+`GET /api/sessions/{sid}/events` returns the serialized ADK `Event` verbatim, so
+`apps/web/src/lib/transcript.ts` reads a shape this project does not define.
+`scripts/gen_event_vectors.py` dumps real events exactly as `append_event` stores them into
+`session-event-vectors.json`, which `transcript.test.ts` replays — the same
+generated-parity approach as the fractional-index vectors, and for the same reason. It was
+added after invented fixtures passed while the code was wrong: `Event` declares camelCase
+aliases, but `model_dump()` defaults to `by_alias=False`, so the stored keys are
+`file_data` and `mime_type`. Regenerate with `./scripts/dev.sh gen-event-vectors` after an
+ADK bump.
+
 Golden flows:
 
 1. **Create project → Socratic intake → first task list exists.**

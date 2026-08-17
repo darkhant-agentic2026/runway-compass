@@ -89,17 +89,25 @@ class Container:
             client=get_client(settings),
             root_collection=settings.adk_firestore_root_collection,
         )
-        self.sessions = SessionService(
-            self.session_service, self.tasks, self.task_repository, self.projects
-        )
-
         # One artifact service for the process. `UploadService` writes user uploads into
         # it on finalize and the agent reads them back through the `Runner`, so a second
         # instance would be a second client against the same bucket and a second place to
         # get the bucket name wrong.
         self.artifact_service = build_artifact_service(settings)
+        # Held on the container as well as passed to the service, because the local-only
+        # PUT receiver writes into this exact instance (`api/routers/local_storage.py`).
+        self.object_store = build_object_store(settings)
         self.uploads = UploadService(
-            self.upload_repository, build_object_store(settings), self.artifact_service
+            self.upload_repository, self.object_store, self.artifact_service
+        )
+
+        # After `uploads`: serving an attachment's bytes for a preview goes through it.
+        self.sessions = SessionService(
+            self.session_service,
+            self.tasks,
+            self.task_repository,
+            self.projects,
+            self.uploads,
         )
 
         self.registry = TurnRegistry()

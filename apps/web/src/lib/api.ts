@@ -290,6 +290,29 @@ export const api = {
 
   // --- uploads --------------------------------------------------------------------------
 
+  /**
+   * An attachment's bytes, as a blob.
+   *
+   * Fetched with the ID token and turned into an object URL rather than being pointed at
+   * from an `<img src>`, because an `<img>` cannot carry a bearer header. The alternative
+   * — a URL that is its own credential — would be a second way into the data, and
+   * docs/00-overview.md keeps one auth path on purpose.
+   */
+  getEventAttachment: async (sessionId: string, seq: number, index: number) => {
+    const token = await getAuthProvider().getIdToken()
+    const response = await fetch(
+      `/api/sessions/${sessionId}/events/${seq}/attachments/${index}`,
+      { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+    )
+    if (!response.ok) throw new ApiError(response.status, {
+      type: 'about:blank',
+      title: response.statusText || 'Request failed',
+      status: response.status,
+      detail: '',
+    })
+    return response.blob()
+  },
+
   createUpload: (body: { filename: string; mimeType: string; sizeBytes: number }) =>
     request('/api/uploads', uploadCreatedSchema, { method: 'POST', body }),
 

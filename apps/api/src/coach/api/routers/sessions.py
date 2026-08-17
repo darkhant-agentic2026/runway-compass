@@ -12,7 +12,7 @@ in that table and arrives at M4 with the research workflow it runs.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Response, status
 
 from coach.api.deps import CurrentUser, Sessions, Turns
 from coach.api.idempotency import idempotency_guard
@@ -74,6 +74,43 @@ async def list_session_events(
         ],
         next_after_seq=events[-1].seq if events else after_seq,
         has_more=len(events) == limit,
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/events/{seq}/attachments/{index}",
+    response_class=Response,
+    responses={200: {"content": {"*/*": {}}}},
+)
+async def get_event_attachment(
+    session_id: str, seq: int, index: int, principal: CurrentUser, sessions: Sessions
+) -> Response:
+    """The bytes of one attachment, for the transcript's image previews.
+
+    Not in the contract's endpoint table: previews are not in it either, and rendering one
+    needs the bytes. Addressed by `(session, seq, index)` because a session lives under the
+    caller's uid, so reaching an event at all already proves ownership — no storage path
+    arrives from the client and none is validated.
+
+    Authenticated like every other `/api/*` route, which is why the SPA fetches this and
+    turns it into a blob URL rather than putting it in an `<img src>`: an `<img>` cannot
+    carry a bearer token, and inventing a second, URL-based way in would undo
+    docs/00-overview.md's "one auth path".
+    """
+    data, mime_type, filename = await sessions.attachment_bytes(
+        principal, session_id, seq, index
+    )
+    return Response(
+        content=data,
+        media_type=mime_type or "application/octet-stream",
+        headers={
+            # `inline` so a preview renders rather than downloading, and the real filename
+            # so "save as" offers something recognisable.
+            "Content-Disposition": f'inline; filename="{filename or "attachment"}"',
+            # The artifact is immutable once written, so this can be cached hard. Private:
+            # it is one user's file behind an authenticated request.
+            "Cache-Control": "private, max-age=3600",
+        },
     )
 
 

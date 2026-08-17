@@ -12,11 +12,11 @@
  * appearing twice for the moment between the frame and the refetch.
  */
 
-import { Paperclip } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 
+import { AttachmentPreview } from '@/components/session/AttachmentPreview'
 import { ToolChips } from '@/components/session/ToolChips'
-import { attachmentLabel, type TranscriptMessage } from '@/lib/transcript'
+import type { TranscriptMessage } from '@/lib/transcript'
 import { cn } from '@/lib/utils'
 import type { StreamState } from '@/stores/stream'
 
@@ -24,11 +24,14 @@ export function Transcript({
   messages,
   live,
   pending,
+  sessionId,
 }: {
   messages: TranscriptMessage[]
   /** The turn currently streaming, if any. */
   live: StreamState | null
   pending: boolean
+  /** Needed to fetch an attachment's bytes for a preview. */
+  sessionId: string
 }) {
   const bottom = useRef<HTMLDivElement>(null)
 
@@ -55,20 +58,20 @@ export function Transcript({
           {message.text ? <p className="whitespace-pre-wrap">{message.text}</p> : null}
           {message.attachments.length > 0 ? (
             <ul
-              className={cn('flex flex-wrap gap-1.5', message.text && 'mt-2')}
+              className={cn('flex flex-wrap items-end gap-2', message.text && 'mt-2')}
               data-testid="message-attachments"
             >
               {message.attachments.map((attachment, index) => (
-                <li
+                <AttachmentPreview
                   key={`${message.id}-${index}`}
-                  className={cn(
-                    'flex items-center gap-1 rounded-full px-2 py-0.5 text-xs',
-                    message.role === 'user' ? 'bg-primary-foreground/15' : 'bg-background/60',
-                  )}
-                >
-                  <Paperclip className="size-3 shrink-0" aria-hidden="true" />
-                  <span>{attachmentLabel(attachment)}</span>
-                </li>
+                  attachment={attachment}
+                  sessionId={sessionId}
+                  // A message still in flight has no stored event to fetch bytes from, so
+                  // `seq: 0` tells the preview to stay a chip until the refetch replaces it.
+                  seq={message.id.startsWith('pending:') ? 0 : message.seq}
+                  index={index}
+                  tone={message.role}
+                />
               ))}
             </ul>
           ) : null}

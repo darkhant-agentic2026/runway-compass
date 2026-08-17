@@ -82,6 +82,10 @@ class ResolvedUpload:
     upload_id: str
     uri: str
     mime_type: str
+    #: The name the user's file had. Carried onto the `types.Part` so the transcript can
+    #: still say "screenshot.png" a week later — the artifact's own name is
+    #: `user:{uploadId}` and the `gs://` URI has no human part.
+    filename: str = ""
 
 
 class UploadService:
@@ -179,7 +183,12 @@ class UploadService:
             artifact_version=artifact.version,
             artifact_uri=artifact.uri,
         )
-        return ResolvedUpload(upload_id=upload_id, uri=artifact.uri, mime_type=resolved_type)
+        return ResolvedUpload(
+            upload_id=upload_id,
+            uri=artifact.uri,
+            mime_type=resolved_type,
+            filename=str(record["filename"]),
+        )
 
     async def resolve(self, principal: Principal, upload_id: str) -> ResolvedUpload:
         """The `types.Part` file reference for a finalized upload.
@@ -199,6 +208,35 @@ class UploadService:
             upload_id=upload_id,
             uri=str(record["artifactUri"]),
             mime_type=str(record["mimeType"]),
+            filename=str(record.get("filename") or ""),
+        )
+
+    async def bytes_for_artifact_uri(
+        self, principal: Principal, artifact_uri: str
+    ) -> tuple[bytes, str, str]:
+        """`(data, mimeType, filename)` for the artifact a transcript event references.
+
+        Backs the image previews. The bytes come from `load_artifact`, so the same call
+        works against `GcsArtifactService` and the in-memory stand-in — no `gs://` path is
+        parsed anywhere, which is what keeps ADK's blob layout ADK's business.
+        """
+        record = await self._uploads.find_by_artifact_uri(artifact_uri)
+        if record is None or record.get("ownerUid") != principal.uid:
+            raise NotFound("No attachment for that reference.")
+
+        part = await self._artifacts.load_artifact(
+            app_name=APP_NAME,
+            user_id=principal.uid,
+            filename=str(record["artifactFilename"]),
+            version=int(record.get("artifactVersion") or 0),
+        )
+        if part is None or part.inline_data is None or part.inline_data.data is None:
+            raise NotFound("That attachment's content is no longer stored.")
+
+        return (
+            bytes(part.inline_data.data),
+            str(record.get("mimeType") or part.inline_data.mime_type or ""),
+            str(record.get("filename") or ""),
         )
 
     async def _require_owned(self, principal: Principal, upload_id: str) -> dict[str, object]:

@@ -155,7 +155,12 @@ export default function TaskWorkspacePage() {
           <ConnectionBanner />
         </div>
 
-        <Transcript messages={messages} live={live} pending={events.isPending} />
+        <Transcript
+          messages={messages}
+          live={live}
+          pending={events.isPending}
+          sessionId={sessionId}
+        />
 
         {sessionId ? (
           <Composer
