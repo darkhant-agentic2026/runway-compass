@@ -12,23 +12,11 @@
  */
 
 import { Paperclip, Send, X } from 'lucide-react'
-import { useRef, type ChangeEvent, type ClipboardEvent, type DragEvent } from 'react'
-import { toast } from 'sonner'
+import { useRef, type ChangeEvent, type ClipboardEvent } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { api } from '@/lib/api'
+import { ACCEPTED_MIME_TYPES, useAttachmentUploads } from '@/features/use-uploads'
 import { NO_ATTACHMENTS, useComposerStore } from '@/stores/composer'
-
-/** docs/04-api-contract.md#uploads, mirrored so the picker filters and the error is early. */
-const ACCEPTED = [
-  'image/png',
-  'image/jpeg',
-  'image/webp',
-  'application/pdf',
-  'text/plain',
-  'text/markdown',
-]
-const MAX_BYTES = 20 * 1024 * 1024
 
 export function Composer({
   sessionId,
@@ -51,50 +39,12 @@ export function Composer({
     (state) => state.attachments[sessionId] ?? NO_ATTACHMENTS,
   )
   const setDraft = useComposerStore((state) => state.setDraft)
-  const addAttachment = useComposerStore((state) => state.addAttachment)
-  const markReady = useComposerStore((state) => state.markReady)
   const removeAttachment = useComposerStore((state) => state.removeAttachment)
+  const { uploadAll } = useAttachmentUploads(sessionId)
   const filePicker = useRef<HTMLInputElement>(null)
 
   const ready = attachments.filter((attachment) => attachment.ready)
   const canSend = (draft.trim().length > 0 || ready.length > 0) && !sending
-
-  async function upload(file: File): Promise<void> {
-    if (!ACCEPTED.includes(file.type)) {
-      toast.error(`${file.type || 'That file type'} cannot be attached.`)
-      return
-    }
-    if (file.size > MAX_BYTES) {
-      toast.error('Attachments are capped at 20 MB.')
-      return
-    }
-    try {
-      const created = await api.createUpload({
-        filename: file.name,
-        mimeType: file.type,
-        sizeBytes: file.size,
-      })
-      addAttachment(sessionId, {
-        uploadId: created.uploadId,
-        filename: file.name,
-        mimeType: file.type,
-        ready: false,
-      })
-      await fetch(created.signedUrl, {
-        method: 'PUT',
-        headers: { 'Content-Type': file.type },
-        body: file,
-      })
-      const finalized = await api.finalizeUpload(created.uploadId)
-      markReady(sessionId, created.uploadId, finalized.mimeType)
-    } catch {
-      toast.error(`${file.name} could not be attached.`)
-    }
-  }
-
-  function onFiles(files: FileList | null): void {
-    for (const file of Array.from(files ?? [])) void upload(file)
-  }
 
   function submit(): void {
     if (!canSend) return
@@ -114,12 +64,9 @@ export function Composer({
         event.preventDefault()
         submit()
       }}
-      onDragOver={(event: DragEvent) => event.preventDefault()}
-      onDrop={(event: DragEvent) => {
-        event.preventDefault()
-        onFiles(event.dataTransfer.files)
-      }}
     >
+      {/* Dropping is handled by the whole chat pane, not this strip — see
+          `features/use-uploads.ts`. */}
       {attachments.length > 0 ? (
         <ul className="flex flex-wrap gap-2" data-testid="attachments">
           {attachments.map((attachment) => (
@@ -160,7 +107,7 @@ export function Composer({
               .filter((item) => item.kind === 'file')
               .map((item) => item.getAsFile())
               .filter((file): file is File => file !== null)
-            if (files.length > 0) files.forEach((file) => void upload(file))
+            if (files.length > 0) uploadAll(files)
           }}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
@@ -174,10 +121,11 @@ export function Composer({
           ref={filePicker}
           type="file"
           multiple
-          accept={ACCEPTED.join(',')}
+          accept={ACCEPTED_MIME_TYPES.join(',')}
           className="hidden"
           onChange={(event: ChangeEvent<HTMLInputElement>) => {
-            onFiles(event.target.files)
+            uploadAll(event.target.files)
+            // Cleared so that re-picking the same file fires `change` again.
             event.target.value = ''
           }}
         />

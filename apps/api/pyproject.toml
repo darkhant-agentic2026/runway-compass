@@ -19,6 +19,12 @@ dependencies = [
     # `extensions`, and `test` extras. Without this line the
     # google.adk.integrations.firestore.* imports raise ImportError.
     "google-cloud-firestore==2.28.1",
+    # Same reasoning as the line above, different route in. `google-adk` lists this only
+    # under its `all`/`gcp`/`bigquery-analytics`/`test` extras, and it arrives here as a
+    # transitive of `firebase-admin` — so without this line the version of a package we
+    # import directly (`integrations/storage.py`, and ADK's `GcsArtifactService`) is
+    # chosen by somebody else's range.
+    "google-cloud-storage==3.13.1",
     # The Admin SDK for Cloud Identity Platform (`identitytoolkit`). Not a Firebase
     # project artifact. docs/04-api-contract.md#authentication
     "firebase-admin==7.5.0",

@@ -12,7 +12,7 @@
  * first would blank the message for however long the refetch takes.
  */
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState, type DragEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
 import { Composer } from '@/components/session/Composer'
@@ -27,11 +27,17 @@ import {
   useTask,
   useTaskSession,
 } from '@/features/queries'
+import { useAttachmentUploads } from '@/features/use-uploads'
 import { formatMinutes } from '@/lib/format'
 import { getSocket } from '@/lib/socket'
 import { toMessages } from '@/lib/transcript'
 import { useComposerStore } from '@/stores/composer'
 import { useStreamStore } from '@/stores/stream'
+
+/** Whether a drag carries files, as opposed to selected text or a dragged link. */
+function hasFiles(event: DragEvent): boolean {
+  return Array.from(event.dataTransfer.types).includes('Files')
+}
 
 export default function TaskWorkspacePage() {
   const { projectId = '', taskId = '' } = useParams()
@@ -46,6 +52,8 @@ export default function TaskWorkspacePage() {
   const turns = useStreamStore((state) => state.turns)
   const clearTurn = useStreamStore((state) => state.clear)
   const resetComposer = useComposerStore((state) => state.reset)
+  const { uploadAll } = useAttachmentUploads(sessionId)
+  const [dragDepth, setDragDepth] = useState(0)
 
   const live = Object.values(turns).find((turn) => turn.sessionId === sessionId) ?? null
 
@@ -101,13 +109,48 @@ export default function TaskWorkspacePage() {
         </p>
       </section>
 
+      {/*
+        The drop target is the whole chat pane, not the composer strip. A two-line strip
+        at the bottom of the window is a target people miss, and missing it is worse than
+        having none: the browser's default action for a file dropped on a page is to
+        navigate away from the app and open the file.
+
+        `dragCounter` rather than a boolean, because `dragenter`/`dragleave` fire for every
+        descendant the pointer crosses — a boolean flickers off the moment the cursor
+        moves from the transcript onto a message bubble.
+      */}
       <section
-        className="flex min-h-[28rem] flex-1 flex-col rounded-lg border lg:min-h-0"
+        className="relative flex min-h-[28rem] flex-1 flex-col rounded-lg border lg:min-h-0"
         aria-labelledby="session-heading"
+        onDragEnter={(event) => {
+          if (!hasFiles(event)) return
+          event.preventDefault()
+          setDragDepth((depth) => depth + 1)
+        }}
+        onDragOver={(event) => {
+          if (hasFiles(event)) event.preventDefault()
+        }}
+        onDragLeave={() => setDragDepth((depth) => Math.max(0, depth - 1))}
+        onDrop={(event) => {
+          if (!hasFiles(event)) return
+          event.preventDefault()
+          setDragDepth(0)
+          uploadAll(event.dataTransfer.files)
+        }}
       >
         <h2 id="session-heading" className="sr-only">
           Session with your coach
         </h2>
+
+        {dragDepth > 0 ? (
+          <div
+            className="bg-background/85 border-primary pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg border-2 border-dashed"
+            data-testid="drop-overlay"
+          >
+            <p className="text-sm font-medium">Drop to attach</p>
+          </div>
+        ) : null}
+
         <div className="px-3 pt-3">
           <ConnectionBanner />
         </div>

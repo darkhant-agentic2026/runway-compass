@@ -195,6 +195,29 @@ tests, which is why neither showed up as a failure:
   emulator not enforcing index requirements is the single widest gap between the local
   gate and a deployed environment**, and it is worth assuming it will bite again at M4
   and M5, which add the research and run queries.
+- **`POST /api/uploads` 500'd on Cloud Run, invisibly.** `GcsObjectStore` called
+  `generate_signed_url()` on the self-signing path. Cloud Run's
+  `compute_engine.Credentials` have no private key and no `signer_email`, so that raises;
+  local development uses impersonated credentials, which *can* sign for themselves, so it
+  passed there — precisely the failure
+  [07-infra-deploy.md](07-infra-deploy.md#the-two-local-dependencies-that-are-not-emulated)
+  predicted ("only in a deployed environment"). The IAM binding it calls for was already
+  granted; the code simply never used it. Signing now passes `service_account_email` and
+  `access_token` when the credentials cannot sign for themselves, which is what routes it
+  through IAM `signBlob`.
+
+  **The 500 produced no visible change in the UI at all** — no chip, no error — because
+  `toast.error` was the only reporting channel and **no `<Toaster />` was ever mounted**.
+  A server error looked exactly like a dead event handler, which cost a round of
+  diagnosis in the wrong half of the stack. Both are fixed, and both now have tests: the
+  signer's argument choice, which no integration test can reach, and the toaster's
+  presence, which no other test would notice because asserting `toast.error` *was called*
+  stays true when nothing is listening.
+
+  Also fixed alongside: dropping a file did nothing, because the drop target was the
+  composer strip rather than the chat pane, and `google-cloud-storage` was undeclared —
+  imported directly but arriving as a transitive of `firebase-admin`, the same situation
+  `google-cloud-firestore` is pinned for.
 - **`gemini-3.7-flash` is served to `coach-dev` on the `global` endpoint, not in
   `us-central1`.** Every turn failed with `NOT_FOUND` naming the model. The model choice
   in [00-overview.md](00-overview.md#model-configuration) is unchanged and correct — the
@@ -204,6 +227,16 @@ tests, which is why neither showed up as a failure:
   data-residency decision rather than a configuration one. Also fixed alongside: the 404
   was reported to the user as retryable, so the UI invited a retry of a model that does
   not exist.
+
+**The upload path still has no end-to-end coverage.** The e2e harness runs
+`InMemoryObjectStore`, whose signed URL points at a host the browser cannot PUT to, so no
+Playwright flow exercises attaching a file. The signing bug above was unreachable locally
+by construction — storage is one of the two dependencies
+[07-infra-deploy.md](07-infra-deploy.md#the-two-local-dependencies-that-are-not-emulated)
+says is not emulated — but the missing `<Toaster />` was not: a flow that attaches a file
+and asserts a chip appears would have caught it. Closing this means a local-only PUT
+receiver behind the same `ENV=local` guard as `MODEL_BACKEND=stub`, which is new surface
+and therefore its own decision rather than something to add in passing.
 
 **Deferred, and the milestone that needs it:** the `subscribe`-by-`runId` frame is
 accepted and answered with an explicit error until the run ledger lands (M5); tool-activity

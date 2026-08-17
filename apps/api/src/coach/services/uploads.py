@@ -125,7 +125,7 @@ class UploadService:
         )
         return SignedUpload(
             upload_id=upload_id,
-            signed_url=self._store.signed_put_url(object_name, mime_type=mime_type),
+            signed_url=await self._store.signed_put_url(object_name, mime_type=mime_type),
         )
 
     async def finalize(self, principal: Principal, upload_id: str) -> ResolvedUpload:

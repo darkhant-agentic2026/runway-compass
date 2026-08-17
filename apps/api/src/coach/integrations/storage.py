@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from datetime import timedelta
-from typing import Protocol
+from typing import Any, Protocol
 
 from coach.core.clock import now
 from coach.core.config import Settings
@@ -42,8 +42,13 @@ class ObjectStore(Protocol):
     @property
     def bucket(self) -> str: ...
 
-    def signed_put_url(self, object_name: str, *, mime_type: str) -> str:
-        """A V4 resumable PUT URL for `object_name`."""
+    async def signed_put_url(self, object_name: str, *, mime_type: str) -> str:
+        """A V4 resumable PUT URL for `object_name`.
+
+        Async because signing is not necessarily local arithmetic: on Cloud Run it is two
+        network calls (a token refresh and an IAM `signBlob`), and doing those on the
+        event loop would stall every other request and every in-flight turn.
+        """
 
     async def stat(self, object_name: str) -> tuple[int, str] | None:
         """`(size_bytes, content_type)` of an uploaded object, or `None` if absent."""
@@ -59,9 +64,34 @@ class ObjectStore(Protocol):
 
 
 class GcsObjectStore:
-    """The real thing. Signs through IAM SignBlob — no service-account key anywhere."""
+    """The real thing. Signs through IAM SignBlob — no service-account key anywhere.
+
+    ## Why signing needs two code paths
+
+    V4 signing needs something that can sign bytes. Which credentials the process holds
+    decides whether that is possible locally:
+
+    | Environment | Credentials | `sign_bytes`? |
+    | --- | --- | --- |
+    | Cloud Run | `google.auth.compute_engine.Credentials` | **no** |
+    | Local dev (impersonation) | `impersonated_credentials.Credentials` | yes |
+
+    Compute credentials have no private key and no `signer_email`, so
+    `generate_signed_url()` raises there — while passing locally, because impersonated
+    credentials sign for themselves. docs/07-infra-deploy.md predicted exactly this
+    ("Without this the upload flow fails at runtime with a signing error, and **only in a
+    deployed environment**"), and the IAM binding it calls for
+    (`iam.serviceAccountTokenCreator` on `coach-api-sa`, on itself) is already in
+    `modules/identity`. What was missing was the code using it.
+
+    Passing `service_account_email` **and** `access_token` switches
+    `google-cloud-storage` to signing through the IAM `signBlob` API, which is what that
+    binding grants and what keeps the no-service-account-keys rule intact.
+    """
 
     def __init__(self, bucket_name: str) -> None:
+        # `google.cloud` is a namespace package, so mypy cannot see the attribute even
+        # with the module's own stubs present.
         from google.cloud import storage  # type: ignore[attr-defined]
 
         self._bucket_name = bucket_name
@@ -72,16 +102,53 @@ class GcsObjectStore:
     def bucket(self) -> str:
         return self._bucket_name
 
-    def signed_put_url(self, object_name: str, *, mime_type: str) -> str:
+    async def signed_put_url(self, object_name: str, *, mime_type: str) -> str:
+        import asyncio
+
+        return await asyncio.to_thread(self._sign_put, object_name, mime_type)
+
+    def _sign_put(self, object_name: str, mime_type: str) -> str:
         blob = self._bucket.blob(object_name)
+        options: dict[str, Any] = {
+            "version": "v4",
+            "expiration": SIGNED_URL_TTL,
+            "method": "PUT",
+            "content_type": mime_type,
+        }
+
+        credentials = self._client._credentials
+        if getattr(credentials, "signer_email", None) and hasattr(credentials, "sign_bytes"):
+            # A key or an impersonated identity: it can sign for itself.
+            return str(blob.generate_signed_url(**options))
+
+        email, token = self._iam_signer(credentials)
         return str(
-            blob.generate_signed_url(
-                version="v4",
-                expiration=SIGNED_URL_TTL,
-                method="PUT",
-                content_type=mime_type,
-            )
+            blob.generate_signed_url(**options, service_account_email=email, access_token=token)
         )
+
+    @staticmethod
+    def _iam_signer(credentials: Any) -> tuple[str, str]:
+        """The `(service account, access token)` pair the IAM signing path needs."""
+        from google.auth.transport.requests import Request
+
+        request = Request()
+        if not credentials.valid:
+            credentials.refresh(request)
+
+        email = getattr(credentials, "service_account_email", None)
+        if not email or email == "default":
+            # On the metadata server the real address arrives with the token, not before
+            # it, so an unrefreshed credential reports the literal string "default".
+            credentials.refresh(request)
+            email = getattr(credentials, "service_account_email", None)
+
+        if not email or email == "default":
+            raise RuntimeError(
+                "Cannot sign an upload URL: these credentials can neither sign for "
+                "themselves nor name a service account to sign as. On Cloud Run this "
+                "means the metadata server did not return an identity."
+            )
+        return str(email), str(credentials.token)
 
     async def stat(self, object_name: str) -> tuple[int, str] | None:
         import asyncio
@@ -129,7 +196,7 @@ class InMemoryObjectStore:
         self._declared[object_name] = (size_bytes, mime_type)
         self._content[object_name] = content
 
-    def signed_put_url(self, object_name: str, *, mime_type: str) -> str:
+    async def signed_put_url(self, object_name: str, *, mime_type: str) -> str:
         stamp = int(now().timestamp())
         return f"https://storage.local/{self._bucket_name}/{object_name}?upload={stamp}"
 
