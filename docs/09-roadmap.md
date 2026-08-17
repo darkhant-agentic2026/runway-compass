@@ -131,6 +131,17 @@ is what installing WebKit early was for. The last criterion was verified by hand
 drag-and-drop, get a reply that demonstrably sees it, reload, and take another turn in the
 same session. 318 backend tests, 178 web, 76 Playwright specs.
 
+**Fixed after the merge, on `coach-dev`.** The deployed revision failed the first turn of
+every conversation — `1 validation error for InvocationContext … Input should be an
+instance of BaseArtifactService` — because the artifact service was deferred behind
+`LazyProxy` and ADK type-checks that field. The deferral is now a provider
+(`integrations/artifacts.artifact_service_provider`): a callable the container hands to
+`UploadService` and `RunnerFactory`, which resolve it when a request needs the bucket, so
+ADK receives the real `GcsArtifactService`. The same proxy also cost `artifact_part_uri`
+its `_get_blob_name` lookup, **so any upload finalized on the broken revisions has an
+`artifact://` URI in `uploads/{id}.artifactUri` and its attachment is invisible to the
+model**; those rows are stale and were not migrated. Both are in the table below.
+
 **Deliberately deferred, and the milestone that needs it:**
 
 | Item | Needed by | Note |
@@ -175,10 +186,11 @@ never exercise.
 
 ### What a green local run does not prove
 
-Nine defects were fixed closing this milestone. **Seven were invisible to a fully green
-local gate** — the whole suite passed against code that could not run in CI or in
-production. The individual incidents are in the git history; what generalises is below, and
-M4 and M5 add query surface and integrations to every row of it.
+Nine defects were fixed closing this milestone and a tenth arrived after the merge, in the
+deployed revision. **Eight were invisible to a fully green local gate** — the whole suite
+passed against code that could not run in CI or in production. The individual incidents are
+in the git history; what generalises is below, and M4 and M5 add query surface and
+integrations to every row of it.
 
 | Trap | How it presents | Where it will recur |
 | --- | --- | --- |
@@ -188,7 +200,8 @@ M4 and M5 add query surface and integrations to every row of it.
 | **Model availability is per project *and* per location** | `NOT_FOUND` naming a model the design chose, with nothing before the first turn detecting it | Any model change, and `prod` when it exists |
 | **A stored ADK event is `snake_case`** | `Event` declares camelCase aliases, but `append_event` stores `model_dump()` with the default `by_alias=False`. A reader that assumes the aliases silently finds nothing | M3's tool chips and M4's report events, both read from stored events. [02-data-model.md](02-data-model.md#sessions--events-adk-owned-layout) states the shape; `session-event-vectors.json` pins it |
 | **A hand-written fixture can encode the same wrong assumption as the code** | Every test passes and the feature is broken | Anywhere a test fixture stands in for a shape this project does not define. Generate it instead — `gen_event_vectors.py`, `gen_ordering_vectors.py` |
-| **Constructing a Google client resolves credentials** | Every such constructor calls `google.auth.default()`, so building one while assembling the app makes the app unimportable without credentials. Locally `dev.sh` exports `FIRESTORE_EMULATOR_HOST` (anonymous Firestore client) and a dev machine usually has ADC, so it passes; CI has neither. It was fixed once for Firestore and *recurred immediately* for the two GCS clients, which only a deployed `ENV` reaches | Any client built in a constructor. `coach.core.lazy` defers them all; `tests/test_import_without_credentials.py` pins it for `local` **and** deployed settings, forcing the absence of credentials rather than relying on it |
+| **Constructing a Google client resolves credentials** | Every such constructor calls `google.auth.default()`, so building one while assembling the app makes the app unimportable without credentials. Locally `dev.sh` exports `FIRESTORE_EMULATOR_HOST` (anonymous Firestore client) and a dev machine usually has ADC, so it passes; CI has neither. It was fixed once for Firestore and *recurred immediately* for the two GCS clients, which only a deployed `ENV` reaches | Any client built in a constructor. `coach.core.lazy` defers them; `tests/test_import_without_credentials.py` pins it for `local` **and** deployed settings, forcing the absence of credentials rather than relying on it |
+| **A proxy is not an instance** | The fix for the row above, applied to the artifact service, broke every deployed turn: `Runner` puts it on an `InvocationContext`, a pydantic model that validates the field with `isinstance`, so `1 validation error … Input should be an instance of BaseArtifactService` — while locally the branch is never reached, because without `ARTIFACT_BUCKET` the in-memory service is real. The same proxy failed a second way in silence: it refuses underscore attributes, so `artifact_part_uri` lost `_get_blob_name` and recorded `artifact://` URIs the model cannot dereference | Any deferred object handed to a library rather than only called by us — M3's tools and M5's Cloud Tasks client. Defer with a **provider** (a callable resolved at first use) wherever the type is part of the surface: `integrations/artifacts.artifact_service_provider`, pinned by `tests/test_artifact_service_provider.py` |
 
 ---
 

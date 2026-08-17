@@ -108,6 +108,12 @@ user's button calls.
 - **Theme: the inline `index.html` script and `useThemeStore` share a `localStorage` key and
   format.** Do not route it through Zustand `persist` — the envelope breaks the inline
   reader. `docs/06-frontend.md`
+- **A Google client is built lazily, but never behind a proxy if something else
+  type-checks it.** `LazyProxy` defers a client we only call methods on. The artifact
+  service is not one: ADK puts it on an `InvocationContext`, whose field pydantic
+  validates with `isinstance`, so the proxy broke every deployed turn while every local
+  test passed. Defer that kind with a provider — a callable resolved at first use, so the
+  library gets the real object. `integrations/artifacts.py`, `coach/core/lazy.py`
 - **Node 22**, matching the `node:22-slim` image pin.
 - **`typescript` is pinned to `6.0.3`, not 7.x, and that is deliberate.** TypeScript 7's
   npm package exposes only `version` and `versionMajorMinor` — the JS compiler API is

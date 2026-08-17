@@ -16,8 +16,8 @@ the in-memory service is.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import cast
 
 from google.adk.artifacts.artifact_util import get_artifact_uri
 from google.adk.artifacts.base_artifact_service import BaseArtifactService
@@ -25,9 +25,13 @@ from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactServ
 from google.genai import types
 
 from coach.core.config import Settings
-from coach.core.lazy import LazyProxy
 
 logger = logging.getLogger(__name__)
+
+#: How the artifact service is passed around: a callable returning the process's one
+#: instance, built on first use. See `artifact_service_provider` for why it is not the
+#: instance itself.
+ArtifactServiceProvider = Callable[[], BaseArtifactService]
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,14 +133,14 @@ async def register_upload(
 
 
 def build_artifact_service(settings: Settings) -> BaseArtifactService:
-    """The artifact service for this environment.
+    """The artifact service for this environment, built **now**.
 
     A local run without `ARTIFACT_BUCKET` gets the in-memory service; a deployed run always
     has one, because `Settings` refuses to start without it.
 
-    The GCS-backed one is wrapped in a `LazyProxy`, because `GcsArtifactService` builds a
-    `storage.Client` in its constructor and that resolves Application Default Credentials.
-    Assembling the container must not do that — see `coach.core.lazy`.
+    `GcsArtifactService.__init__` builds a `storage.Client`, which resolves Application
+    Default Credentials, so nothing may call this while assembling the container. Go
+    through `artifact_service_provider` instead.
     """
     if not settings.artifact_bucket:
         if not settings.is_local:  # pragma: no cover - Settings rejects this earlier
@@ -144,19 +148,59 @@ def build_artifact_service(settings: Settings) -> BaseArtifactService:
         logger.info("no ARTIFACT_BUCKET set; using the in-memory artifact service")
         return InMemoryArtifactService()
 
-    bucket = settings.artifact_bucket
+    from google.adk.artifacts.gcs_artifact_service import GcsArtifactService
 
-    def _build() -> BaseArtifactService:
-        from google.adk.artifacts.gcs_artifact_service import GcsArtifactService
+    return GcsArtifactService(bucket_name=settings.artifact_bucket)
 
-        return GcsArtifactService(bucket_name=bucket)
 
-    return cast("BaseArtifactService", LazyProxy(_build))
+def artifact_service_provider(settings: Settings) -> ArtifactServiceProvider:
+    """The process's artifact service, deferred to first use and then memoised.
+
+    Assembling the container must resolve no credentials (`coach.core.lazy`,
+    `tests/test_import_without_credentials.py`), and the GCS-backed service resolves them
+    in its constructor. The deferral is a *provider* rather than a `LazyProxy` around the
+    service, and that distinction is the whole point of this function.
+
+    A proxy is not an instance. ADK's `Runner` puts the artifact service on an
+    `InvocationContext`, a pydantic model whose `artifact_service` field is validated with
+    `isinstance`, so a proxy is rejected on the first turn of every deployed conversation:
+
+        1 validation error for InvocationContext
+        artifact_service Input should be an instance of BaseArtifactService
+
+    It also failed a second, quieter way. `artifact_part_uri` reads the blob layout out of
+    `GcsArtifactService._get_blob_name`, and `LazyProxy.__getattr__` refuses underscore
+    names to stay recursion-safe — so the `getattr` came back `None`, the fallback branch
+    ran, and every finalized upload was recorded with an `artifact://` URI the model
+    cannot dereference. Nothing raised. Both symptoms are downstream of one cause: the
+    *type* of these objects is part of their surface, and forwarding attributes does not
+    forward a type.
+
+    So consumers hold this callable and resolve it when they are about to do work —
+    `RunnerFactory` when it builds the runner for the first turn, `UploadService` when a
+    finalize actually needs the bucket. Both then hold a real `GcsArtifactService`.
+
+    Memoised because one process must have one service: `UploadService` writes the
+    artifact on finalize and the agent reads it back through the `Runner`, and two
+    instances would be two `storage.Client`s against one bucket and two places to
+    disagree about which bucket that is.
+    """
+    service: BaseArtifactService | None = None
+
+    def provide() -> BaseArtifactService:
+        nonlocal service
+        if service is None:
+            service = build_artifact_service(settings)
+        return service
+
+    return provide
 
 
 __all__ = [
+    "ArtifactServiceProvider",
     "RegisteredArtifact",
     "artifact_part_uri",
+    "artifact_service_provider",
     "build_artifact_service",
     "register_upload",
     "upload_artifact_filename",

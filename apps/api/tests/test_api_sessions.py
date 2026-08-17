@@ -320,7 +320,7 @@ async def test_finalize_registers_the_upload_as_an_adk_artifact(
 
     await client.post(f"/api/uploads/{upload_id}/finalize")
 
-    stored = await container.artifact_service.load_artifact(
+    stored = await container.artifacts().load_artifact(
         app_name=APP_NAME, user_id=alice.uid, filename=f"user:{upload_id}"
     )
     assert stored is not None
