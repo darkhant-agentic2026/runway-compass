@@ -184,6 +184,15 @@ Right — **session chat**:
   flight knows the user's filename, and a stored event does not unless
   `TurnService._build_content` put it in `file_data.display_name` — the artifact itself is
   named `user:{uploadId}` and the `gs://` URI has no human segment.
+- **The chat pane is height-bounded and the transcript scrolls itself**, on mobile as well
+  as on desktop. The transcript pins to its own bottom as tokens arrive, and it does that
+  by assigning `scrollTop` rather than calling `scrollIntoView` on a sentinel:
+  `scrollIntoView` scrolls every scrollable ancestor, the document included, so on a short
+  viewport it moved the *page* once per delta. The composer then walked under the reader's
+  finger and the cancel button was unreachable exactly while there was something to
+  cancel — and anyone scrolling up to reread a message was dragged back down several times
+  a second. An unbounded pane has the same effect for the same reason, since without
+  overflow there is nothing else to scroll.
 - A visible **reconnecting** state that makes the resume guarantee legible: "Connection
   lost — your coach is still working. Reconnecting…" then the stream continues from where
   it left off.

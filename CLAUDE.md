@@ -175,16 +175,22 @@ Four working habits follow, and none belongs in `docs/`:
   pytest that prints the stored events answered "where does the confirmation request sit
   in the transcript" and "what shape is a function response" in one run, after two wrong
   guesses. Delete the probe afterwards; the answer belongs in a vector or a test.
-- **Run the e2e suite several times before believing it.** Two specs that had passed since
-  M2 turned out to fail roughly one run in three, each racing a UI state that lasts
-  milliseconds. One green run is not evidence of a stable suite, and an intermittent test
-  trains everyone to re-run rather than to look — so fix the timing rather than the
-  symptom, and never quietly retry.
+- **Run the e2e suite several times before believing it, and diagnose a flake rather than
+  padding a timeout.** Two specs that had passed since M2 failed roughly one run in three.
+  One was genuinely a timing race; the other looked like one, failed only on the mobile
+  projects, and turned out to be a real UI defect — the page scrolling under the click.
+  Reproduce it against a manually started stack (`docker compose -f docker-compose.e2e.yml
+  up --build -d --wait`, then `npx playwright test <spec> --project=<one>` in a loop): a
+  five-second run you can repeat twenty times beats a five-minute suite you can repeat
+  twice. Instrument the app if the cause is not visible from outside — a temporary
+  `console.log` plus `page.on('console')` answered in one run what two rounds of reasoning
+  got wrong. Rebuild the image after editing the app; the e2e stack serves a built SPA.
 
 ## Reporting a deployed failure
 
-`docs/07-infra-deploy.md` covers the deploy itself and `infra/terraform/RUNBOOK.md#8-closing-the-m2-exit-criterion`
-the manual verification. What is worth knowing when something fails there:
+`docs/07-infra-deploy.md` covers the deploy itself; `infra/terraform/RUNBOOK.md` §8 and §9
+are the manual verifications for M2 and M3, and a milestone gets one when it has a surface
+no local test can reach. What is worth knowing when something fails there:
 
 - Ask for the **server-side traceback**, not the browser's status code. Logs are JSON with
   the traceback under `jsonPayload.exception`, so `gcloud run services logs read | grep` is

@@ -247,11 +247,21 @@ Golden flows:
    1.5 s also makes the disconnect *mean* something — generation carries on with nobody
    attached for a window the test chose.
 
-   The same discipline applies to the cancel flow, for the same reason: a cancel that
-   arrives after the turn has finished is correctly a no-op, so the test sends a long
-   prompt — the stub echoes it, so a long prompt is a long reply — and waits for text to
-   be on screen before clicking. **Asserting on a transient state means owning how long it
-   lasts.**
+   The same discipline applies to the cancel flow: it sends a long prompt — the stub
+   echoes it, so a long prompt is a long reply — and waits for text on screen before
+   clicking, so the click races neither the 202 nor the end of generation. **Asserting on
+   a transient state means owning how long it lasts.**
+
+   That spec also found a real defect, and the sequence is worth keeping. It failed only
+   on the two *mobile* projects, roughly one run in eight, with the click reported as
+   successful and the handler never running — because `Transcript` scrolled itself to the
+   bottom on every delta with `scrollIntoView`, which scrolls **every** scrollable
+   ancestor including the document. On a viewport too short to hold the whole screen the
+   page moved several times a second, so Playwright scrolled the button into view and the
+   app scrolled it back out before the click landed. A mobile-only, timing-shaped failure
+   whose cause was neither mobile-specific nor a timing bug: the two-pane layout is
+   "stacked on mobile" ([06-frontend.md](06-frontend.md#task-workspace-projectsprojectidtaskstaskid)),
+   and stacked meant unbounded. **Suspect the page scrolling before suspecting the clock.**
 
    **Use `routeWebSocket`, not a CDP session.** `newCDPSession()` is Chromium-only and
    throws on WebKit — so specifying flow #4 in terms of CDP would make it unrunnable on the

@@ -223,15 +223,33 @@ subtasks with a correct parent rollup; project-level duration overrides are resp
 
 ## Status after M3
 
-Complete locally and on `main`; **not yet verified on `coach-dev`**. That deploy is the
-one exit criterion M3 has not paid, and the table at the end of this section is the reason
-to expect it to find something — every milestone so far has.
+Complete and deployed to `coach-dev`. What follows is the carry-over a later milestone
+needs, recorded here because it is not derivable from the code.
 
 **Met.** Golden flows #1, #2, and #7 pass on all four Playwright projects, alongside the
 M1 and M2 specs: 25 specs, 100 runs. Asking for a four-hour task yields subtasks that each
 fit the budget with a parent rollup equal to their sum, and a project with a two-hour
 override sizes work differently from one on the 45-minute global default *in the same
 browser, from the same sentence*. 384 backend tests, 194 web.
+
+**Verified by hand on `coach-dev` on 2026-08-19**, against Vertex and a real model rather
+than the stub — which is the only way to exercise the tool declarations ADK derives from
+our Python signatures, since the stub never reads one. Four things were checked: the
+coach's tool calls change the board; creating a project opens the intake conversation and
+the coach proposes a task list into it; the board moves without a reload while the coach
+works, and the chips are still in the transcript afterwards; and asking it to discard a
+task produces the confirmation prompt, which goes through when answered. `terraform apply`
+ran, so the `sessions.projectId` collection-group index M3 added is live — though the
+fallback scan it backs only runs for a project created before `intakeSessionId` existed,
+so the index is present rather than exercised.
+
+**Unusually, the deploy found nothing.** Every prior milestone's first deployed run
+surfaced a defect that a green local gate had not (M2's was the proxied artifact service).
+M3's two post-gate defects came from *use* instead — tool chips vanishing when a turn
+finished, and the board not refreshing on a tab that had opened a workspace first — and
+both were fixed on this branch. That is a shift in where the remaining risk sits, not an
+absence of it: both were client-side state bugs, which is the half of the system the
+deploy step does not probe at all.
 
 **Flow #7 is evidence rather than staging, and that is a property of how it is built.**
 The stubbed model reads its task budget out of the *rendered system instruction* — the
@@ -259,7 +277,6 @@ the full local gate and both already rows in the table below:
 
 | Item | Needed by | Note |
 | --- | --- | --- |
-| **Deploy verification on `coach-dev`** | **now** | The board, the intake conversation, and the tool round trip have never run against Vertex, a real model's tool-calling, or real Firestore indexes. `POST /api/projects/{id}/session`'s fallback scan is the one query M3 added, and its index is declared but unapplied |
 | `board_update` **across instances** | **M5** | `ws/hub.py` reaches the sockets on *this* process. For M3 that is the whole population: the tool runs inside the turn the user's own request started, and session affinity puts their socket there. A scheduled run executes wherever Cloud Tasks lands it, with no relation to where the owner is connected, so the ledger needs a cross-instance channel — Firestore, since one already exists |
 | Autonomous mode's **reduced tool set** | **M5** | [03-agent-design.md](03-agent-design.md#safety-rails-on-autonomy) forbids `discard_task`, `update_learner_profile`, and `update_project_prefs` in background work. There is no autonomous agent yet, so there is nothing to reduce; `propose_tasks` builds its subset there, from the same `DomainTools` |
 | `origin: "agent"` badging is on tasks, not on **runs** | **M5** | Every agent write records `origin`, which the board badges. `runId` and the per-run undo the "Updated by your coach" banner needs arrive with the ledger |
@@ -291,7 +308,8 @@ milestone and are settled, each taking its default. Q4 is due at M4.
 | The agent may not complete or discard a task through `set_task_state` | [10-risks.md](10-risks.md#open-questions) Q1 was due at M3 and takes its default: completion is the learner's click. Enforced in the tool rather than asked for in the instruction, and `discarded` is refused on the same line because it would otherwise be a second route around `discard_task`'s confirmation gate | `agents/tools.py` |
 | `Principal.source` gained `"agent"` | Nothing branches on it; it is the audit label. Calling a tool call an `id_token` request would be a lie in the one place a reader goes to find out who did something | `core/principal.py` |
 | `APP_NAME` moved to `core/app.py` | It was in `agents/runner.py`, so `services/sessions.py` imported from `agents/` — an inversion of the layering that became visible, as an import cycle, only once `agents/` grew a module importing `services/` | `core/app.py` |
-| Two M2 e2e specs were made deterministic rather than left intermittent | Flow #4 raced the reconnect banner (`backoffDelay(0)` plus a round trip, often shorter than one polling interval) and the cancel spec raced the turn finishing before the click landed. Both pre-existing, both found only by running the suite eight times in a row while closing M3, and both fixed by owning the duration of the state being asserted on. [08-testing.md](08-testing.md#end-to-end-playwright) | `e2e/workspace.spec.ts` |
+| The transcript pins itself to its own bottom by `scrollTop`, and the chat pane is height-bounded on mobile | `scrollIntoView` scrolls every scrollable ancestor including the document, so a streaming reply moved the *page* once per delta on a short viewport: the composer walked away under the reader's finger and cancel was unreachable while there was something to cancel. Found as a mobile-only e2e flake whose cause was neither mobile-specific nor timing | `components/session/Transcript.tsx`, `components/session/SessionPane.tsx` |
+| Two M2 e2e specs were made deterministic rather than left intermittent | Flow #4 raced the reconnect banner — `backoffDelay(0)` plus a round trip, often shorter than one polling interval — and now holds the reconnect's ticket for 1.5 s. The cancel spec sends a long prompt and waits for text on screen, so it races neither the 202 nor the end of generation. Both pre-existing, both found only by running the suite many times in a row. [08-testing.md](08-testing.md#end-to-end-playwright) | `e2e/workspace.spec.ts` |
 | The stubbed model emits **scripted tool calls**, planned from *this turn's* function responses | Flows #1, #2, and #7 need the coach to act. Scoping the plan to the turn is the loop's termination argument: asked of the whole session history, "have I already split something?" answers yes forever; asked of nothing, the stub re-issues `split_task` until the turn never ends | `integrations/stub_model.py` |
 
 ### Three more rows for the table above

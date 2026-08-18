@@ -4,8 +4,8 @@ An adaptive agentic coach that turns your technical goals into bite-sized tasks,
 the material for the next one while you're away, and adjusts how it guides you as it
 learns how you think.
 
-**Status:** M0–M3 landed; M0–M2 are deployed and M3 is not yet verified on the dev
-environment. A signed-in user can work the board by hand, hold a streaming conversation
+**Status:** M0–M3 landed and deployed. A signed-in user can work the board by hand, hold a
+streaming conversation
 with the coach about an uploaded screenshot, and have the coach *change the board* —
 proposing a task list through a Socratic intake, splitting oversized work to fit the
 project's own duration budget, and asking before it discards anything. Generation survives
@@ -92,6 +92,6 @@ emulator will not ask for, a *second* Google API whose credentials resolve at a 
 scope than the first, and report events read back out of a transcript that keeps growing
 after them.
 
-One carry-over is worth doing before M4 rather than during it: **M3 has never run on
-`coach-dev`.** Its agent tools, its intake session lookup, and its one new index have only
-met the emulator and a stubbed model.
+M3 itself is verified on `coach-dev` — tool calls, intake, the live board, and the discard
+confirmation, against a real model. What that step does *not* probe is client-side state,
+which is where both of M3's post-gate defects were.

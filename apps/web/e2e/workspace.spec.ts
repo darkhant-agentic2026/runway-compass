@@ -199,15 +199,13 @@ test('cancelling a turn stops it and says so', async ({ signedIn: page }) => {
   await openWorkspace(page, 'Cancel', 'Stop a turn')
 
   // The stub echoes the prompt back, so a long prompt is a long reply: at 40 ms a chunk
-  // this leaves several seconds of generation to cancel *into*. With a short one the
-  // whole turn can finish before the click lands — four browser projects share a machine
-  // — and a cancel that arrives after completion is correctly a no-op, so the test failed
-  // intermittently on whichever project was slowest. Same family as flow #4's banner:
-  // asserting on a transient state means owning how long it lasts.
+  // this leaves several seconds of generation to cancel *into*, rather than a window the
+  // click has to hit.
   const prompt = Array.from({ length: 60 }, (_, index) => `word${index}`).join(' ')
   await send(page, prompt)
 
-  // And wait until it is demonstrably in flight, so "cancel" cannot race the 202.
+  // Wait until it is demonstrably in flight, so the click cannot race the 202 that
+  // registers the turn — until then the composer still shows Send.
   await expect(page.getByTestId('live-turn')).toContainText('Here is what I think about')
   await page.getByRole('button', { name: 'Cancel' }).click()
 

@@ -25,6 +25,15 @@
  * **The drop target is the whole pane, not the composer strip.** A two-line strip is a
  * target people miss, and missing it is worse than having none: the browser's default
  * action for a file dropped on a page is to navigate away from the app.
+ *
+ * **The pane is height-bounded on mobile, and that is a correctness constraint rather
+ * than styling.** `Transcript` scrolls itself to the bottom on every delta — several times
+ * a second while a reply streams. If the pane is free to grow with its content, the
+ * element that scrolls is the *page*, so on a narrow viewport the composer is pushed below
+ * the fold and then yanked out from under the reader's finger a few times a second: the
+ * Cancel button becomes unclickable exactly while there is something to cancel. Bounded,
+ * the scrolling stays inside the transcript, which is where the overflow was always meant
+ * to be.
  */
 
 import { useQueryClient } from '@tanstack/react-query'
@@ -57,7 +66,7 @@ export interface SessionPaneProps {
 }
 
 const DEFAULT_CLASS =
-  'relative flex min-h-[28rem] flex-1 flex-col rounded-lg border lg:min-h-0'
+  'relative flex h-[70svh] flex-col rounded-lg border lg:h-auto lg:min-h-0 lg:flex-1'
 
 export function SessionPane({
   sessionId,

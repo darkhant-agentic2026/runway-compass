@@ -759,6 +759,51 @@ Once 8.4 passes, M2 is closed. Tell me and I will update the status section in
 
 ---
 
+## 9. Closing the M3 exit criterion (HUMAN)
+
+**Closed on `coach-dev`, 2026-08-19.** Kept as the procedure to re-run after a redeploy,
+and because what it proves is not what the local suite proves.
+
+M3's deployed-only surface is narrower than M2's but not empty:
+
+| Unproven until this step | Why no test covers it |
+| --- | --- |
+| The tool declarations ADK derives from our Python signatures | `MODEL_BACKEND=stub` never reads one — it decides what to call from the prompt text. A signature Vertex rejects fails here first |
+| A real model choosing *whether* and *when* to call a tool | The stub's rule is "the learner named a duration", which is not judgement |
+| The `adk_request_confirmation` round trip with a real model | The stub answers its own confirmation; a real model has to be willing to wait for one |
+| `sessions.projectId` as a live collection-group index | The emulator does not enforce index requirements ([docs/09-roadmap.md](../../docs/09-roadmap.md#what-a-green-local-run-does-not-prove)) |
+
+Needs `terraform apply` as well as a deploy — the last row is an index, and
+[the deploy workflow does not run Terraform by design](../../docs/07-infra-deploy.md#ci-does-not-run-terraform).
+
+### 9.1 The criterion itself
+
+1. Create a project. **The intake conversation opens beside the board**, empty, with a
+   hint rather than a transcript.
+2. Tell it what you want to learn and roughly how long a session is. It should ask before
+   it proposes — a task list from a one-line prompt is the behaviour the instruction
+   forbids.
+3. Answer, and **watch the board without reloading it.** Cards appear as the coach adds
+   them; that is the `board_update` push, and a board that only fills in after F5 means
+   the socket handler is not registered.
+4. Ask for something too big for one sitting ("this is about four hours of work"). The
+   parent card must show a subtask count and a summed duration, and no subtask may exceed
+   the project's default task length.
+5. **Reload.** The tool-activity chips must still be in the transcript. They live in a
+   buffer that is cleared when a turn completes, so anything still on screen here came
+   from the stored events.
+6. Ask it to discard a task. **Expect Confirm/Keep, not a discarded task**, and check the
+   board is untouched until you answer.
+7. Set the project's default task length to two hours in project settings, then ask for
+   four hours of work again in a *new* project on the global default. The two must be
+   sized differently — that is the whole of golden flow #7, and the only thing that
+   differs between them is the number the prompt carried.
+
+If a turn fails, 8.5's diagnosis applies unchanged; the model name and its location are
+still the first thing to check.
+
+---
+
 ## Teardown (dev only)
 
 ```bash
