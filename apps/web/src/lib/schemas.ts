@@ -8,7 +8,7 @@
  * These mirror `apps/api/src/coach/services/models.py`.
  */
 
-import { z } from 'zod'
+import { z } from 'zod';
 
 export const taskStateSchema = z.enum([
   'not_started',
@@ -17,22 +17,28 @@ export const taskStateSchema = z.enum([
   'postponed',
   'postponed_until',
   'discarded',
-])
-export type TaskState = z.infer<typeof taskStateSchema>
+]);
+export type TaskState = z.infer<typeof taskStateSchema>;
 
-export const researchStatusSchema = z.enum(['none', 'pending', 'in_progress', 'done', 'failed'])
-export const originSchema = z.enum(['user', 'agent'])
-export const projectStatusSchema = z.enum(['active', 'paused', 'archived'])
-export const guidanceStyleSchema = z.enum(['socratic', 'direct', 'mixed'])
-export const verbositySchema = z.enum(['terse', 'balanced', 'thorough'])
-export const researchDepthSchema = z.enum(['light', 'standard', 'deep'])
+export const researchStatusSchema = z.enum([
+  'none',
+  'pending',
+  'in_progress',
+  'done',
+  'failed',
+]);
+export const originSchema = z.enum(['user', 'agent']);
+export const projectStatusSchema = z.enum(['active', 'paused', 'archived']);
+export const guidanceStyleSchema = z.enum(['socratic', 'direct', 'mixed']);
+export const verbositySchema = z.enum(['terse', 'balanced', 'thorough']);
+export const researchDepthSchema = z.enum(['light', 'standard', 'deep']);
 
 export const rollupSchema = z.object({
   subtaskCount: z.number().int(),
   completedSubtasks: z.number().int(),
   totalEstimatedMinutes: z.number().int(),
-})
-export type Rollup = z.infer<typeof rollupSchema>
+});
+export type Rollup = z.infer<typeof rollupSchema>;
 
 export const taskSchema = z.object({
   id: z.string(),
@@ -55,13 +61,13 @@ export const taskSchema = z.object({
   createdAt: z.string().nullable().default(null),
   updatedAt: z.string().nullable().default(null),
   completedAt: z.string().nullable().default(null),
-})
-export type Task = z.infer<typeof taskSchema>
+});
+export type Task = z.infer<typeof taskSchema>;
 
 export const taskWithSubtasksSchema = taskSchema.extend({
   subtasks: z.array(taskSchema).default([]),
-})
-export type TaskWithSubtasks = z.infer<typeof taskWithSubtasksSchema>
+});
+export type TaskWithSubtasks = z.infer<typeof taskWithSubtasksSchema>;
 
 export const projectPrefsSchema = z.object({
   defaultTaskMinutes: z.number().int().nullable().default(null),
@@ -70,14 +76,14 @@ export const projectPrefsSchema = z.object({
   allowVideos: z.boolean().nullable().default(null),
   preferredSources: z.array(z.string()).nullable().default(null),
   avoidSources: z.array(z.string()).nullable().default(null),
-})
-export type ProjectPrefs = z.infer<typeof projectPrefsSchema>
+});
+export type ProjectPrefs = z.infer<typeof projectPrefsSchema>;
 
 export const projectCountsSchema = z.object({
   total: z.number().int(),
   completed: z.number().int(),
   openMinutes: z.number().int(),
-})
+});
 
 export const projectSchema = z.object({
   id: z.string(),
@@ -98,8 +104,8 @@ export const projectSchema = z.object({
   lastAutonomousRunAt: z.string().nullable().default(null),
   createdAt: z.string().nullable().default(null),
   updatedAt: z.string().nullable().default(null),
-})
-export type Project = z.infer<typeof projectSchema>
+});
+export type Project = z.infer<typeof projectSchema>;
 
 export const effectivePrefsSchema = z.object({
   defaultTaskMinutes: z.number().int(),
@@ -110,8 +116,8 @@ export const effectivePrefsSchema = z.object({
   allowVideos: z.boolean(),
   preferredSources: z.array(z.string()),
   avoidSources: z.array(z.string()),
-})
-export type EffectivePrefs = z.infer<typeof effectivePrefsSchema>
+});
+export type EffectivePrefs = z.infer<typeof effectivePrefsSchema>;
 
 export const globalPrefsSchema = z.object({
   defaultTaskMinutes: z.number().int(),
@@ -120,8 +126,8 @@ export const globalPrefsSchema = z.object({
   timezone: z.string(),
   autonomousEnabled: z.boolean(),
   autonomousQuietHours: z.object({ start: z.string(), end: z.string() }),
-})
-export type GlobalPrefs = z.infer<typeof globalPrefsSchema>
+});
+export type GlobalPrefs = z.infer<typeof globalPrefsSchema>;
 
 export const learnerProfileSchema = z.object({
   thinkingStyle: z.string().default(''),
@@ -135,8 +141,8 @@ export const learnerProfileSchema = z.object({
   updatedAt: z.string().nullable().default(null),
   updatedBy: z.enum(['agent', 'user']).default('user'),
   version: z.number().int().default(0),
-})
-export type LearnerProfile = z.infer<typeof learnerProfileSchema>
+});
+export type LearnerProfile = z.infer<typeof learnerProfileSchema>;
 
 export const meSchema = z.object({
   uid: z.string(),
@@ -149,30 +155,30 @@ export const meSchema = z.object({
     tier: z.string(),
     limits: z.object({ autonomousRunsPerDay: z.number().int() }),
   }),
-})
-export type Me = z.infer<typeof meSchema>
+});
+export type Me = z.infer<typeof meSchema>;
 
-export const projectListSchema = z.object({ projects: z.array(projectSchema) })
-export const boardSchema = z.object({ tasks: z.array(taskWithSubtasksSchema) })
+export const projectListSchema = z.object({ projects: z.array(projectSchema) });
+export const boardSchema = z.object({ tasks: z.array(taskWithSubtasksSchema) });
 export const effectivePrefsResponseSchema = z.object({
   projectId: z.string(),
   effectivePrefs: effectivePrefsSchema,
-})
+});
 
 export const projectDerivedSchema = z.object({
   id: z.string(),
   nextUpTaskId: z.string().nullable(),
   counts: z.record(z.string(), z.number()),
-})
+});
 
 export const taskMutationSchema = z.object({
   task: taskSchema,
   parent: taskSchema.nullable().default(null),
   project: projectDerivedSchema.nullable().default(null),
-})
-export type TaskMutation = z.infer<typeof taskMutationSchema>
+});
+export type TaskMutation = z.infer<typeof taskMutationSchema>;
 
-export const taskDetailSchema = z.object({ task: taskWithSubtasksSchema })
+export const taskDetailSchema = z.object({ task: taskWithSubtasksSchema });
 
 // --- sessions & turns ------------------------------------------------------------------
 
@@ -180,10 +186,10 @@ export const sessionSummarySchema = z.object({
   id: z.string(),
   projectId: z.string().nullable().default(null),
   taskId: z.string().nullable().default(null),
-})
-export type SessionSummary = z.infer<typeof sessionSummarySchema>
+});
+export type SessionSummary = z.infer<typeof sessionSummarySchema>;
 
-export const sessionResponseSchema = z.object({ session: sessionSummarySchema })
+export const sessionResponseSchema = z.object({ session: sessionSummarySchema });
 
 /**
  * One transcript row. `event` is the serialized ADK `Event` verbatim — the API returns it
@@ -195,35 +201,35 @@ export const sessionEventSchema = z.object({
   seq: z.number().int(),
   eventId: z.string(),
   event: z.record(z.string(), z.unknown()),
-})
-export type SessionEvent = z.infer<typeof sessionEventSchema>
+});
+export type SessionEvent = z.infer<typeof sessionEventSchema>;
 
 export const sessionEventsSchema = z.object({
   events: z.array(sessionEventSchema),
   nextAfterSeq: z.number().int(),
   hasMore: z.boolean(),
-})
+});
 
-export const turnStatusSchema = z.enum(['running', 'complete', 'failed', 'cancelled'])
-export type TurnStatus = z.infer<typeof turnStatusSchema>
+export const turnStatusSchema = z.enum(['running', 'complete', 'failed', 'cancelled']);
+export type TurnStatus = z.infer<typeof turnStatusSchema>;
 
 export const turnAcceptedSchema = z.object({
   turnId: z.string(),
   sessionId: z.string(),
   status: turnStatusSchema,
   startSeq: z.number().int().default(0),
-})
+});
 
 export const turnStatusResponseSchema = z.object({
   turnId: z.string(),
   status: turnStatusSchema,
   lastSeq: z.number().int(),
-})
+});
 
-export const wsTicketSchema = z.object({ ticket: z.string(), expiresAt: z.string() })
+export const wsTicketSchema = z.object({ ticket: z.string(), expiresAt: z.string() });
 
-export const uploadCreatedSchema = z.object({ uploadId: z.string(), signedUrl: z.string() })
-export const uploadFinalizedSchema = z.object({ uploadId: z.string(), mimeType: z.string() })
+export const uploadCreatedSchema = z.object({ uploadId: z.string(), signedUrl: z.string() });
+export const uploadFinalizedSchema = z.object({ uploadId: z.string(), mimeType: z.string() });
 
 /** RFC 9457 problem+json, which is how every API error arrives. */
 export const problemSchema = z.object({
@@ -232,5 +238,5 @@ export const problemSchema = z.object({
   status: z.number().int(),
   detail: z.string().default(''),
   instance: z.string().optional(),
-})
-export type Problem = z.infer<typeof problemSchema>
+});
+export type Problem = z.infer<typeof problemSchema>;

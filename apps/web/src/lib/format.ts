@@ -7,18 +7,18 @@
  */
 
 export function formatMinutes(minutes: number): string {
-  if (!Number.isFinite(minutes) || minutes <= 0) return '0 min'
+  if (!Number.isFinite(minutes) || minutes <= 0) return '0 min';
 
-  const whole = Math.round(minutes)
-  const hours = Math.floor(whole / 60)
-  const rest = whole % 60
+  const whole = Math.round(minutes);
+  const hours = Math.floor(whole / 60);
+  const rest = whole % 60;
 
-  if (hours === 0) return `${rest} min`
-  if (rest === 0) return `${hours} h`
-  return `${hours} h ${rest} m`
+  if (hours === 0) return `${rest} min`;
+  if (rest === 0) return `${hours} h`;
+  return `${hours} h ${rest} m`;
 }
 
 /** "3 of 4 subtasks" and friends, so pluralisation lives in one place too. */
 export function pluralize(count: number, singular: string, plural = `${singular}s`): string {
-  return `${count} ${count === 1 ? singular : plural}`
+  return `${count} ${count === 1 ? singular : plural}`;
 }

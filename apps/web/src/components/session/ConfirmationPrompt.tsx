@@ -13,17 +13,17 @@
  * affordance: refusing is the safe answer, so it is the easy one.
  */
 
-import { Button } from '@/components/ui/button'
-import type { PendingConfirmation } from '@/lib/transcript'
+import { Button } from '@/components/ui/button';
+import type { PendingConfirmation } from '@/lib/transcript';
 
 const LABELS: Record<string, { question: string; confirm: string }> = {
   discard_task: { question: 'Discard this task?', confirm: 'Discard it' },
-}
+};
 
 /** The task title is not in the tool's arguments — only its id — so `reason` is the copy. */
 function describe(pending: PendingConfirmation): string {
-  const reason = pending.args.reason
-  return typeof reason === 'string' && reason ? reason : ''
+  const reason = pending.args.reason;
+  return typeof reason === 'string' && reason ? reason : '';
 }
 
 export function ConfirmationPrompt({
@@ -31,14 +31,14 @@ export function ConfirmationPrompt({
   disabled,
   onAnswer,
 }: {
-  pending: PendingConfirmation
-  disabled: boolean
-  onAnswer: (confirmed: boolean) => void
+  pending: PendingConfirmation;
+  disabled: boolean;
+  onAnswer: (confirmed: boolean) => void;
 }) {
   const labels = LABELS[pending.toolName] ?? {
     question: `Let your coach ${pending.toolName.replaceAll('_', ' ')}?`,
     confirm: 'Go ahead',
-  }
+  };
 
   return (
     <div
@@ -60,5 +60,5 @@ export function ConfirmationPrompt({
         </Button>
       </div>
     </div>
-  )
+  );
 }

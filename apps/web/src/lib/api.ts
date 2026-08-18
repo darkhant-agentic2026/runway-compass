@@ -10,9 +10,9 @@
  * `application/problem+json` and is raised as `ApiError` carrying the parsed problem.
  */
 
-import type { z } from 'zod'
+import type { z } from 'zod';
 
-import { getAuthProvider } from '@/lib/auth'
+import { getAuthProvider } from '@/lib/auth';
 import {
   boardSchema,
   effectivePrefsResponseSchema,
@@ -34,31 +34,31 @@ import {
   type Project,
   type ProjectPrefs,
   type TaskState,
-} from '@/lib/schemas'
+} from '@/lib/schemas';
 
 export class ApiError extends Error {
-  readonly status: number
-  readonly problem: { type: string; title: string; status: number; detail: string }
+  readonly status: number;
+  readonly problem: { type: string; title: string; status: number; detail: string };
 
   constructor(status: number, problem: ApiError['problem']) {
-    super(problem.detail || problem.title)
-    this.name = 'ApiError'
-    this.status = status
-    this.problem = problem
+    super(problem.detail || problem.title);
+    this.name = 'ApiError';
+    this.status = status;
+    this.problem = problem;
   }
 
   /** 4xx responses are the caller's fault and must not be retried. */
   get isClientError(): boolean {
-    return this.status >= 400 && this.status < 500
+    return this.status >= 400 && this.status < 500;
   }
 }
 
 interface RequestOptions {
-  method?: string
-  body?: unknown
+  method?: string;
+  body?: unknown;
   /** Sent as `Idempotency-Key`; every mutating endpoint accepts one. */
-  idempotencyKey?: string
-  signal?: AbortSignal
+  idempotencyKey?: string;
+  signal?: AbortSignal;
 }
 
 async function request<T>(
@@ -66,18 +66,18 @@ async function request<T>(
   schema: z.ZodType<T>,
   options: RequestOptions = {},
 ): Promise<T> {
-  const token = await getAuthProvider().getIdToken()
-  const headers: Record<string, string> = { Accept: 'application/json' }
-  if (token) headers.Authorization = `Bearer ${token}`
-  if (options.body !== undefined) headers['Content-Type'] = 'application/json'
-  if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey
+  const token = await getAuthProvider().getIdToken();
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+  if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;
 
   const response = await fetch(path, {
     method: options.method ?? 'GET',
     headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
     ...(options.signal ? { signal: options.signal } : {}),
-  })
+  });
 
   if (!response.ok) {
     let problem = {
@@ -85,23 +85,23 @@ async function request<T>(
       title: response.statusText || 'Request failed',
       status: response.status,
       detail: '',
-    }
+    };
     try {
-      const parsed = problemSchema.safeParse(await response.json())
-      if (parsed.success) problem = { ...problem, ...parsed.data }
+      const parsed = problemSchema.safeParse(await response.json());
+      if (parsed.success) problem = { ...problem, ...parsed.data };
     } catch {
       /* a non-JSON error body leaves the status-derived problem above */
     }
-    throw new ApiError(response.status, problem)
+    throw new ApiError(response.status, problem);
   }
 
-  if (response.status === 204) return schema.parse(undefined)
-  return schema.parse(await response.json())
+  if (response.status === 204) return schema.parse(undefined);
+  return schema.parse(await response.json());
 }
 
 /** A stable key per logical operation, so a retried mutation is deduplicated server-side. */
 export function newIdempotencyKey(): string {
-  return crypto.randomUUID()
+  return crypto.randomUUID();
 }
 
 // --- identity & preferences -----------------------------------------------------------
@@ -136,10 +136,10 @@ export const api = {
   patchProject: (
     projectId: string,
     patch: {
-      title?: string
-      goal?: string
-      status?: Project['status']
-      prefs?: Partial<ProjectPrefs>
+      title?: string;
+      goal?: string;
+      status?: Project['status'];
+      prefs?: Partial<ProjectPrefs>;
     },
   ) => request(`/api/projects/${projectId}`, projectSchema, { method: 'PATCH', body: patch }),
 
@@ -156,36 +156,36 @@ export const api = {
   listTasks: (
     projectId: string,
     filters: {
-      includeCompleted?: boolean
-      includeDiscarded?: boolean
-      includePostponed?: boolean
+      includeCompleted?: boolean;
+      includeDiscarded?: boolean;
+      includePostponed?: boolean;
     } = {},
   ) => {
-    const query = new URLSearchParams()
+    const query = new URLSearchParams();
     if (filters.includeCompleted !== undefined) {
-      query.set('include_completed', String(filters.includeCompleted))
+      query.set('include_completed', String(filters.includeCompleted));
     }
     if (filters.includeDiscarded !== undefined) {
-      query.set('include_discarded', String(filters.includeDiscarded))
+      query.set('include_discarded', String(filters.includeDiscarded));
     }
     if (filters.includePostponed !== undefined) {
-      query.set('include_postponed', String(filters.includePostponed))
+      query.set('include_postponed', String(filters.includePostponed));
     }
-    const suffix = query.size > 0 ? `?${query.toString()}` : ''
+    const suffix = query.size > 0 ? `?${query.toString()}` : '';
     return request(`/api/projects/${projectId}/tasks${suffix}`, boardSchema).then(
       (response) => response.tasks,
-    )
+    );
   },
 
   createTask: (
     projectId: string,
     body: {
-      title: string
-      description?: string
-      estimatedMinutes?: number
-      parentTaskId?: string | null
-      afterTaskId?: string | null
-      needsResearch?: boolean
+      title: string;
+      description?: string;
+      estimatedMinutes?: number;
+      parentTaskId?: string | null;
+      afterTaskId?: string | null;
+      needsResearch?: boolean;
     },
     idempotencyKey?: string,
   ) =>
@@ -201,10 +201,10 @@ export const api = {
   patchTask: (
     taskId: string,
     patch: {
-      title?: string
-      description?: string
-      estimatedMinutes?: number
-      needsResearch?: boolean
+      title?: string;
+      description?: string;
+      estimatedMinutes?: number;
+      needsResearch?: boolean;
     },
   ) => request(`/api/tasks/${taskId}`, taskMutationSchema, { method: 'PATCH', body: patch }),
 
@@ -261,10 +261,10 @@ export const api = {
   startTurn: (
     sessionId: string,
     body: {
-      text: string
-      attachments?: { uploadId: string; mimeType: string; filename?: string }[]
+      text: string;
+      attachments?: { uploadId: string; mimeType: string; filename?: string }[];
       /** The answer to a gated tool; see `ConfirmationPrompt`. */
-      confirmation?: { functionCallId: string; confirmed: boolean }
+      confirmation?: { functionCallId: string; confirmed: boolean };
     },
     idempotencyKey?: string,
   ) =>
@@ -310,19 +310,19 @@ export const api = {
    * docs/00-overview.md keeps one auth path on purpose.
    */
   getEventAttachment: async (sessionId: string, seq: number, index: number) => {
-    const token = await getAuthProvider().getIdToken()
+    const token = await getAuthProvider().getIdToken();
     const response = await fetch(
       `/api/sessions/${sessionId}/events/${seq}/attachments/${index}`,
       { headers: token ? { Authorization: `Bearer ${token}` } : {} },
-    )
+    );
     if (!response.ok)
       throw new ApiError(response.status, {
         type: 'about:blank',
         title: response.statusText || 'Request failed',
         status: response.status,
         detail: '',
-      })
-    return response.blob()
+      });
+    return response.blob();
   },
 
   createUpload: (body: { filename: string; mimeType: string; sizeBytes: number }) =>
@@ -330,4 +330,4 @@ export const api = {
 
   finalizeUpload: (uploadId: string) =>
     request(`/api/uploads/${uploadId}/finalize`, uploadFinalizedSchema, { method: 'POST' }),
-}
+};

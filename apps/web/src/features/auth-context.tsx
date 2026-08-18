@@ -10,28 +10,28 @@
  * is what keeps react-refresh able to hot-reload it.
  */
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Navigate, useLocation } from 'react-router-dom'
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Navigate, useLocation } from 'react-router-dom';
 
 import {
   AuthContext,
   type AuthContextValue,
   type AuthStatus,
-} from '@/features/auth-context-value'
-import { useAuth } from '@/features/use-auth'
-import { getAuthProvider, type AuthUser } from '@/lib/auth'
+} from '@/features/auth-context-value';
+import { useAuth } from '@/features/use-auth';
+import { getAuthProvider, type AuthUser } from '@/lib/auth';
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<AuthUser | null>(null)
-  const [status, setStatus] = useState<AuthStatus>('resolving')
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [status, setStatus] = useState<AuthStatus>('resolving');
 
   useEffect(() => {
-    const provider = getAuthProvider()
+    const provider = getAuthProvider();
     return provider.subscribe((next) => {
-      setUser(next)
-      setStatus(next ? 'signed-in' : 'signed-out')
-    })
-  }, [])
+      setUser(next);
+      setStatus(next ? 'signed-in' : 'signed-out');
+    });
+  }, []);
 
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -42,22 +42,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signOut: () => getAuthProvider().signOut(),
     }),
     [status, user],
-  )
+  );
 
-  return <AuthContext value={value}>{children}</AuthContext>
+  return <AuthContext value={value}>{children}</AuthContext>;
 }
 
 export function RequireAuth({ children }: { children: ReactNode }) {
-  const location = useLocation()
-  const auth = useAuth()
+  const location = useLocation();
+  const auth = useAuth();
 
   if (auth.status === 'resolving') {
     // Deliberately blank rather than a spinner: this resolves in a few milliseconds and
     // a flashed spinner reads worse than nothing at all.
-    return <div className="h-full" aria-busy="true" />
+    return <div className="h-full" aria-busy="true" />;
   }
   if (auth.status === 'signed-out') {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   }
-  return <>{children}</>
+  return <>{children}</>;
 }

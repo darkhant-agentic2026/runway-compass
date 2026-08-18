@@ -9,18 +9,18 @@
  * The server remains the authority — this is presentation, not enforcement.
  */
 
-import type { TaskState } from '@/lib/schemas'
+import type { TaskState } from '@/lib/schemas';
 
 export type Transition =
-  'start' | 'complete' | 'defer' | 'defer_until' | 'reopen' | 'restore' | 'discard'
+  'start' | 'complete' | 'defer' | 'defer_until' | 'reopen' | 'restore' | 'discard';
 
 export interface TransitionOption {
-  transition: Transition
-  target: TaskState
-  label: string
+  transition: Transition;
+  target: TaskState;
+  label: string;
   /** Opens the date picker rather than firing immediately. */
-  needsDate?: boolean
-  destructive?: boolean
+  needsDate?: boolean;
+  destructive?: boolean;
 }
 
 const BY_STATE: Record<TaskState, TransitionOption[]> = {
@@ -39,16 +39,16 @@ const BY_STATE: Record<TaskState, TransitionOption[]> = {
   postponed: [{ transition: 'restore', target: 'not_started', label: 'Un-postpone' }],
   postponed_until: [{ transition: 'restore', target: 'not_started', label: 'Un-postpone' }],
   discarded: [{ transition: 'restore', target: 'not_started', label: 'Restore' }],
-}
+};
 
 /** `discard` is reachable from every state except `discarded`, where it is a no-op. */
 export function transitionsFor(state: TaskState): TransitionOption[] {
-  const base = BY_STATE[state] ?? []
-  if (state === 'discarded') return base
+  const base = BY_STATE[state] ?? [];
+  if (state === 'discarded') return base;
   return [
     ...base,
     { transition: 'discard', target: 'discarded', label: 'Discard', destructive: true },
-  ]
+  ];
 }
 
 export const STATE_LABELS: Record<TaskState, string> = {
@@ -61,4 +61,4 @@ export const STATE_LABELS: Record<TaskState, string> = {
   postponed: 'Postponed',
   postponed_until: 'Postponed until',
   discarded: 'Discarded',
-}
+};

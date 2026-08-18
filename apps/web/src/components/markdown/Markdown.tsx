@@ -17,29 +17,29 @@
  * screen reader's outline stays truthful no matter what level the coach wrote.
  */
 
-import { isValidElement, useMemo, type ReactNode } from 'react'
-import ReactMarkdown, { type Components } from 'react-markdown'
-import rehypeKatex from 'rehype-katex'
-import remarkGfm from 'remark-gfm'
-import remarkMath from 'remark-math'
+import { isValidElement, useMemo, type ReactNode } from 'react';
+import ReactMarkdown, { type Components } from 'react-markdown';
+import rehypeKatex from 'rehype-katex';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 
-import { CodeBlock } from '@/components/markdown/CodeBlock'
-import { cn } from '@/lib/utils'
+import { CodeBlock } from '@/components/markdown/CodeBlock';
+import { cn } from '@/lib/utils';
 
-import 'katex/dist/katex.min.css'
+import 'katex/dist/katex.min.css';
 
 /** Flatten a rendered node back to the text it was built from. */
 function textOf(node: ReactNode): string {
-  if (typeof node === 'string') return node
-  if (typeof node === 'number') return String(node)
-  if (Array.isArray(node)) return node.map(textOf).join('')
-  if (isValidElement<{ children?: ReactNode }>(node)) return textOf(node.props.children)
-  return ''
+  if (typeof node === 'string') return node;
+  if (typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join('');
+  if (isValidElement<{ children?: ReactNode }>(node)) return textOf(node.props.children);
+  return '';
 }
 
 interface CodeProps {
-  className?: string
-  children?: ReactNode
+  className?: string;
+  children?: ReactNode;
 }
 
 /**
@@ -52,19 +52,19 @@ interface CodeProps {
  * passes an `inline` flag, and a fence with no language has no class to test either.
  */
 function fenceOf(children: ReactNode): { code: string; lang: string } | null {
-  const child = Array.isArray(children) ? children[0] : children
-  if (!isValidElement<CodeProps>(child)) return null
-  const lang = /language-([\w+#-]+)/.exec(child.props.className ?? '')?.[1] ?? ''
+  const child = Array.isArray(children) ? children[0] : children;
+  if (!isValidElement<CodeProps>(child)) return null;
+  const lang = /language-([\w+#-]+)/.exec(child.props.className ?? '')?.[1] ?? '';
   // Markdown fences end in a newline that is part of the syntax, not of the code.
-  return { code: textOf(child.props.children).replace(/\n$/, ''), lang }
+  return { code: textOf(child.props.children).replace(/\n$/, ''), lang };
 }
 
 function buildComponents(streaming: boolean): Components {
   return {
     pre({ children }) {
-      const fence = fenceOf(children)
-      if (!fence) return <pre>{children}</pre>
-      return <CodeBlock code={fence.code} lang={fence.lang} streaming={streaming} />
+      const fence = fenceOf(children);
+      if (!fence) return <pre>{children}</pre>;
+      return <CodeBlock code={fence.code} lang={fence.lang} streaming={streaming} />;
     },
     code({ children, className }) {
       return (
@@ -76,7 +76,7 @@ function buildComponents(streaming: boolean): Components {
         >
           {children}
         </code>
-      )
+      );
     },
     a({ children, href }) {
       return (
@@ -88,7 +88,7 @@ function buildComponents(streaming: boolean): Components {
         >
           {children}
         </a>
-      )
+      );
     },
     // A table in a chat bubble is the one element guaranteed not to fit: it scrolls
     // inside its own box rather than widening the pane and pushing the composer off
@@ -98,47 +98,47 @@ function buildComponents(streaming: boolean): Components {
         <div className="my-2 overflow-x-auto">
           <table className="w-full border-collapse text-left text-xs">{children}</table>
         </div>
-      )
+      );
     },
     th({ children }) {
-      return <th className="border px-2 py-1 font-semibold">{children}</th>
+      return <th className="border px-2 py-1 font-semibold">{children}</th>;
     },
     td({ children }) {
-      return <td className="border px-2 py-1 align-top">{children}</td>
+      return <td className="border px-2 py-1 align-top">{children}</td>;
     },
     h1({ children }) {
-      return <h3 className="mt-3 mb-1 text-sm font-semibold first:mt-0">{children}</h3>
+      return <h3 className="mt-3 mb-1 text-sm font-semibold first:mt-0">{children}</h3>;
     },
     h2({ children }) {
-      return <h4 className="mt-3 mb-1 text-sm font-semibold first:mt-0">{children}</h4>
+      return <h4 className="mt-3 mb-1 text-sm font-semibold first:mt-0">{children}</h4>;
     },
     h3({ children }) {
-      return <h5 className="mt-3 mb-1 text-sm font-semibold first:mt-0">{children}</h5>
+      return <h5 className="mt-3 mb-1 text-sm font-semibold first:mt-0">{children}</h5>;
     },
     h4({ children }) {
-      return <h6 className="mt-3 mb-1 text-sm font-semibold first:mt-0">{children}</h6>
+      return <h6 className="mt-3 mb-1 text-sm font-semibold first:mt-0">{children}</h6>;
     },
     p({ children }) {
-      return <p className="my-1.5 first:mt-0 last:mb-0">{children}</p>
+      return <p className="my-1.5 first:mt-0 last:mb-0">{children}</p>;
     },
     ul({ children }) {
-      return <ul className="my-1.5 list-disc space-y-0.5 pl-5">{children}</ul>
+      return <ul className="my-1.5 list-disc space-y-0.5 pl-5">{children}</ul>;
     },
     ol({ children }) {
-      return <ol className="my-1.5 list-decimal space-y-0.5 pl-5">{children}</ol>
+      return <ol className="my-1.5 list-decimal space-y-0.5 pl-5">{children}</ol>;
     },
     blockquote({ children }) {
-      return <blockquote className="my-2 border-l-2 pl-3 italic">{children}</blockquote>
+      return <blockquote className="my-2 border-l-2 pl-3 italic">{children}</blockquote>;
     },
     hr() {
-      return <hr className="my-3" />
+      return <hr className="my-3" />;
     },
     input({ checked, type }) {
       // GFM task lists. Rendered read-only: a checkbox in the transcript would look like
       // it tracked something, and the task board is where completion actually lives.
-      return <input type={type} checked={checked} readOnly className="mr-1 align-middle" />
+      return <input type={type} checked={checked} readOnly className="mr-1 align-middle" />;
     },
-  }
+  };
 }
 
 export function Markdown({
@@ -146,14 +146,14 @@ export function Markdown({
   streaming = false,
   className,
 }: {
-  text: string
+  text: string;
   /** True while the turn that produced this text is still generating. */
-  streaming?: boolean
-  className?: string
+  streaming?: boolean;
+  className?: string;
 }) {
   // Rebuilt only when the streaming flag flips, so a delta does not hand react-markdown a
   // new component map on every frame.
-  const components = useMemo(() => buildComponents(streaming), [streaming])
+  const components = useMemo(() => buildComponents(streaming), [streaming]);
 
   return (
     <div className={cn('break-words', className)} data-testid="markdown">
@@ -165,5 +165,5 @@ export function Markdown({
         {text}
       </ReactMarkdown>
     </div>
-  )
+  );
 }

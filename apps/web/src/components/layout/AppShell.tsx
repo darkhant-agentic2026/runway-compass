@@ -1,17 +1,17 @@
-import { Link, Outlet } from 'react-router-dom'
+import { Link, Outlet } from 'react-router-dom';
 
-import { Button } from '@/components/ui/button'
-import { useMe } from '@/features/queries'
-import { useAuth } from '@/features/use-auth'
-import { useCoachSocket } from '@/features/use-socket'
+import { Button } from '@/components/ui/button';
+import { useMe } from '@/features/queries';
+import { useAuth } from '@/features/use-auth';
+import { useCoachSocket } from '@/features/use-socket';
 
 export function AppShell() {
-  const auth = useAuth()
-  const me = useMe()
+  const auth = useAuth();
+  const me = useMe();
   // One socket per tab, held open for as long as a user is signed in — not per screen,
   // so navigating between the board and a workspace never drops a running turn's stream
   // (docs/06-frontend.md#websocket-client).
-  useCoachSocket()
+  useCoachSocket();
 
   return (
     <div className="flex min-h-full flex-col">
@@ -53,5 +53,5 @@ export function AppShell() {
         <Outlet />
       </main>
     </div>
-  )
+  );
 }

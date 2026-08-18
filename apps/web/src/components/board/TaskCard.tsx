@@ -10,29 +10,29 @@
  * > reveals subtasks inline.
  */
 
-import { useSortable } from '@dnd-kit/sortable'
-import { CSS } from '@dnd-kit/utilities'
-import { ChevronDown, ChevronRight, GripVertical, Sparkles } from 'lucide-react'
+import { useSortable } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import { ChevronDown, ChevronRight, GripVertical, Sparkles } from 'lucide-react';
 
-import { ProgressRing } from '@/components/board/ProgressRing'
-import { STATE_LABELS } from '@/components/board/task-state'
-import { TaskRowActions } from '@/components/board/TaskRowActions'
-import { Badge } from '@/components/ui/badge'
-import { formatMinutes, pluralize } from '@/lib/format'
-import type { Task, TaskState, TaskWithSubtasks } from '@/lib/schemas'
-import { cn } from '@/lib/utils'
+import { ProgressRing } from '@/components/board/ProgressRing';
+import { STATE_LABELS } from '@/components/board/task-state';
+import { TaskRowActions } from '@/components/board/TaskRowActions';
+import { Badge } from '@/components/ui/badge';
+import { formatMinutes, pluralize } from '@/lib/format';
+import type { Task, TaskState, TaskWithSubtasks } from '@/lib/schemas';
+import { cn } from '@/lib/utils';
 
 interface TaskCardProps {
-  task: TaskWithSubtasks
-  isNextUp: boolean
-  collapsed: boolean
-  canMoveUp: boolean
-  canMoveDown: boolean
-  dragDisabled: boolean
-  onToggleCollapsed: () => void
-  onSetState: (taskId: string, state: TaskState, postponedUntil?: string) => void
-  onMove: (taskId: string, direction: -1 | 1) => void
-  onSplit: (taskId: string) => void
+  task: TaskWithSubtasks;
+  isNextUp: boolean;
+  collapsed: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  dragDisabled: boolean;
+  onToggleCollapsed: () => void;
+  onSetState: (taskId: string, state: TaskState, postponedUntil?: string) => void;
+  onMove: (taskId: string, direction: -1 | 1) => void;
+  onSplit: (taskId: string) => void;
 }
 
 export function TaskCard({
@@ -50,9 +50,9 @@ export function TaskCard({
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: task.id,
     disabled: dragDisabled,
-  })
+  });
 
-  const hasSubtasks = task.subtasks.length > 0
+  const hasSubtasks = task.subtasks.length > 0;
 
   return (
     <li
@@ -171,15 +171,15 @@ export function TaskCard({
         </ul>
       ) : null}
     </li>
-  )
+  );
 }
 
 function SubtaskRow({
   subtask,
   onSetState,
 }: {
-  subtask: Task
-  onSetState: (state: TaskState, postponedUntil?: string) => void
+  subtask: Task;
+  onSetState: (state: TaskState, postponedUntil?: string) => void;
 }) {
   return (
     <li
@@ -203,5 +203,5 @@ function SubtaskRow({
         onMove={() => {}}
       />
     </li>
-  )
+  );
 }

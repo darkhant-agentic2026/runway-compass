@@ -11,12 +11,12 @@
  * step succeeds — see `PendingAttachment.ready`.
  */
 
-import { Paperclip, Send, X } from 'lucide-react'
-import { useRef, type ChangeEvent, type ClipboardEvent } from 'react'
+import { Paperclip, Send, X } from 'lucide-react';
+import { useRef, type ChangeEvent, type ClipboardEvent } from 'react';
 
-import { Button } from '@/components/ui/button'
-import { ACCEPTED_MIME_TYPES, useAttachmentUploads } from '@/features/use-uploads'
-import { NO_ATTACHMENTS, useComposerStore } from '@/stores/composer'
+import { Button } from '@/components/ui/button';
+import { ACCEPTED_MIME_TYPES, useAttachmentUploads } from '@/features/use-uploads';
+import { NO_ATTACHMENTS, useComposerStore } from '@/stores/composer';
 
 export function Composer({
   sessionId,
@@ -25,10 +25,10 @@ export function Composer({
   onSend,
   onCancel,
 }: {
-  sessionId: string
-  sending: boolean
+  sessionId: string;
+  sending: boolean;
   /** A turn is in flight; the send button becomes cancel. */
-  streaming: boolean
+  streaming: boolean;
   /**
    * `filename` rides along for the optimistic echo only. The API's `TurnAttachment`
    * forbids unknown fields, so the caller strips it before sending — the display name is
@@ -37,25 +37,25 @@ export function Composer({
   onSend: (
     text: string,
     attachments: { uploadId: string; mimeType: string; filename: string }[],
-  ) => void
-  onCancel: () => void
+  ) => void;
+  onCancel: () => void;
 }) {
-  const draft = useComposerStore((state) => state.drafts[sessionId] ?? '')
+  const draft = useComposerStore((state) => state.drafts[sessionId] ?? '');
   // `NO_ATTACHMENTS` rather than `?? []`: a fresh array here is a new value on every
   // render as far as Zustand is concerned, and the result is an infinite render loop.
   const attachments = useComposerStore(
     (state) => state.attachments[sessionId] ?? NO_ATTACHMENTS,
-  )
-  const setDraft = useComposerStore((state) => state.setDraft)
-  const removeAttachment = useComposerStore((state) => state.removeAttachment)
-  const { uploadAll } = useAttachmentUploads(sessionId)
-  const filePicker = useRef<HTMLInputElement>(null)
+  );
+  const setDraft = useComposerStore((state) => state.setDraft);
+  const removeAttachment = useComposerStore((state) => state.removeAttachment);
+  const { uploadAll } = useAttachmentUploads(sessionId);
+  const filePicker = useRef<HTMLInputElement>(null);
 
-  const ready = attachments.filter((attachment) => attachment.ready)
-  const canSend = (draft.trim().length > 0 || ready.length > 0) && !sending
+  const ready = attachments.filter((attachment) => attachment.ready);
+  const canSend = (draft.trim().length > 0 || ready.length > 0) && !sending;
 
   function submit(): void {
-    if (!canSend) return
+    if (!canSend) return;
     onSend(
       draft.trim(),
       ready.map((attachment) => ({
@@ -63,15 +63,15 @@ export function Composer({
         mimeType: attachment.mimeType,
         filename: attachment.filename,
       })),
-    )
+    );
   }
 
   return (
     <form
       className="space-y-2 border-t p-3"
       onSubmit={(event) => {
-        event.preventDefault()
-        submit()
+        event.preventDefault();
+        submit();
       }}
     >
       {/* Dropping is handled by the whole chat pane, not this strip — see
@@ -115,13 +115,13 @@ export function Composer({
             const files = Array.from(event.clipboardData.items)
               .filter((item) => item.kind === 'file')
               .map((item) => item.getAsFile())
-              .filter((file): file is File => file !== null)
-            if (files.length > 0) uploadAll(files)
+              .filter((file): file is File => file !== null);
+            if (files.length > 0) uploadAll(files);
           }}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-              event.preventDefault()
-              submit()
+              event.preventDefault();
+              submit();
             }
           }}
         />
@@ -133,9 +133,9 @@ export function Composer({
           accept={ACCEPTED_MIME_TYPES.join(',')}
           className="hidden"
           onChange={(event: ChangeEvent<HTMLInputElement>) => {
-            uploadAll(event.target.files)
+            uploadAll(event.target.files);
             // Cleared so that re-picking the same file fires `change` again.
-            event.target.value = ''
+            event.target.value = '';
           }}
         />
         <Button
@@ -159,5 +159,5 @@ export function Composer({
         )}
       </div>
     </form>
-  )
+  );
 }

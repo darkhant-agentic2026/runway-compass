@@ -1,9 +1,9 @@
-import type { Project, Task, TaskWithSubtasks } from '@/lib/schemas'
+import type { Project, Task, TaskWithSubtasks } from '@/lib/schemas';
 
-let counter = 0
+let counter = 0;
 
 export function makeTask(overrides: Partial<Task> = {}): Task {
-  counter += 1
+  counter += 1;
   return {
     id: `k_${counter}`,
     projectId: 'p_1',
@@ -26,14 +26,14 @@ export function makeTask(overrides: Partial<Task> = {}): Task {
     updatedAt: null,
     completedAt: null,
     ...overrides,
-  }
+  };
 }
 
 export function makeParent(
   overrides: Partial<TaskWithSubtasks> = {},
   subtasks: Task[] = [],
 ): TaskWithSubtasks {
-  const rollupSource = subtasks.filter((task) => task.state !== 'discarded')
+  const rollupSource = subtasks.filter((task) => task.state !== 'discarded');
   return {
     ...makeTask(overrides as Partial<Task>),
     subtasks,
@@ -49,7 +49,7 @@ export function makeParent(
           }
         : null,
     ...overrides,
-  }
+  };
 }
 
 export function makeProject(overrides: Partial<Project> = {}): Project {
@@ -74,5 +74,5 @@ export function makeProject(overrides: Partial<Project> = {}): Project {
     createdAt: null,
     updatedAt: null,
     ...overrides,
-  }
+  };
 }

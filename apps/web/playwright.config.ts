@@ -1,4 +1,4 @@
-import { defineConfig, devices } from '@playwright/test'
+import { defineConfig, devices } from '@playwright/test';
 
 /**
  * End-to-end configuration.
@@ -48,4 +48,4 @@ export default defineConfig({
     { name: 'webkit', use: { ...devices['Desktop Safari'] } },
     { name: 'mobile-safari', use: { ...devices['iPhone 14'] } },
   ],
-})
+});

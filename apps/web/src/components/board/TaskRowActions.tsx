@@ -10,27 +10,27 @@
  *   unusable without a mouse.
  */
 
-import { ChevronDown, ChevronUp, MoreHorizontal } from 'lucide-react'
-import { useState } from 'react'
+import { ChevronDown, ChevronUp, MoreHorizontal } from 'lucide-react';
+import { useState } from 'react';
 
-import { transitionsFor } from '@/components/board/task-state'
-import { Button } from '@/components/ui/button'
+import { transitionsFor } from '@/components/board/task-state';
+import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import type { Task, TaskState } from '@/lib/schemas'
+} from '@/components/ui/dropdown-menu';
+import type { Task, TaskState } from '@/lib/schemas';
 
 interface TaskRowActionsProps {
-  task: Task
-  canMoveUp: boolean
-  canMoveDown: boolean
-  onSetState: (state: TaskState, postponedUntil?: string) => void
-  onMove: (direction: -1 | 1) => void
-  onSplit?: () => void
+  task: Task;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onSetState: (state: TaskState, postponedUntil?: string) => void;
+  onMove: (direction: -1 | 1) => void;
+  onSplit?: () => void;
 }
 
 export function TaskRowActions({
@@ -41,8 +41,8 @@ export function TaskRowActions({
   onMove,
   onSplit,
 }: TaskRowActionsProps) {
-  const [pendingDate, setPendingDate] = useState(false)
-  const options = transitionsFor(task.state)
+  const [pendingDate, setPendingDate] = useState(false);
+  const options = transitionsFor(task.state);
 
   return (
     <>
@@ -60,8 +60,8 @@ export function TaskRowActions({
               key={option.transition}
               variant={option.destructive ? 'destructive' : 'default'}
               onClick={() => {
-                if (option.needsDate) setPendingDate(true)
-                else onSetState(option.target)
+                if (option.needsDate) setPendingDate(true);
+                else onSetState(option.target);
               }}
             >
               {option.label}
@@ -92,28 +92,28 @@ export function TaskRowActions({
         <PostponeUntilDialog
           onCancel={() => setPendingDate(false)}
           onConfirm={(iso) => {
-            setPendingDate(false)
-            onSetState('postponed_until', iso)
+            setPendingDate(false);
+            onSetState('postponed_until', iso);
           }}
         />
       ) : null}
     </>
-  )
+  );
 }
 
 function PostponeUntilDialog({
   onCancel,
   onConfirm,
 }: {
-  onCancel: () => void
-  onConfirm: (iso: string) => void
+  onCancel: () => void;
+  onConfirm: (iso: string) => void;
 }) {
   // Read the clock lazily, in the state initialiser: calling `Date.now()` during render
   // would make the default date change on every re-render.
   const [value, setValue] = useState(() =>
     new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
-  )
-  const [today] = useState(() => new Date().toISOString().slice(0, 10))
+  );
+  const [today] = useState(() => new Date().toISOString().slice(0, 10));
 
   return (
     <div
@@ -140,13 +140,13 @@ function PostponeUntilDialog({
           onClick={() => {
             // The server refuses a past timestamp, so send end-of-day in local time —
             // "postpone until tomorrow" means the whole of tomorrow, not 00:00.
-            const date = new Date(`${value}T23:59:59`)
-            onConfirm(date.toISOString())
+            const date = new Date(`${value}T23:59:59`);
+            onConfirm(date.toISOString());
           }}
         >
           Postpone
         </Button>
       </div>
     </div>
-  )
+  );
 }

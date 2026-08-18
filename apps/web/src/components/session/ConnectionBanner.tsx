@@ -11,13 +11,13 @@
  * exactly the wasted inference the design exists to avoid.
  */
 
-import { Loader2 } from 'lucide-react'
+import { Loader2 } from 'lucide-react';
 
-import { isDisconnected, useSocketStore } from '@/stores/socket'
+import { isDisconnected, useSocketStore } from '@/stores/socket';
 
 export function ConnectionBanner() {
-  const connection = useSocketStore((state) => state.connection)
-  if (!isDisconnected(connection)) return null
+  const connection = useSocketStore((state) => state.connection);
+  if (!isDisconnected(connection)) return null;
 
   return (
     <div
@@ -35,5 +35,5 @@ export function ConnectionBanner() {
           : 'Connection lost — your coach is still working. Reconnecting…'}
       </span>
     </div>
-  )
+  );
 }

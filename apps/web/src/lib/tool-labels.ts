@@ -25,8 +25,8 @@ const LABELS: Record<string, string> = {
   reorder_task: 'Reordering the board',
   list_tasks: 'Looking at your board',
   load_memory: 'Remembering earlier sessions',
-}
+};
 
 export function labelForTool(name: string): string {
-  return LABELS[name] ?? name.replaceAll('_', ' ')
+  return LABELS[name] ?? name.replaceAll('_', ' ');
 }

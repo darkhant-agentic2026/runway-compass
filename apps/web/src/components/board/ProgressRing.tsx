@@ -8,17 +8,17 @@
  */
 
 interface ProgressRingProps {
-  completed: number
-  total: number
-  size?: number
+  completed: number;
+  total: number;
+  size?: number;
 }
 
 export function ProgressRing({ completed, total, size = 28 }: ProgressRingProps) {
-  const safeTotal = Math.max(total, 1)
-  const fraction = Math.min(Math.max(completed / safeTotal, 0), 1)
-  const stroke = 3
-  const radius = (size - stroke) / 2
-  const circumference = 2 * Math.PI * radius
+  const safeTotal = Math.max(total, 1);
+  const fraction = Math.min(Math.max(completed / safeTotal, 0), 1);
+  const stroke = 3;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
 
   return (
     <svg
@@ -50,5 +50,5 @@ export function ProgressRing({ completed, total, size = 28 }: ProgressRingProps)
         transform={`rotate(-90 ${size / 2} ${size / 2})`}
       />
     </svg>
-  )
+  );
 }

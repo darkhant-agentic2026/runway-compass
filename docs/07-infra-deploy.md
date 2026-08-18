@@ -404,9 +404,21 @@ the cost of a full format.
 **Prettier's remit stops at `apps/web`.** `.prettierignore` excludes `docs/`, every other
 `*.md`, `infra/`, and `apps/api/`. The design documents are hand-wrapped prose with tables
 aligned for reading in a terminal; reflowing them would produce a large diff that says
-nothing. Configuration lives in `apps/web/.prettierrc.json` and matches the style the
-codebase was already written in — no semicolons, single quotes, a 96-column width —
-so adopting it was a churn commit about class-attribute ordering rather than a rewrite.
+nothing.
+
+Configuration lives in `apps/web/.prettierrc.json`:
+
+| Option | Value | Why it is written out |
+| --- | --- | --- |
+| `semi` | `true` | **A departure from the style the tree was written in**, which terminated nothing. Deliberate: with ASI, whether a line ends a statement depends on what the *next* line starts with, and a leading `(` or `[` silently continues it — which is why the no-semi style needs the defensive `;(function () {…})()` the inline theme script used to carry |
+| `singleQuote` | `true` | What the codebase already used |
+| `printWidth` | `96` | The width the hand-wrapped code was already at; 80 would have rewrapped nearly every JSX attribute list |
+| `tabWidth` | `2` | Prettier's default *today*. Written out because a default is a thing that can move in a major version, and the one tool that must never surprise anyone with a diff is the formatter |
+| `endOfLine` | `"lf"` | Same reasoning. The repo has no CRLF in it, the image is Linux, and this keeps a Windows checkout from producing a whole-file diff |
+| `trailingComma`, `arrowParens` | `all`, `always` | Both already the house style |
+
+Adopting all of this was one churn commit; the semicolons and the sorted class attributes
+are most of it.
 
 Two formatter plugins, and the order they are listed in matters:
 
