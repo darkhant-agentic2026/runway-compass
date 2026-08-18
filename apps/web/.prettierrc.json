@@ -4,7 +4,12 @@
   "printWidth": 96,
   "trailingComma": "all",
   "arrowParens": "always",
-  "plugins": ["./node_modules/prettier-plugin-tailwindcss/dist/index.mjs"],
+  "plugins": [
+    "./node_modules/@ianvs/prettier-plugin-sort-imports/lib/src/index.js",
+    "./node_modules/prettier-plugin-tailwindcss/dist/index.mjs"
+  ],
+  "importOrder": ["<BUILTIN_MODULES>", "<THIRD_PARTY_MODULES>", "", "^@/", "", "^[.]"],
+  "importOrderTypeScriptVersion": "6.0.3",
   "tailwindStylesheet": "./src/index.css",
   "tailwindFunctions": ["cn", "cva"]
 }

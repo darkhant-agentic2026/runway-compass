@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest'
 
-import { afterEach, beforeEach, vi } from 'vitest'
 import { cleanup } from '@testing-library/react'
+import { afterEach, beforeEach, vi } from 'vitest'
 
 /**
  * jsdom implements no `matchMedia`, and the theme code is built around it. A controllable

@@ -14,8 +14,8 @@
  */
 
 import { render, screen } from '@testing-library/react'
-import { expect, it, vi } from 'vitest'
 import { toast } from 'sonner'
+import { expect, it, vi } from 'vitest'
 
 import { Toaster } from '@/components/ui/sonner'
 

@@ -17,8 +17,8 @@
  */
 
 import { ProgressRing } from '@/components/board/ProgressRing'
-import { TaskRowActions } from '@/components/board/TaskRowActions'
 import { STATE_LABELS, transitionsFor } from '@/components/board/task-state'
+import { TaskRowActions } from '@/components/board/TaskRowActions'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { formatMinutes, pluralize } from '@/lib/format'

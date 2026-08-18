@@ -15,14 +15,14 @@
 
 import { describe, expect, it } from 'vitest'
 
+import type { SessionEvent } from '@/lib/schemas'
 import vectors from '@/lib/session-event-vectors.json'
 import {
-  CONFIRMATION_FUNCTION_NAME,
   attachmentLabel,
+  CONFIRMATION_FUNCTION_NAME,
   pendingConfirmation,
   toMessages,
 } from '@/lib/transcript'
-import type { SessionEvent } from '@/lib/schemas'
 
 function event(seq: number, body: Record<string, unknown>): SessionEvent {
   return { seq, eventId: `e_${seq}`, event: body }

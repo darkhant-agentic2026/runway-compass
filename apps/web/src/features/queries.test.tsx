@@ -22,9 +22,9 @@ import {
 } from '@/features/queries'
 import { api } from '@/lib/api'
 import { keyBetween } from '@/lib/ordering'
+import type { SessionEvent, TaskWithSubtasks } from '@/lib/schemas'
 import { getSocket } from '@/lib/socket'
 import { toMessages } from '@/lib/transcript'
-import type { SessionEvent, TaskWithSubtasks } from '@/lib/schemas'
 import { DEFAULT_FILTERS } from '@/stores/boardUi'
 import { makeParent, makeTask } from '@/test/factories'
 

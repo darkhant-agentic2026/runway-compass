@@ -408,9 +408,27 @@ nothing. Configuration lives in `apps/web/.prettierrc.json` and matches the styl
 codebase was already written in — no semicolons, single quotes, a 96-column width —
 so adopting it was a churn commit about class-attribute ordering rather than a rewrite.
 
-`prettier-plugin-tailwindcss` sorts `className` into Tailwind's canonical order. It is a
-formatter plugin rather than a lint rule for the reason above, and it is what makes a
-duplicated or shadowed utility visible in review instead of buried mid-string.
+Two formatter plugins, and the order they are listed in matters:
+
+1. **`@ianvs/prettier-plugin-sort-imports`** sorts import declarations, and the named
+   specifiers inside them. Groups are `importOrder` in `.prettierrc.json`: Node built-ins,
+   third-party packages, a blank line, `@/…`, a blank line, relative paths — which is the
+   convention the codebase was already written to, now enforced instead of remembered.
+
+   **It preserves side-effect imports where they are.** `import 'katex/dist/katex.min.css'`
+   is not a value anyone reads; it is a statement that runs, and a sorter that hoisted it
+   above the module it must follow would be making a semantic change while claiming to
+   format. The plugin treats such an import as a barrier and does not move imports across
+   it. That property is the reason a sorter is acceptable in a formatter at all, and it is
+   worth re-checking on a bump.
+
+2. **`prettier-plugin-tailwindcss`** sorts `className` into Tailwind's canonical order, and
+   must be listed **last** — it composes with whatever precedes it, and upstream documents
+   that requirement. It is what makes a duplicated or shadowed utility visible in review
+   instead of buried mid-string.
+
+Both are formatter plugins rather than lint rules for the reason above: a layout
+disagreement should not be an ESLint error in the editor.
 
 CI runs the check halves — `ruff format --check`, `prettier --check` — so a branch that
 skipped the local gate fails on the formatting rather than landing it.

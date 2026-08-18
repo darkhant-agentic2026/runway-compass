@@ -11,20 +11,19 @@
 
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { setPrefersDark } from '@/test/setup'
 import {
-  THEME_STORAGE_KEY,
   applyTheme,
   readStoredPref,
   resolveTheme,
   startThemeSync,
+  THEME_STORAGE_KEY,
   useThemeStore,
   type ResolvedTheme,
   type ThemePref,
 } from '@/stores/theme'
+import { setPrefersDark } from '@/test/setup'
 
 /**
  * The inline script from `index.html`, re-implemented here *by reading the real file* so

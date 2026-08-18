@@ -13,6 +13,7 @@
 import { ChevronDown, ChevronUp, MoreHorizontal } from 'lucide-react'
 import { useState } from 'react'
 
+import { transitionsFor } from '@/components/board/task-state'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -22,7 +23,6 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import type { Task, TaskState } from '@/lib/schemas'
-import { transitionsFor } from '@/components/board/task-state'
 
 interface TaskRowActionsProps {
   task: Task

@@ -16,7 +16,7 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { useAttachmentUploads } from '@/features/use-uploads'
-import { ApiError, api } from '@/lib/api'
+import { api, ApiError } from '@/lib/api'
 import { useComposerStore } from '@/stores/composer'
 
 const SESSION = 's_1'

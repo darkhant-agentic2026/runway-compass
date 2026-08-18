@@ -20,7 +20,7 @@
 import { useCallback } from 'react'
 import { toast } from 'sonner'
 
-import { ApiError, api } from '@/lib/api'
+import { api, ApiError } from '@/lib/api'
 import { useComposerStore } from '@/stores/composer'
 
 /** docs/04-api-contract.md#uploads, mirrored so the picker filters and errors come early. */

@@ -15,11 +15,11 @@ import { CSS } from '@dnd-kit/utilities'
 import { ChevronDown, ChevronRight, GripVertical, Sparkles } from 'lucide-react'
 
 import { ProgressRing } from '@/components/board/ProgressRing'
-import { TaskRowActions } from '@/components/board/TaskRowActions'
 import { STATE_LABELS } from '@/components/board/task-state'
+import { TaskRowActions } from '@/components/board/TaskRowActions'
 import { Badge } from '@/components/ui/badge'
 import { formatMinutes, pluralize } from '@/lib/format'
-import type { TaskState, TaskWithSubtasks, Task } from '@/lib/schemas'
+import type { Task, TaskState, TaskWithSubtasks } from '@/lib/schemas'
 import { cn } from '@/lib/utils'
 
 interface TaskCardProps {

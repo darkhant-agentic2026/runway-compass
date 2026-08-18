@@ -12,15 +12,15 @@
 
 import { describe, expect, it } from 'vitest'
 
-import vectors from '@/lib/ordering-vectors.json'
 import {
   FIRST_KEY,
-  OrderKeyError,
   keyBetween,
   nKeysBetween,
   orderForMove,
+  OrderKeyError,
   validateKey,
 } from '@/lib/ordering'
+import vectors from '@/lib/ordering-vectors.json'
 
 describe('parity with the Python implementation', () => {
   it.each(vectors.keyBetween)('keyBetween($a, $b) === $expected', ({ a, b, expected }) => {

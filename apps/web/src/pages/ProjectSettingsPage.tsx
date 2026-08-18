@@ -23,7 +23,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { useEffectivePrefs, useMe, useProject, usePatchProject } from '@/features/queries'
+import { useEffectivePrefs, useMe, usePatchProject, useProject } from '@/features/queries'
 import { formatMinutes } from '@/lib/format'
 import type { ProjectPrefs } from '@/lib/schemas'
 

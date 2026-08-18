@@ -13,11 +13,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  backoffDelay,
   CoachSocket,
   HIDDEN_GRACE_MS,
   MAX_BACKOFF_MS,
   PRESENCE_INTERVAL_MS,
-  backoffDelay,
 } from '@/lib/socket'
 import { useSocketStore } from '@/stores/socket'
 import { useStreamStore } from '@/stores/stream'
