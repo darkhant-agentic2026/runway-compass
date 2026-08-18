@@ -62,7 +62,7 @@ export default function ProjectsPage() {
       {projects.isPending ? (
         <p className="text-muted-foreground">Loading your projects…</p>
       ) : (projects.data?.length ?? 0) === 0 ? (
-        <p className="text-muted-foreground rounded-lg border border-dashed p-6 text-center">
+        <p className="rounded-lg border border-dashed p-6 text-center text-muted-foreground">
           No projects yet. Create one above and the coach will help you break it down.
         </p>
       ) : (
@@ -77,7 +77,7 @@ export default function ProjectsPage() {
                     </Link>
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="text-muted-foreground space-y-1 text-sm">
+                <CardContent className="space-y-1 text-sm text-muted-foreground">
                   {project.goal ? <p className="text-foreground">{project.goal}</p> : null}
                   <p>
                     {project.counts.completed} of {project.counts.total} tasks done ·{' '}

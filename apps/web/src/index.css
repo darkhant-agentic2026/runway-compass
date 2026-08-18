@@ -1,7 +1,7 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
-@import "shadcn/tailwind.css";
-@import "@fontsource-variable/geist";
+@import 'shadcn/tailwind.css';
+@import '@fontsource-variable/geist';
 
 /*
  * Tailwind v4 + shadcn/ui. The dark variant is driven by a `.dark` class on <html>,
@@ -170,5 +170,32 @@
   }
   html {
     @apply font-sans;
+  }
+
+  /*
+   * Syntax highlighting, both themes at once.
+   *
+   * The highlighter emits `--shiki-light` and `--shiki-dark` on every token instead of a
+   * colour (`lib/highlighter.ts`, `defaultColor: false`), so the swap is these two rules
+   * and the same `.dark` class everything else uses. Nothing re-highlights on a theme
+   * change, and a code block from earlier in the conversation flips with the page —
+   * which is what docs/06-frontend.md means by "drive it from CSS variables gated on the
+   * root `.dark` class rather than swapping stylesheets at runtime".
+   */
+  .shiki span {
+    color: var(--shiki-light);
+  }
+
+  .dark .shiki span {
+    color: var(--shiki-dark);
+  }
+
+  /* KaTeX needs no such treatment — it draws in `currentColor` — but it does size itself
+   * from the surrounding font, and a display equation in a chat bubble has to be allowed
+   * to scroll rather than widen the pane. */
+  .katex-display {
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 0.25rem;
   }
 }

@@ -12,13 +12,7 @@
 import type { TaskState } from '@/lib/schemas'
 
 export type Transition =
-  | 'start'
-  | 'complete'
-  | 'defer'
-  | 'defer_until'
-  | 'reopen'
-  | 'restore'
-  | 'discard'
+  'start' | 'complete' | 'defer' | 'defer_until' | 'reopen' | 'restore' | 'discard'
 
 export interface TransitionOption {
   transition: Transition

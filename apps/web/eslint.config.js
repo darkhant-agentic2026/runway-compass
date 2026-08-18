@@ -1,4 +1,5 @@
 import js from '@eslint/js'
+import prettier from 'eslint-config-prettier/flat'
 import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 import globals from 'globals'
@@ -59,4 +60,10 @@ export default tseslint.config(
       'react-hooks/rules-of-hooks': 'off',
     },
   },
+  // Last, and it must stay last: this turns off every rule that has an opinion about
+  // layout, so eslint finds problems and Prettier decides how the file looks. Anything
+  // added after it could re-enable a stylistic rule and put the two tools back into the
+  // loop where `--fix` and `--write` undo each other on alternate runs.
+  // docs/07-infra-deploy.md#formatting-and-linting
+  prettier,
 )

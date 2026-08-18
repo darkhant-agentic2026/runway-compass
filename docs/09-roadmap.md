@@ -327,6 +327,29 @@ five.
 
 ---
 
+## Interlude before M4 — web toolchain, composite tasks, rendered markdown
+
+Not a milestone: three changes to `apps/web` taken between M3 and M4, on their own branch
+and through the same gate. Recorded here because two of them change a convention the rest
+of the repo is written against.
+
+| Change | Decision | Where |
+| --- | --- | --- |
+| Prettier formats, ESLint lints | The two tools stop overlapping: `eslint-config-prettier` last in the config, no `eslint-plugin-prettier`, and the formatter runs *after* `--fix` in `dev.sh lint` so a fixer's rewrite is formatted in the same pass. Config matches the style already in the tree (no semicolons, single quotes, 96 columns), and `prettier-plugin-tailwindcss` sorts `className` | [07-infra-deploy.md](07-infra-deploy.md#formatting-and-linting) |
+| Prettier's remit stops at `apps/web` | `docs/` and the root markdown are hand-wrapped prose with tables aligned for terminal reading. Reflowing eleven design documents is a diff nobody can review | `.prettierignore` |
+| A composite task shows its subtasks in the workspace | `GET /api/tasks/{id}` already returned `subtasks[]`, so the board could expand a parent and the task's own screen could not — the one screen dedicated to that task knew least about it | `pages/TaskWorkspacePage.tsx` |
+| A subtask still has no route | The parent's session is where subtasks get worked through; four transcripts each holding a quarter of one piece of work is worse than one holding all of it. The cards carry state actions and navigate nowhere | [06-frontend.md](06-frontend.md#task-workspace-projectsprojectidtaskstaskid) |
+| The transcript renders markdown, assembled per capability | `react-markdown` + `remark-gfm` + `remark-math`/`rehype-katex`, with `shiki` and `mermaid` behind dynamic imports. One plugin per capability rather than an all-in-one component, so each can be pinned, reasoned about, and replaced alone | [06-frontend.md](06-frontend.md#markdown-in-the-transcript) |
+| Raw HTML stays off, permanently | The transcript renders model output, some of it quoted from fetched pages. No `rehype-raw`; the only `dangerouslySetInnerHTML` in the app is mermaid's own SVG, which mermaid sanitizes at `securityLevel: 'strict'` | `components/markdown/` |
+| Mermaid renders only after `turn_complete` | Half a table is a table; half a graph is a parse error, and an error box flashing for the two seconds a definition streams in is worse than a diagram arriving a moment late. It also keeps mermaid out of the streaming path | `components/markdown/CodeBlock.tsx` |
+| Highlighting is dual-theme output, not a runtime restyle | Shiki emits `--shiki-light` and `--shiki-dark` per token and a rule gated on `.dark` picks; the theme switch stays one class on `<html>` and nothing re-highlights. Mermaid cannot do this — its SVG is baked — so a diagram is the one thing that re-renders on a theme change | `index.css`, `components/markdown/Mermaid.tsx` |
+| Only the coach's messages are markdown | The learner's message is the record of what they sent. Rendering it would collapse their line breaks, reflow a pasted stack trace, and emphasise a literal `*` | `components/session/Transcript.tsx` |
+| Tokens, not HTML, from the highlighter | `codeToHtml` returns a string only `dangerouslySetInnerHTML` can render, and the transcript's whole rule is that model text never becomes markup. `codeToTokens` returns data. The one exception in the app is mermaid's own SVG, which it constructs and sanitizes itself | `lib/highlighter.ts` |
+| Shiki runs on the JavaScript regex engine | The default oniguruma engine's WebAssembly is most of the download and the only part a strict CSP would object to. Passing an engine also keeps `shiki/wasm` from ever being fetched, though the build still emits the chunk | `lib/highlighter.ts` |
+| The stub model answers one prompt in markdown | `Markdown.test.tsx` has to mock shiki and mermaid, so nothing local proves those `import()` chunks resolve in a *built* bundle — the failure mode docs/09 keeps a table of. `show me the formatting` gives the e2e something to render against the real image | `integrations/stub_model.py`, `e2e/markdown.spec.ts` |
+
+---
+
 ## M4 — Research (~1.5 weeks)
 
 - `search_agent` (grounded search) + `research_agent`; `fetch_url` with SSRF guards;

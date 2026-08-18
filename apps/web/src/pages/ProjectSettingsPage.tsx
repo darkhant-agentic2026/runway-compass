@@ -40,7 +40,7 @@ export default function ProjectSettingsPage() {
   const globalMinutes = me.data?.globalPrefs.defaultTaskMinutes
 
   if (!prefs) {
-    return <p className="text-muted-foreground p-6">Loading project settings…</p>
+    return <p className="p-6 text-muted-foreground">Loading project settings…</p>
   }
 
   return (
@@ -108,13 +108,15 @@ export default function ProjectSettingsPage() {
                 Inherit
               </Button>
             </div>
-            <p className="text-muted-foreground text-sm" data-testid="minutes-explainer">
+            <p className="text-sm text-muted-foreground" data-testid="minutes-explainer">
               {prefs.defaultTaskMinutes === null
                 ? `Inheriting ${globalMinutes ? formatMinutes(globalMinutes) : 'the global default'}`
                 : `Overriding the global default${
                     globalMinutes ? ` of ${formatMinutes(globalMinutes)}` : ''
                   }`}
-              {effective.data ? ` · in effect: ${formatMinutes(effective.data.defaultTaskMinutes)}` : ''}
+              {effective.data
+                ? ` · in effect: ${formatMinutes(effective.data.defaultTaskMinutes)}`
+                : ''}
             </p>
           </div>
 

@@ -69,7 +69,7 @@ the eight design choices everything else follows from.
 ./scripts/dev.sh up        # Firestore emulator + API + Vite
 ./scripts/dev.sh seed      # a demo user, project, and tasks
 ./scripts/dev.sh test      # api (pytest + emulator), web (vitest), e2e (Playwright)
-./scripts/dev.sh lint      # ruff, mypy, eslint, tsc, terraform fmt
+./scripts/dev.sh lint      # ruff, mypy, eslint, prettier, tsc, terraform fmt
 ```
 
 See [07-infra-deploy.md](docs/07-infra-deploy.md#prerequisites) for the toolchain, and

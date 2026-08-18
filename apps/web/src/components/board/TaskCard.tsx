@@ -59,9 +59,9 @@ export function TaskCard({
       ref={setNodeRef}
       style={{ transform: CSS.Translate.toString(transform), transition }}
       className={cn(
-        'bg-card rounded-lg border',
+        'rounded-lg border bg-card',
         isDragging && 'z-10 opacity-70 shadow-lg',
-        isNextUp && 'ring-progress-fill/60 ring-2',
+        isNextUp && 'ring-2 ring-progress-fill/60',
       )}
       data-testid="task-card"
       data-task-id={task.id}
@@ -70,7 +70,7 @@ export function TaskCard({
       <div className="flex items-start gap-2 p-3">
         <button
           type="button"
-          className="text-muted-foreground hover:text-foreground mt-0.5 cursor-grab disabled:cursor-not-allowed disabled:opacity-40"
+          className="mt-0.5 cursor-grab text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
           aria-label={`Reorder ${task.title}`}
           disabled={dragDisabled}
           {...attributes}
@@ -85,7 +85,7 @@ export function TaskCard({
             onClick={onToggleCollapsed}
             aria-expanded={!collapsed}
             aria-label={collapsed ? `Expand ${task.title}` : `Collapse ${task.title}`}
-            className="text-muted-foreground hover:text-foreground mt-0.5"
+            className="mt-0.5 text-muted-foreground hover:text-foreground"
           >
             {collapsed ? (
               <ChevronRight className="size-4" aria-hidden="true" />
@@ -114,17 +114,14 @@ export function TaskCard({
             </a>
             {isNextUp ? <Badge>Next up</Badge> : null}
             {task.origin === 'agent' ? (
-              <Badge
-                variant="secondary"
-                className="bg-agent-badge text-agent-badge-foreground"
-              >
+              <Badge variant="secondary" className="bg-agent-badge text-agent-badge-foreground">
                 <Sparkles className="size-3" aria-hidden="true" />
                 From your coach
               </Badge>
             ) : null}
           </div>
 
-          <div className="text-muted-foreground mt-1 flex flex-wrap items-center gap-2 text-sm">
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
             <span data-testid="estimate">{formatMinutes(task.estimatedMinutes)}</span>
             <span aria-hidden="true">·</span>
             <span data-testid="state-badge">{STATE_LABELS[task.state]}</span>
@@ -142,7 +139,7 @@ export function TaskCard({
                 completed={task.rollup.completedSubtasks}
                 total={task.rollup.subtaskCount}
               />
-              <span className="text-muted-foreground text-sm">
+              <span className="text-sm text-muted-foreground">
                 {pluralize(task.rollup.subtaskCount, 'subtask')} ·{' '}
                 {formatMinutes(task.rollup.totalEstimatedMinutes)}
               </span>

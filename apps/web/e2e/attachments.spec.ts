@@ -28,7 +28,11 @@ import { expect, test } from './fixtures'
 const PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='
 
-const PNG = { name: 'screenshot.png', mimeType: 'image/png', buffer: Buffer.from(PNG_BASE64, 'base64') }
+const PNG = {
+  name: 'screenshot.png',
+  mimeType: 'image/png',
+  buffer: Buffer.from(PNG_BASE64, 'base64'),
+}
 
 async function openWorkspace(page: Page, projectTitle: string, taskTitle: string) {
   await page.goto('/')

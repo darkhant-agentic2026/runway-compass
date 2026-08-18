@@ -26,7 +26,7 @@ export function ConnectionBanner() {
       // screen reader mid-sentence to say so would be worse than the disconnect.
       aria-live="polite"
       data-testid="connection-banner"
-      className="border-amber-500/40 bg-amber-500/10 text-foreground flex items-center gap-2 rounded-md border px-3 py-2 text-sm"
+      className="flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-foreground"
     >
       <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden="true" />
       <span>

@@ -210,7 +210,7 @@ handles cross-instance reconnects.
 
 ```
 api:  uv sync → ruff check → ruff format --check → mypy → pytest (Firestore emulator service)
-web:  npm ci → tsc --noEmit → eslint → vitest run --coverage → vite build
+web:  npm ci → prettier --check → tsc --noEmit → eslint → vitest run --coverage → vite build
 e2e:  docker compose (single app image + Firestore emulator) → playwright test
 tf:   terraform fmt -check → terraform validate → tflint
 ```
@@ -380,7 +380,40 @@ with a missing-shared-object error rather than at install time.
 | `./scripts/dev.sh seed` | Seeds a demo user, project, and 8 tasks |
 | `./scripts/dev.sh tick [--loop 60s]` | Calls `/internal/tick` locally (OIDC bypassed when `ENV=local`) |
 | `./scripts/dev.sh test [api\|web\|e2e]` | Test subsets |
-| `./scripts/dev.sh lint` | `ruff check --fix`, `ruff format`, `eslint --fix`, `tsc` |
+| `./scripts/dev.sh lint` | `ruff check --fix`, `ruff format`, `mypy`, `eslint --fix`, `prettier --write`, `tsc`, `terraform fmt` |
+
+### Formatting and linting
+
+Two tools per language, with one job each: a **linter** that finds problems and a
+**formatter** that has the last word on layout. Python is `ruff check --fix` then
+`ruff format`; TypeScript is `eslint --fix` then `prettier --write`.
+
+**The formatter runs last, in both languages.** An `--fix` rewrites code — it rewraps an
+import into `import { type Foo }`, deletes a variable, changes a call — and whatever it
+emits is formatted to the fixer's taste rather than to the project's. Running the
+formatter first leaves those rewrites unformatted until the next run, which shows up as a
+`lint` that is not idempotent: green, then a dirty tree.
+
+`eslint-config-prettier` is the **last** entry in `eslint.config.js`. It disables every
+ESLint rule with an opinion about whitespace, so the two tools cannot produce a fight that
+`--fix` and `--write` take turns undoing. Nothing formats through ESLint here — there is no
+`eslint-plugin-prettier` and no `prettier/prettier` rule, because routing a formatter
+through the linter makes every layout difference an error in the editor and slows lint by
+the cost of a full format.
+
+**Prettier's remit stops at `apps/web`.** `.prettierignore` excludes `docs/`, every other
+`*.md`, `infra/`, and `apps/api/`. The design documents are hand-wrapped prose with tables
+aligned for reading in a terminal; reflowing them would produce a large diff that says
+nothing. Configuration lives in `apps/web/.prettierrc.json` and matches the style the
+codebase was already written in — no semicolons, single quotes, a 96-column width —
+so adopting it was a churn commit about class-attribute ordering rather than a rewrite.
+
+`prettier-plugin-tailwindcss` sorts `className` into Tailwind's canonical order. It is a
+formatter plugin rather than a lint rule for the reason above, and it is what makes a
+duplicated or shadowed utility visible in review instead of buried mid-string.
+
+CI runs the check halves — `ruff format --check`, `prettier --check` — so a branch that
+skipped the local gate fails on the formatting rather than landing it.
 
 Local model access uses the **Gemini API** with a developer key in `.env.local` (fastest
 onboarding); production uses **Vertex AI** with the Cloud Run service account (no key to

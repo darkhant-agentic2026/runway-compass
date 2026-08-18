@@ -6,7 +6,7 @@
 #   ./scripts/dev.sh seed                  a demo user, project, and 8 tasks
 #   ./scripts/dev.sh tick [--loop 60s]     call /internal/tick locally
 #   ./scripts/dev.sh test [api|web|e2e]    test subsets
-#   ./scripts/dev.sh lint                  ruff --fix, ruff format, eslint --fix, tsc
+#   ./scripts/dev.sh lint                  ruff, mypy, eslint --fix, prettier, tsc, tf fmt
 #   ./scripts/dev.sh doctor                check the machine prerequisites
 #   ./scripts/dev.sh gen-ordering-vectors  regenerate the cross-language order-key vectors
 #   ./scripts/dev.sh gen-event-vectors     regenerate the stored-ADK-event vectors
@@ -237,6 +237,13 @@ cmd_lint() {
   (cd "$API_DIR" && uv run mypy)
   bold "== eslint =="
   (cd "$WEB_DIR" && npm run lint:fix)
+  # After eslint, never before it: an `--fix` rewrites code — an import folded into
+  # `{ type Foo }`, a rule's autofix — and whatever it emits is laid out to the fixer's
+  # taste. Formatting first leaves those rewrites unformatted until the next run, which
+  # is a `lint` that reports green and leaves a dirty tree.
+  # docs/07-infra-deploy.md#formatting-and-linting
+  bold "== prettier =="
+  (cd "$WEB_DIR" && npm run format)
   bold "== tsc =="
   (cd "$WEB_DIR" && npm run typecheck)
   bold "== terraform =="

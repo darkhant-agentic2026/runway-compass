@@ -61,7 +61,10 @@ function runInlineScriptLogic(): { dark: boolean; colorScheme: string } {
 function resetStore(): void {
   useThemeStore.setState({
     pref: readStoredPref(),
-    resolved: resolveTheme(readStoredPref(), window.matchMedia('(prefers-color-scheme: dark)').matches),
+    resolved: resolveTheme(
+      readStoredPref(),
+      window.matchMedia('(prefers-color-scheme: dark)').matches,
+    ),
   })
 }
 
@@ -172,11 +175,9 @@ describe('persistence', () => {
   })
 
   it('falls back to light rather than crashing when localStorage throws', () => {
-    const getItem = vi
-      .spyOn(Storage.prototype, 'getItem')
-      .mockImplementation(() => {
-        throw new Error('private mode')
-      })
+    const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('private mode')
+    })
     const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new Error('private mode')
     })

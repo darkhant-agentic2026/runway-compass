@@ -40,7 +40,7 @@ export default function SettingsPage() {
         </CardHeader>
         <CardContent>
           <ThemeToggle />
-          <p className="text-muted-foreground mt-3 text-sm">
+          <p className="mt-3 text-sm text-muted-foreground">
             Saved on this device, so the sign-in screen matches too.
           </p>
         </CardContent>
@@ -70,7 +70,7 @@ export default function SettingsPage() {
                     }
                   }}
                 />
-                <p className="text-muted-foreground text-sm">
+                <p className="text-sm text-muted-foreground">
                   A project can override this in its own settings.
                 </p>
               </div>
@@ -150,7 +150,7 @@ export default function SettingsPage() {
         <CardHeader>
           <CardTitle>What your coach knows about you</CardTitle>
         </CardHeader>
-        <CardContent className="text-muted-foreground space-y-2 text-sm">
+        <CardContent className="space-y-2 text-sm text-muted-foreground">
           <p>
             The coach builds this picture as you work together. Editing it arrives with the
             learner model (M6); nothing writes to it yet.

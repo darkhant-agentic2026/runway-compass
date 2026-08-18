@@ -96,9 +96,7 @@ describe('the stored spelling, spelled out', () => {
       }),
     ])
 
-    expect(messages[0]?.attachments).toEqual([
-      { mimeType: 'image/png', filename: 'shot.png' },
-    ])
+    expect(messages[0]?.attachments).toEqual([{ mimeType: 'image/png', filename: 'shot.png' }])
   })
 
   it('still reads camelCase, so a future ADK change is not a regression', () => {
@@ -119,14 +117,21 @@ function userText(seq: number, text: string): SessionEvent {
 
 describe('text', () => {
   it('orders by seq regardless of input order', () => {
-    const messages = toMessages([userText(3, 'third'), userText(1, 'first'), userText(2, 'second')])
+    const messages = toMessages([
+      userText(3, 'third'),
+      userText(1, 'first'),
+      userText(2, 'second'),
+    ])
 
     expect(messages.map((message) => message.text)).toEqual(['first', 'second', 'third'])
   })
 
   it('joins several text parts into one message', () => {
     const messages = toMessages([
-      event(1, { author: 'coach', content: { parts: [{ text: 'Hello' }, { text: ', world' }] } }),
+      event(1, {
+        author: 'coach',
+        content: { parts: [{ text: 'Hello' }, { text: ', world' }] },
+      }),
     ])
 
     expect(messages[0]?.text).toBe('Hello, world')
@@ -144,13 +149,17 @@ describe('text', () => {
   })
 
   it('reads the role from the author when the content does not carry one', () => {
-    const messages = toMessages([event(1, { author: 'user', content: { parts: [{ text: 'hi' }] } })])
+    const messages = toMessages([
+      event(1, { author: 'user', content: { parts: [{ text: 'hi' }] } }),
+    ])
 
     expect(messages[0]?.role).toBe('user')
   })
 
   it('treats an unknown author as the model rather than the user', () => {
-    const messages = toMessages([event(1, { author: 'coach_agent', content: { parts: [{ text: 'x' }] } })])
+    const messages = toMessages([
+      event(1, { author: 'coach_agent', content: { parts: [{ text: 'x' }] } }),
+    ])
 
     expect(messages[0]?.role).toBe('model')
   })
@@ -182,7 +191,10 @@ describe('what is not a message', () => {
     // Tool activity is a chip during the stream, not part of the transcript after it
     // (docs/06-frontend.md).
     const messages = toMessages([
-      event(1, { author: 'coach', content: { parts: [{ function_call: { name: 'add_task' } }] } }),
+      event(1, {
+        author: 'coach',
+        content: { parts: [{ function_call: { name: 'add_task' } }] },
+      }),
     ])
 
     expect(messages).toHaveLength(0)
@@ -412,9 +424,7 @@ describe('what the coach did, after the stream is gone', () => {
     ])
 
     expect(messages).toHaveLength(1)
-    expect(messages[0]?.tools).toEqual([
-      { callId: 'adk-5', name: 'discard_task', ok: null },
-    ])
+    expect(messages[0]?.tools).toEqual([{ callId: 'adk-5', name: 'discard_task', ok: null }])
   })
 
   it('drops the contentless event the prompt builder writes every turn', () => {

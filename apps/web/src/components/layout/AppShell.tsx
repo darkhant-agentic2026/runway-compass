@@ -34,7 +34,7 @@ export function AppShell() {
             proving none of that.
           */}
           <span
-            className="text-muted-foreground hidden max-w-[16rem] truncate text-sm sm:inline"
+            className="hidden max-w-[16rem] truncate text-sm text-muted-foreground sm:inline"
             title={me.data?.email ?? undefined}
             data-testid="signed-in-email"
           >

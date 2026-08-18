@@ -214,10 +214,12 @@ describe('the resume worklist', () => {
 
 describe('frame parsing at the boundary', () => {
   it('accepts a well-formed frame', () => {
-    expect(parseServerFrame({ type: 'delta', turnId: TURN, seq: 1, text: 'hi' })).toMatchObject({
-      type: 'delta',
-      text: 'hi',
-    })
+    expect(parseServerFrame({ type: 'delta', turnId: TURN, seq: 1, text: 'hi' })).toMatchObject(
+      {
+        type: 'delta',
+        text: 'hi',
+      },
+    )
   })
 
   it('parses a JSON string, which is what arrives on the wire', () => {

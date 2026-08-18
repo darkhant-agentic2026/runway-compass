@@ -22,9 +22,12 @@ import pytest
 from coach.agents.prompt import render_prefs
 from coach.integrations.stub_model import (
     DEFAULT_BUDGET_MINUTES,
+    MARKDOWN_REPLY,
+    _prose_reply,
     budget_minutes,
     requested_minutes,
     split_plan,
+    stub_reply,
 )
 from coach.services.models import EffectivePrefs
 
@@ -118,3 +121,28 @@ async def test_the_tool_loop_ends_after_the_split(container, client: Any) -> Non
         if "function_call" in part
     ]
     assert calls == ["add_task", "split_task"]
+
+
+def _request(text: str) -> Any:
+    """The smallest thing `_prose_reply` reads: a request with one user message."""
+    from types import SimpleNamespace
+
+    from google.genai import types
+
+    return SimpleNamespace(contents=[types.Content(role="user", parts=[types.Part(text=text)])])
+
+
+def test_only_one_prompt_switches_the_reply_to_markdown() -> None:
+    """The markdown sample is opt-in, and every other prompt still gets prose.
+
+    The e2e that renders tables, equations, code, and a diagram needs the stub to emit
+    them; every flow written before it asserts `stub_reply` character for character. So
+    what is pinned here is the *boundary*: one phrase crosses it, and the phrasings that
+    surround the other flows do not.
+    """
+    assert _prose_reply(_request("show me the formatting")) == MARKDOWN_REPLY
+    assert "| Step | Minutes |" in MARKDOWN_REPLY
+    assert "```mermaid" in MARKDOWN_REPLY
+
+    for prompt in ["roughly 3 hours of work", "discard the first one", "formatting"]:
+        assert _prose_reply(_request(prompt)) == stub_reply(prompt)

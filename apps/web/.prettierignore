@@ -1,0 +1,18 @@
+# Build output and dependencies.
+dist
+coverage
+node_modules
+playwright-report
+test-results
+
+# npm owns this file's formatting; reformatting it churns every install.
+package-lock.json
+
+# Generated cross-language fixtures. `dev.sh gen-ordering-vectors` and
+# `gen-event-vectors` write them from the Python side, so a reformat here is undone by
+# the next regeneration and shows up as a spurious diff (CLAUDE.md).
+src/lib/ordering-vectors.json
+src/lib/session-event-vectors.json
+
+# Markdown is prose. See the root .prettierignore for the reasoning.
+*.md

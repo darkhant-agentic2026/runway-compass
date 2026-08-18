@@ -42,25 +42,20 @@ export function ConfirmationPrompt({
 
   return (
     <div
-      className="bg-muted/40 m-3 space-y-2 rounded-lg border p-3"
+      className="m-3 space-y-2 rounded-lg border bg-muted/40 p-3"
       data-testid="confirmation-prompt"
       role="group"
       aria-label={labels.question}
     >
       <p className="text-sm font-medium">{labels.question}</p>
       {describe(pending) ? (
-        <p className="text-muted-foreground text-sm">{describe(pending)}</p>
+        <p className="text-sm text-muted-foreground">{describe(pending)}</p>
       ) : null}
       <div className="flex flex-wrap gap-2">
         <Button size="sm" disabled={disabled} onClick={() => onAnswer(false)}>
           Keep it
         </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={disabled}
-          onClick={() => onAnswer(true)}
-        >
+        <Button size="sm" variant="outline" disabled={disabled} onClick={() => onAnswer(true)}>
           {labels.confirm}
         </Button>
       </div>

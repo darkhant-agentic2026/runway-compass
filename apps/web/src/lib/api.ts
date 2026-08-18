@@ -285,11 +285,9 @@ export const api = {
     }),
 
   cancelTurn: (sessionId: string, turnId: string) =>
-    request(
-      `/api/sessions/${sessionId}/turns/${turnId}/cancel`,
-      turnStatusResponseSchema,
-      { method: 'POST' },
-    ),
+    request(`/api/sessions/${sessionId}/turns/${turnId}/cancel`, turnStatusResponseSchema, {
+      method: 'POST',
+    }),
 
   getTurn: (turnId: string) => request(`/api/turns/${turnId}`, turnStatusResponseSchema),
 
@@ -317,12 +315,13 @@ export const api = {
       `/api/sessions/${sessionId}/events/${seq}/attachments/${index}`,
       { headers: token ? { Authorization: `Bearer ${token}` } : {} },
     )
-    if (!response.ok) throw new ApiError(response.status, {
-      type: 'about:blank',
-      title: response.statusText || 'Request failed',
-      status: response.status,
-      detail: '',
-    })
+    if (!response.ok)
+      throw new ApiError(response.status, {
+        type: 'about:blank',
+        title: response.statusText || 'Request failed',
+        status: response.status,
+        detail: '',
+      })
     return response.blob()
   },
 

@@ -37,7 +37,7 @@ export function ToolChips({ tools }: { tools: ChipView[] }) {
         <li
           key={chip.id}
           data-tool={chip.name}
-          className="bg-muted text-muted-foreground flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs"
+          className="flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground"
         >
           {!chip.done ? (
             <Loader2 className="size-3 animate-spin" aria-hidden="true" />
@@ -46,7 +46,7 @@ export function ToolChips({ tools }: { tools: ChipView[] }) {
           ) : chip.ok ? (
             <Check className="size-3" aria-hidden="true" />
           ) : (
-            <X className="text-destructive size-3" aria-hidden="true" />
+            <X className="size-3 text-destructive" aria-hidden="true" />
           )}
           <span>
             {labelForTool(chip.name)}

@@ -3,7 +3,7 @@ name: CI
 # docs/07-infra-deploy.md#ciyml-every-pr:
 #
 #   api:  uv sync -> ruff check -> ruff format --check -> mypy -> pytest (Firestore emulator)
-#   web:  npm ci -> tsc --noEmit -> eslint -> vitest run --coverage -> vite build
+#   web:  npm ci -> prettier --check -> tsc --noEmit -> eslint -> vitest run --coverage -> vite build
 #   e2e:  docker compose (single app image + Firestore emulator) -> playwright test
 #   tf:   terraform fmt -check -> terraform validate -> tflint
 #
@@ -104,6 +104,12 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
 
       - run: npm ci
+
+      # The check half of the local gate's `prettier --write`. A branch that skipped
+      # `dev.sh lint` fails here on layout rather than landing it
+      # (docs/07-infra-deploy.md#formatting-and-linting).
+      - name: prettier --check
+        run: npm run format:check
 
       - name: tsc --noEmit
         run: npm run typecheck

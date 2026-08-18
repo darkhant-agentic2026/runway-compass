@@ -141,6 +141,15 @@ Stack: Vitest, React Testing Library, MSW for HTTP, a fake WebSocket server for 
   back on a 500; the optimistic fractional index equals the server's.
 - **Board filters and rollups** — hide-completed default on; parent card renders
   "4 subtasks · 2 h 30 m" from `rollup`.
+- **Markdown rendering** — a GFM table becomes a `<table>`, `$…$` becomes KaTeX output, a
+  fenced block keeps its code whether or not the highlighter ever loads, and raw HTML in a
+  message stays inert text. Plus the streaming rule: a ` ```mermaid ` fence is a code block
+  while its turn is generating and a diagram once it has settled
+  ([06-frontend.md](06-frontend.md#markdown-in-the-transcript)). The dynamic imports are
+  mocked, so the tests assert *this* module's decisions rather than shiki's and mermaid's
+  output.
+- **Composite task workspace** — a parent renders one card per subtask with its state
+  actions, and none of them is a link; a leaf task renders no subtask block at all.
 - **Research report rendering** — required and optional blocks are distinct landmarks;
   optional items render no completion checkbox; the budget meter sums only required items.
   This is a product requirement, so it gets an explicit regression test.
@@ -197,6 +206,20 @@ prompt that produced it. It reads the task budget out of the *rendered system in
 and plans from *this turn's* function responses — the second being what makes the tool
 loop terminate. Both are pinned by `tests/test_stub_model.py`, because a stub is one of
 the three surfaces whose failure mode is silent success.
+
+**And it answers one prompt in markdown** (`show me the formatting`), which is the only
+way the transcript's renderer can be tested where it actually has to work.
+`Markdown.test.tsx` mocks shiki and mermaid — it has to, or it would be asserting things
+about someone else's grammar — so what no vitest run can see is whether those two
+`import()` chunks are emitted, served, and resolved in a *built* bundle. `markdown.spec.ts`
+asserts a rendered table, KaTeX output, a `code.shiki` token carrying both theme
+variables, and an `<svg>` from mermaid, against the image the e2e stack serves.
+
+**A `mermaid` fence is highlighted code for as long as the turn is streaming**, which is
+the deferral rule and also a trap for the spec: shiki has a mermaid grammar, so two blocks
+are highlighted for those seconds and a bare `code.shiki` selector is ambiguous exactly
+until the turn settles. The spec waits for the diagram first, and scopes the rest by
+language.
 
 Sign-in is seeded rather than performed: the app under test runs with `ENV=local`, and the
 Playwright fixture injects a `dev:<uid>` token so every flow starts authenticated. No flow

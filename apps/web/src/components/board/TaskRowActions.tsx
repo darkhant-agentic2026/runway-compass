@@ -119,7 +119,7 @@ function PostponeUntilDialog({
     <div
       role="dialog"
       aria-label="Postpone until"
-      className="bg-card fixed inset-x-4 top-1/3 z-50 mx-auto max-w-sm rounded-lg border p-4 shadow-lg"
+      className="fixed inset-x-4 top-1/3 z-50 mx-auto max-w-sm rounded-lg border bg-card p-4 shadow-lg"
     >
       <label className="block text-sm font-medium" htmlFor="postpone-until">
         Postpone until
@@ -127,7 +127,7 @@ function PostponeUntilDialog({
       <input
         id="postpone-until"
         type="date"
-        className="border-input bg-background mt-2 w-full rounded-md border px-3 py-2 text-sm"
+        className="mt-2 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
         value={value}
         min={today}
         onChange={(event) => setValue(event.target.value)}

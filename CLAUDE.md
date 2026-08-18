@@ -31,7 +31,7 @@ a broken `main`, and what makes abandoning an approach cost nothing.
 **Commit only after the local gate passes, all of it:**
 
 ```
-./scripts/dev.sh lint            # ruff --fix, ruff format, mypy, eslint --fix, tsc, terraform fmt
+./scripts/dev.sh lint            # ruff --fix, ruff format, mypy, eslint --fix, prettier --write, tsc, terraform fmt
 ./scripts/dev.sh test            # api, then web, then e2e
 ```
 
@@ -217,9 +217,14 @@ which is after collection. It also usually has ADC, which CI does not. Keep clou
 constructors — `coach/core/lazy.py` explains why and
 `tests/test_import_without_credentials.py` pins it.
 
-**There is no Prettier in this repo.** Formatting is `ruff format` and `eslint --fix`, both
-run by `dev.sh lint`. Running `npx prettier --write` on a `.ts` file rewrites it in a style
-nothing else here uses (semicolons, double quotes) and eslint will not put it back.
+**Prettier formats `apps/web`; ESLint only lints it.** Both run from `dev.sh lint`, and
+the order there is deliberate: `eslint --fix` first, `prettier --write` second, because a
+fixer rewrites code and the formatter has to be the last thing that touches it.
+`eslint-config-prettier` is the last entry in `eslint.config.js`, so no rule has an opinion
+about layout; do not add `eslint-plugin-prettier`. **Prettier's remit stops at
+`apps/web`** — `.prettierignore` excludes `docs/`, every other `*.md`, `infra/`, and
+`apps/api/`, whose prose is hand-wrapped and whose tables are aligned for reading. Python
+formatting is still `ruff format`. `docs/07-infra-deploy.md#formatting-and-linting`
 
 **Reach for `dev.sh` before reaching for the underlying tool.** `dev.sh test api` starts the
 emulator and exports `ENV`, `GOOGLE_CLOUD_PROJECT`, and `FIRESTORE_EMULATOR_HOST` before

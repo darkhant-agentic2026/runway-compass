@@ -215,10 +215,7 @@ interface Ok {
   ok?: unknown
 }
 
-function toolsOf(
-  parts: EventPart[],
-  outcomes: Map<string, boolean | null>,
-): TranscriptTool[] {
+function toolsOf(parts: EventPart[], outcomes: Map<string, boolean | null>): TranscriptTool[] {
   const tools: TranscriptTool[] = []
   for (const part of parts) {
     const call = part.function_call ?? part.functionCall

@@ -101,12 +101,12 @@ export function AttachmentPreview({
           </a>
         ) : (
           <div
-            className="bg-muted/60 h-24 w-40 animate-pulse rounded-md border"
+            className="h-24 w-40 animate-pulse rounded-md border bg-muted/60"
             aria-label={`Loading ${label}`}
             data-testid="attachment-loading"
           />
         )}
-        <span className="text-muted-foreground mt-1 block truncate text-xs">{label}</span>
+        <span className="mt-1 block truncate text-xs text-muted-foreground">{label}</span>
       </li>
     )
   }

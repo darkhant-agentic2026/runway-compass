@@ -57,7 +57,9 @@ test('an unauthenticated visitor is sent to the sign-in screen', async ({ page }
   // exercises the route guard's signed-out branch.
   await page.goto('/')
   await expect(page).toHaveURL(/\/login$/)
-  await expect(page.getByRole('button', { name: 'Continue as the local dev user' })).toBeVisible()
+  await expect(
+    page.getByRole('button', { name: 'Continue as the local dev user' }),
+  ).toBeVisible()
 })
 
 test('sign in, create a project, and see it on the list', async ({ page }) => {
@@ -105,9 +107,7 @@ test('manage tasks by hand: add, start, complete, and the default filter hides i
   await expect(page.getByTestId('board')).toContainText('First task')
 })
 
-test('reordering with the keyboard fallback survives a reload', async ({
-  signedIn: page,
-}) => {
+test('reordering with the keyboard fallback survives a reload', async ({ signedIn: page }) => {
   // The reorder is optimistic and computes the fractional index client-side. Reloading
   // proves the server independently agreed on the same position, which is the whole
   // point of sharing the algorithm.
@@ -117,9 +117,11 @@ test('reordering with the keyboard fallback survives a reload', async ({
   await addTask(page, 'Gamma')
 
   const titles = () =>
-    page.getByTestId('task-card').evaluateAll((cards) =>
-      cards.map((card) => card.querySelector('.font-medium')?.textContent?.trim() ?? ''),
-    )
+    page
+      .getByTestId('task-card')
+      .evaluateAll((cards) =>
+        cards.map((card) => card.querySelector('.font-medium')?.textContent?.trim() ?? ''),
+      )
 
   expect(await titles()).toEqual(['Alpha', 'Beta', 'Gamma'])
 
@@ -175,4 +177,41 @@ test('the theme choice survives a reload and is applied before paint', async ({
   // on the very first evaluation after navigation.
   await expect(page.locator('html')).toHaveClass(/dark/)
   expect(await page.evaluate(() => document.documentElement.style.colorScheme)).toBe('dark')
+})
+
+test('a composite task shows its subtasks in the workspace, and completing one lands on the board', async ({
+  signedIn: page,
+}) => {
+  // The half of the split that the board test above cannot see: the task's own screen.
+  // `GET /api/tasks/{id}` has always returned `subtasks[]`, so this is about the wiring —
+  // the cards, the fact that none of them navigates, and the mutation reaching both the
+  // detail query the workspace reads and the board query it does not.
+  await createProject(page, 'Composite')
+  await addTask(page, 'Big piece', 120)
+
+  await page.getByRole('button', { name: 'Actions for Big piece' }).click()
+  await page.getByRole('menuitem', { name: 'Split into subtasks…' }).click()
+  await expect(
+    page.getByTestId('task-card').filter({ hasText: 'Big piece' }).getByTestId('rollup'),
+  ).toContainText('2 subtasks')
+
+  await page.getByTestId('open-workspace').filter({ hasText: 'Big piece' }).click()
+
+  const cards = page.getByTestId('subtask-cards').getByTestId('subtask-card')
+  await expect(cards).toHaveCount(2)
+  await expect(page.getByTestId('subtask-rollup')).toContainText('0 of 2 subtasks done')
+  // A subtask has no workspace of its own, so nothing among the cards is a link — the
+  // way back to the board is outside them.
+  await expect(page.getByTestId('subtask-cards').getByRole('link')).toHaveCount(0)
+
+  // `not_started` → `current` → `completed`: the quick action offers whichever is legal,
+  // which is the reason it is not a bare checkbox.
+  await cards.first().getByRole('button', { name: 'Start' }).click()
+  await cards.first().getByRole('button', { name: 'Complete' }).click()
+  await expect(page.getByTestId('subtask-rollup')).toContainText('1 of 2 subtasks done')
+
+  await page.getByRole('link', { name: 'Back to the board' }).click()
+  const parent = page.getByTestId('task-card').filter({ hasText: 'Big piece' })
+  await expect(parent.getByTestId('rollup')).toContainText('2 subtasks')
+  await expect(parent.getByTestId('subtask')).toHaveCount(1)
 })

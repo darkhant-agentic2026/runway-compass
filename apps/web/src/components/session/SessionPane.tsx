@@ -137,7 +137,7 @@ export function SessionPane({
 
       {dragDepth > 0 ? (
         <div
-          className="bg-background/85 border-primary pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg border-2 border-dashed"
+          className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-primary bg-background/85"
           data-testid="drop-overlay"
         >
           <p className="text-sm font-medium">Drop to attach</p>
@@ -149,7 +149,7 @@ export function SessionPane({
       </div>
 
       {emptyHint && messages.length === 0 && !events.isPending ? (
-        <p className="text-muted-foreground px-4 pt-3 text-sm" data-testid="session-hint">
+        <p className="px-4 pt-3 text-sm text-muted-foreground" data-testid="session-hint">
           {emptyHint}
         </p>
       ) : null}

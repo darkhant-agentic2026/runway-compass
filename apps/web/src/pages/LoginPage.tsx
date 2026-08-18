@@ -67,9 +67,9 @@ export default function LoginPage() {
           <CardTitle>Self-Study Coach</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <p className="text-muted-foreground text-sm">
-            Turn a technical goal into bite-sized tasks, with a coach that prepares the
-            material before you sit down.
+          <p className="text-sm text-muted-foreground">
+            Turn a technical goal into bite-sized tasks, with a coach that prepares the material
+            before you sit down.
           </p>
           <Button
             className="w-full"
@@ -82,14 +82,14 @@ export default function LoginPage() {
           {error ? (
             <p
               role="alert"
-              className="text-destructive border-destructive/30 bg-destructive/5 rounded-md border p-2 text-xs break-words"
+              className="rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs break-words text-destructive"
               data-testid="signin-error"
             >
               {error}
             </p>
           ) : null}
           {auth.mode === 'dev' ? (
-            <p className="text-muted-foreground text-xs">
+            <p className="text-xs text-muted-foreground">
               Local development: this signs in with a <code>dev:</code> token, which the API
               accepts only when <code>ENV=local</code>.
             </p>

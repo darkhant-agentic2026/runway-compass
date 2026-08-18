@@ -16,6 +16,7 @@ import {
   createQueryClient,
   queryKeys,
   useReorderTask,
+  useSetSubtaskState,
   useSetTaskState,
   useStartTurn,
 } from '@/features/queries'
@@ -133,6 +134,78 @@ describe('useSetTaskState', () => {
   })
 })
 
+describe('useSetSubtaskState', () => {
+  const PARENT = 'k_parent'
+
+  function setupDetail() {
+    const queryClient = createQueryClient()
+    const parent = makeParent({ id: PARENT }, [
+      makeTask({ id: 'k_one', state: 'current' }),
+      makeTask({ id: 'k_two', state: 'not_started' }),
+    ])
+    queryClient.setQueryData(queryKeys.task(PARENT), parent)
+    // The get-or-create POST that shares the `['task', id]` prefix. It is here precisely
+    // so the invalidation below can be observed to leave it alone.
+    queryClient.setQueryData(queryKeys.taskSession(PARENT), { id: 's_1' })
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    )
+    const read = () => queryClient.getQueryData<TaskWithSubtasks>(queryKeys.task(PARENT))!
+    return { queryClient, wrapper, read }
+  }
+
+  it('patches the workspace’s own cache entry, which the board mutation never touches', async () => {
+    vi.spyOn(api, 'setTaskState').mockResolvedValue({
+      task: makeTask(),
+      parent: null,
+      project: null,
+    })
+
+    const { wrapper, read } = setupDetail()
+    const { result } = renderHook(() => useSetSubtaskState(PARENT, PROJECT_ID), { wrapper })
+
+    result.current.mutate({ taskId: 'k_one', state: 'completed' })
+
+    await waitFor(() => {
+      expect(read().subtasks.find((task) => task.id === 'k_one')?.state).toBe('completed')
+    })
+  })
+
+  it('rolls back on a server error', async () => {
+    vi.spyOn(api, 'setTaskState').mockRejectedValue(new Error('boom'))
+
+    const { wrapper, read } = setupDetail()
+    const { result } = renderHook(() => useSetSubtaskState(PARENT, PROJECT_ID), { wrapper })
+
+    result.current.mutate({ taskId: 'k_two', state: 'current' })
+
+    await waitFor(() => expect(result.current.isError).toBe(true))
+    expect(read().subtasks.find((task) => task.id === 'k_two')?.state).toBe('not_started')
+    expect(read().subtasks.find((task) => task.id === 'k_one')?.state).toBe('current')
+  })
+
+  it('invalidates the task detail without disturbing the session under the same prefix', async () => {
+    vi.spyOn(api, 'setTaskState').mockResolvedValue({
+      task: makeTask(),
+      parent: null,
+      project: null,
+    })
+
+    const { wrapper, queryClient } = setupDetail()
+    const { result } = renderHook(() => useSetSubtaskState(PARENT, PROJECT_ID), { wrapper })
+
+    result.current.mutate({ taskId: 'k_two', state: 'current' })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    // The decision rather than the result (CLAUDE.md): `queryKeys.taskSession` is
+    // `['task', id, 'session']`, so a *prefix* invalidation here would re-POST
+    // `POST /api/tasks/{id}/session` on every click on a subtask's Complete button. Both
+    // spellings pass a test that only checks the rows updated.
+    expect(queryClient.getQueryState(queryKeys.task(PARENT))?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(queryKeys.taskSession(PARENT))?.isInvalidated).toBe(false)
+  })
+})
+
 describe('useStartTurn', () => {
   const SESSION = 's_1'
   const key = queryKeys.sessionEvents(SESSION)
@@ -153,8 +226,7 @@ describe('useStartTurn', () => {
     let resolve: (() => void) | undefined
     vi.spyOn(api, 'startTurn').mockReturnValue(
       new Promise((r) => {
-        resolve = () =>
-          r({ turnId: 't_1', sessionId: SESSION, status: 'running', startSeq: 0 })
+        resolve = () => r({ turnId: 't_1', sessionId: SESSION, status: 'running', startSeq: 0 })
       }),
     )
     vi.spyOn(getSocket(), 'subscribe').mockImplementation(() => {})
@@ -206,7 +278,11 @@ describe('useStartTurn', () => {
 
     const { queryClient, wrapper, read } = setupSession()
     queryClient.setQueryData(key, [
-      { seq: 7, eventId: 'e_7', event: { author: 'coach', content: { parts: [{ text: 'earlier' }] } } },
+      {
+        seq: 7,
+        eventId: 'e_7',
+        event: { author: 'coach', content: { parts: [{ text: 'earlier' }] } },
+      },
     ])
     const { result } = renderHook(() => useStartTurn(SESSION), { wrapper })
 

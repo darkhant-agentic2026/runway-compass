@@ -14,6 +14,7 @@
 
 import { useEffect, useRef } from 'react'
 
+import { Markdown } from '@/components/markdown/Markdown'
 import { AttachmentPreview } from '@/components/session/AttachmentPreview'
 import { ToolChips, type ChipView } from '@/components/session/ToolChips'
 import type { TranscriptMessage } from '@/lib/transcript'
@@ -71,7 +72,7 @@ export function Transcript({
   }, [messages.length, live?.text])
 
   if (pending && messages.length === 0) {
-    return <p className="text-muted-foreground p-4">Loading the conversation…</p>
+    return <p className="p-4 text-muted-foreground">Loading the conversation…</p>
   }
 
   const empty = messages.length === 0 && !live
@@ -83,7 +84,7 @@ export function Transcript({
       data-testid="transcript"
     >
       {empty ? (
-        <p className="text-muted-foreground rounded-lg border border-dashed p-6 text-center">
+        <p className="rounded-lg border border-dashed p-6 text-center text-muted-foreground">
           Nothing here yet. Tell your coach what you are working on.
         </p>
       ) : null}
@@ -98,7 +99,7 @@ export function Transcript({
           <ToolChips tools={settledChips(message)} />
           {message.text || message.attachments.length > 0 ? (
             <Bubble role={message.role}>
-              {message.text ? <p className="whitespace-pre-wrap">{message.text}</p> : null}
+              {message.text ? <MessageText role={message.role} text={message.text} /> : null}
               {message.attachments.length > 0 ? (
                 <ul
                   className={cn('flex flex-wrap items-end gap-2', message.text && 'mt-2')}
@@ -135,9 +136,9 @@ export function Transcript({
                 screen-reader spam. The container is the whole bubble, so a reader
                 announces settled text rather than each arriving fragment.
               */}
-              <p className="whitespace-pre-wrap" aria-live="polite" aria-atomic="false">
-                {live.text}
-              </p>
+              <div aria-live="polite" aria-atomic="false">
+                <Markdown text={live.text} streaming={live.status === 'running'} />
+              </div>
             </Bubble>
           ) : live.status === 'running' ? (
             <Bubble role="model">
@@ -147,7 +148,7 @@ export function Transcript({
             </Bubble>
           ) : null}
           {live.status === 'error' && live.error ? (
-            <p role="alert" className="text-destructive text-sm">
+            <p role="alert" className="text-sm text-destructive">
               {live.error.message}
               {live.error.retryable ? ' You can try again.' : ''}
             </p>
@@ -156,6 +157,21 @@ export function Transcript({
       ) : null}
     </div>
   )
+}
+
+/**
+ * A message's text.
+ *
+ * **The coach's messages are markdown; the learner's are what they typed.** Rendering a
+ * user's message as markdown would collapse the line breaks they put in, silently reflow
+ * a pasted stack trace, and turn a `*` they meant literally into emphasis — the transcript
+ * is the record of what they sent, so it shows that. The coach writes markdown on purpose
+ * (docs/06-frontend.md#markdown-in-the-transcript), and a settled message is never
+ * streaming, since streaming text lives in the live buffer instead.
+ */
+function MessageText({ role, text }: { role: 'user' | 'model'; text: string }) {
+  if (role === 'user') return <p className="whitespace-pre-wrap">{text}</p>
+  return <Markdown text={text} />
 }
 
 function Bubble({ role, children }: { role: 'user' | 'model'; children: React.ReactNode }) {

@@ -3,6 +3,12 @@
 Vite + React 19 + TypeScript, React Router (client-side only, no SSR), Tailwind CSS +
 shadcn/ui, TanStack Query + Zustand, Vitest + Playwright.
 
+Formatting is **Prettier**; ESLint only lints. The two do not overlap —
+`eslint-config-prettier` sits last in the ESLint config and turns off every rule with an
+opinion about whitespace — so a disagreement between them is impossible rather than
+merely unlikely. See [07-infra-deploy.md](07-infra-deploy.md#formatting-and-linting) for
+what runs, in which order, and why the order matters.
+
 ## Routes
 
 | Path | Screen |
@@ -132,6 +138,19 @@ Two panes, stacked on mobile.
 
 Left — **task detail**:
 - Title, description, estimate, state control.
+- **A composite task shows its subtasks as cards**, between the detail and the research
+  report. `GET /api/tasks/{id}` already returns `subtasks[]`, so this costs no request.
+
+  **A subtask has no route of its own, and that is the product decision rather than a
+  gap.** The parent's session is where subtasks are worked through — one conversation
+  covers the whole piece of work, and giving each subtask a workspace would fragment it
+  into four transcripts that each know a quarter of the story. So the cards are a
+  checklist inside this screen: title, estimate, state badge, and the same row actions
+  the board gives a subtask (complete, postpone, discard). Nothing here navigates.
+
+  Above them sits the same `rollup` pair the board's parent card shows — a progress ring
+  over `completedSubtasks` and "4 subtasks · 2 h 30 m" — read from the same field, so the
+  board and the workspace cannot disagree about how far along a task is.
 - **Research report** rendered as two clearly separated blocks:
 
 ```
@@ -153,7 +172,7 @@ Left — **task detail**:
   from `run_status` frames.
 
 Right — **session chat**:
-- Streamed markdown with syntax highlighting; tool activity as inline status chips
+- Streamed markdown, rendered ([below](#markdown-in-the-transcript)); tool activity as inline status chips
   ("Searching the web…", "Checking video lengths…") built from `tool_call`/`tool_result`.
 
   **The chips are part of the transcript, not only of the stream.** A turn's live buffer
@@ -204,6 +223,67 @@ Renders `learnerProfile` as editable fields with the agent's stated evidence and
 `version`/`updatedAt` of each change. Per-field reset and a global "start fresh." This
 turns the evolving user model from an opaque behaviour into a product feature, and is the
 first thing to look at when the coach starts behaving strangely.
+
+## Markdown in the transcript
+
+Both session panes — the task workspace's and the board's intake conversation — render the
+**coach's** messages as markdown rather than as preformatted text. The coach answers with
+study plans in tables, equations, code, and diagrams; showing the reader `| --- |` and
+`$\int$` is showing them the notation instead of the thing.
+
+**The learner's own messages stay preformatted, and that is deliberate.** Their message is
+the record of what they sent: rendering it as markdown would collapse the line breaks they
+typed, reflow a pasted stack trace into a paragraph, and turn a literal `*` into emphasis.
+The coach writes markdown knowingly; a person typing into a chat box does not.
+
+The stack is assembled from one plugin per capability rather than adopted whole, so that
+each piece can be reasoned about, pinned, and swapped alone:
+
+| Capability | What renders it |
+| --- | --- |
+| The document | `react-markdown` — no `rehype-raw`, see below |
+| Tables, task lists, strikethrough, autolinks | `remark-gfm` |
+| Equations, `$…$` and `$$…$$` | `remark-math` → `rehype-katex`, with KaTeX's stylesheet imported once |
+| Fenced code | `shiki`, dynamically imported |
+| ` ```mermaid ` fences | `mermaid`, dynamically imported |
+
+**Raw HTML stays off.** react-markdown drops embedded HTML unless `rehype-raw` is added,
+and it is deliberately not added. This transcript renders text a language model produced,
+some of it quoted from pages the coach fetched during research — the one thing that must
+not be reachable from there is markup in our DOM. The single exception is the SVG mermaid
+itself returns, and mermaid runs at its default `securityLevel: 'strict'`, which sanitizes
+its own output.
+
+**Markdown renders while the turn is streaming; mermaid waits for the end of it.** Half a
+table is still a table and half a heading is still a heading, so a live re-parse per delta
+is worth it — but half a graph is a syntax error, and a diagram that flashes an error box
+for the two seconds its definition is arriving is worse than one that appears a moment
+late. A ` ```mermaid ` fence therefore renders as a code block for as long as the turn is
+generating and becomes a diagram once `turn_complete` hands the text to the transcript.
+That also keeps mermaid's several hundred kilobytes off the streaming path entirely.
+
+**Syntax highlighting is dual-theme, not two stylesheets.** Shiki is asked for
+`github-light` and `github-dark` in one call with `defaultColor: false`, so every token
+span carries both `--shiki-light` and `--shiki-dark`, and a rule gated on the root `.dark`
+class picks between them. The theme switch stays what it is everywhere else — one class on
+`<html>` — nothing re-highlights, and a code block from ten minutes ago flips with the rest
+of the page. This is the concrete form of the requirement in
+[Integration points](#integration-points-that-are-easy-to-miss).
+
+Mermaid has no equivalent trick, because its output is baked SVG. A diagram re-renders when
+`resolved` changes, which is rare enough to be uninteresting.
+
+**Both lazy loads fail soft.** While shiki's chunk is in flight — and permanently, if it
+never arrives — a code block is a plain `<pre><code>` containing the code, which is
+perfectly readable; mermaid failing to load or failing to parse leaves the diagram's
+source on screen rather than an error. A coach whose rendering library 404s should still
+be legible, and neither failure may take the transcript down with it.
+
+**Cost control is a cache and a memo, not a debounce.** Re-parsing the whole live message
+on every delta is cheap for the sizes involved, but re-highlighting is not, so a
+highlighted block is memoized on `(code, language)` and the highlighter itself is a single
+lazily created promise shared by every block on the page. Nothing here belongs in the
+Query cache; see [the state split](#state-management-split).
 
 ## Theme (light, dark, system)
 
@@ -279,7 +359,12 @@ motion-sensitivity trigger; if one is ever added it must be gated behind
 
 - **Syntax highlighting** in the transcript needs its own light/dark swap — the highlighter's
   palette is not covered by shadcn variables. Drive it from CSS variables gated on the root
-  `.dark` class rather than swapping stylesheets at runtime.
+  `.dark` class rather than swapping stylesheets at runtime. Shiki's dual-theme output is
+  exactly that shape ([Markdown in the transcript](#markdown-in-the-transcript)).
+- **Mermaid and KaTeX are two more palettes outside shadcn's.** Mermaid takes a theme at
+  render time, so it is the one thing on the page that must actually re-render when
+  `resolved` changes; KaTeX inherits `currentColor` and needs nothing, which is worth
+  knowing so nobody goes looking for a switch that should not exist.
 - **The research report's required/optional blocks** rely on "different container styling" to
   encode a product requirement. That distinction must survive both themes and must not be
   carried by color alone — it already leans on headings and the presence of checkboxes,

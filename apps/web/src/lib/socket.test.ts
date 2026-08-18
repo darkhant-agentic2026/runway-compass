@@ -333,9 +333,7 @@ describe('board updates', () => {
     await rig.socket.connect()
     rig.last().open()
 
-    expect(() =>
-      rig.last().receive({ type: 'not_a_real_frame', turnId: 't_1' }),
-    ).not.toThrow()
+    expect(() => rig.last().receive({ type: 'not_a_real_frame', turnId: 't_1' })).not.toThrow()
   })
 })
 
@@ -347,9 +345,7 @@ describe('presence', () => {
 
     rig.socket.setPresenceTarget({ projectId: 'p_1', taskId: 'k_1' })
 
-    expect(rig.last().frames()).toEqual([
-      { type: 'presence', projectId: 'p_1', taskId: 'k_1' },
-    ])
+    expect(rig.last().frames()).toEqual([{ type: 'presence', projectId: 'p_1', taskId: 'k_1' }])
     expect(rig.scheduled.at(-1)?.ms).toBe(PRESENCE_INTERVAL_MS)
   })
 

@@ -41,8 +41,7 @@ export function makeParent(
       subtasks.length > 0
         ? {
             subtaskCount: rollupSource.length,
-            completedSubtasks: rollupSource.filter((task) => task.state === 'completed')
-              .length,
+            completedSubtasks: rollupSource.filter((task) => task.state === 'completed').length,
             totalEstimatedMinutes: rollupSource.reduce(
               (total, task) => total + task.estimatedMinutes,
               0,

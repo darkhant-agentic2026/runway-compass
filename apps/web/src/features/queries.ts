@@ -33,8 +33,7 @@ export const queryKeys = {
   projects: ['projects'] as const,
   project: (projectId: string) => ['project', projectId] as const,
   effectivePrefs: (projectId: string) => ['project', projectId, 'effective-prefs'] as const,
-  tasks: (projectId: string, filters: BoardFilters) =>
-    ['tasks', projectId, filters] as const,
+  tasks: (projectId: string, filters: BoardFilters) => ['tasks', projectId, filters] as const,
   task: (taskId: string) => ['task', taskId] as const,
   taskSession: (taskId: string) => ['task', taskId, 'session'] as const,
   /**
@@ -185,12 +184,72 @@ export function useSetTaskState(projectId: string, filters: BoardFilters) {
           parent.id !== taskId && parent.state === 'current' ? 'not_started' : parent.state,
         subtasks: parent.subtasks.map((child) => ({
           ...child,
-          state:
-            child.id !== taskId && child.state === 'current' ? 'not_started' : child.state,
+          state: child.id !== taskId && child.state === 'current' ? 'not_started' : child.state,
         })),
       }))
     },
   )
+}
+
+/**
+ * A subtask's state, changed from inside the parent's workspace.
+ *
+ * The board's `useSetTaskState` patches `['tasks', projectId, filters]`, and the workspace
+ * does not read that key at all — it reads `['task', parentId]`. Reusing the board's hook
+ * here would fire the request and leave the rows on screen unchanged until a refetch
+ * landed, which for a click on "Complete" is exactly the latency optimistic updates exist
+ * to remove. So this is the same `onMutate` → snapshot → patch → rollback → invalidate
+ * shape against the detail entry.
+ *
+ * **The invalidation is `exact`.** `queryKeys.taskSession` is `['task', id, 'session']`,
+ * a get-or-create POST under the same prefix, and a prefix invalidation would re-issue it
+ * on every subtask click.
+ *
+ * `rollup` is deliberately *not* recomputed optimistically: it is the server's number
+ * (`services/rollups.py`), and a second implementation of that arithmetic in TypeScript is
+ * a thing to keep in step for the sake of one round trip's worth of ring animation. The
+ * row updates instantly; the ring updates when the invalidation lands.
+ */
+export function useSetSubtaskState(parentTaskId: string, projectId: string) {
+  const queryClient = useQueryClient()
+  const key = queryKeys.task(parentTaskId)
+
+  return useMutation<
+    unknown,
+    Error,
+    { taskId: string; state: TaskState; postponedUntil?: string | null },
+    { previous: TaskWithSubtasks | undefined }
+  >({
+    mutationFn: ({ taskId, state, postponedUntil }) =>
+      api.setTaskState(taskId, state, postponedUntil),
+    async onMutate({ taskId, state, postponedUntil }) {
+      await queryClient.cancelQueries({ queryKey: key, exact: true })
+      const previous = queryClient.getQueryData<TaskWithSubtasks>(key)
+      if (previous) {
+        queryClient.setQueryData<TaskWithSubtasks>(key, {
+          ...previous,
+          subtasks: previous.subtasks.map((child) =>
+            child.id === taskId
+              ? { ...child, state, postponedUntil: postponedUntil ?? null }
+              : // Promoting one subtask to `current` demotes whatever was current, the
+                // same invariant the board mirrors.
+                state === 'current' && child.state === 'current'
+                ? { ...child, state: 'not_started' as const }
+                : child,
+          ),
+        })
+      }
+      return { previous }
+    },
+    onError(_error, _variables, context) {
+      if (context?.previous) queryClient.setQueryData(key, context.previous)
+    },
+    onSettled() {
+      void queryClient.invalidateQueries({ queryKey: key, exact: true })
+      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) })
+    },
+  })
 }
 
 export function useReorderTask(projectId: string, filters: BoardFilters) {

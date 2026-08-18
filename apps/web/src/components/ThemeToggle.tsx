@@ -51,10 +51,8 @@ export function ThemeToggle() {
         ))}
       </ToggleGroup>
 
-      <p className="text-muted-foreground text-sm" data-testid="theme-explainer">
-        {pref === 'system'
-          ? `System — currently ${resolved}`
-          : `Always ${pref}`}
+      <p className="text-sm text-muted-foreground" data-testid="theme-explainer">
+        {pref === 'system' ? `System — currently ${resolved}` : `Always ${pref}`}
       </p>
     </div>
   )

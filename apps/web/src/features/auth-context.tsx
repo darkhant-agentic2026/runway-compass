@@ -13,7 +13,11 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Navigate, useLocation } from 'react-router-dom'
 
-import { AuthContext, type AuthContextValue, type AuthStatus } from '@/features/auth-context-value'
+import {
+  AuthContext,
+  type AuthContextValue,
+  type AuthStatus,
+} from '@/features/auth-context-value'
 import { useAuth } from '@/features/use-auth'
 import { getAuthProvider, type AuthUser } from '@/lib/auth'
 

@@ -17,7 +17,10 @@ import type { TaskWithSubtasks } from '@/lib/schemas'
 import { DEFAULT_FILTERS } from '@/stores/boardUi'
 import { makeParent, makeTask } from '@/test/factories'
 
-function renderCard(task: TaskWithSubtasks, overrides: Partial<Parameters<typeof TaskCard>[0]> = {}) {
+function renderCard(
+  task: TaskWithSubtasks,
+  overrides: Partial<Parameters<typeof TaskCard>[0]> = {},
+) {
   const props = {
     task,
     isNextUp: false,

@@ -74,6 +74,38 @@ DONE_REPLY = "Done — your board is up to date."
 #: builder could not read the project. Matches `GlobalPrefs.default_task_minutes`.
 DEFAULT_BUDGET_MINUTES = 45
 
+#: The one prompt that makes the stub answer in markdown rather than in prose.
+_FORMATTING_PATTERN = re.compile(r"\bshow me the formatting\b", re.IGNORECASE)
+
+#: A reply exercising every construct the transcript renders: a GFM table, an equation, a
+#: fenced code block, and a mermaid diagram (docs/06-frontend.md#markdown-in-the-transcript).
+#:
+#: This exists because the browser half of that rendering is unreachable from a unit test
+#: in the way that matters. `Markdown.test.tsx` mocks both dynamic imports — it has to, or
+#: it would be testing shiki's Python grammar — so the thing no local test can see is
+#: whether those chunks actually resolve in a *built* bundle. That is exactly the class of
+#: defect docs/09-roadmap.md#what-a-green-local-run-does-not-prove is about, and one
+#: e2e against a real build is what closes it.
+MARKDOWN_REPLY = r"""## Your plan
+
+| Step | Minutes |
+| --- | --- |
+| Read the paper | 20 |
+| Write notes | 25 |
+
+Merging costs $O(n \log n)$ overall.
+
+```python
+def merge(left, right):
+    return sorted(left + right)
+```
+
+```mermaid
+graph TD;
+  A[Read] --> B[Notes];
+```
+"""
+
 #: The line `agents/prompt.py` renders. Parsed rather than passed, so that the stub is
 #: reading the same prompt the real model would.
 _BUDGET_PATTERN = re.compile(r"Default task length:\s*(\d+)\s*minutes")
@@ -175,11 +207,7 @@ class StubModel(BaseLlm):
             )
             return
 
-        reply = (
-            DONE_REPLY
-            if _turn_responses(llm_request)
-            else stub_reply(_last_user_text(llm_request))
-        )
+        reply = DONE_REPLY if _turn_responses(llm_request) else _prose_reply(llm_request)
         # Split on spaces, keeping them, so the concatenation of the chunks is exactly
         # `reply` — the assertion golden flow #4 rests on is character equality between
         # an interrupted run and an uninterrupted one.
@@ -195,6 +223,16 @@ class StubModel(BaseLlm):
         yield LlmResponse(
             content=types.Content(role="model", parts=[types.Part(text="".join(chunks))])
         )
+
+
+def _prose_reply(llm_request: Any) -> str:
+    """What the stub says when it has nothing to call.
+
+    Markdown only for the one prompt that asks for it, so every existing flow keeps
+    getting the character-for-character reply it asserts against.
+    """
+    text = _last_user_text(llm_request)
+    return MARKDOWN_REPLY if _FORMATTING_PATTERN.search(text) else stub_reply(text)
 
 
 def _plan_tool_call(llm_request: Any) -> types.FunctionCall | None:
