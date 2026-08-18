@@ -16,20 +16,20 @@
  * nor a cross, because both would be a claim the transcript cannot support.
  */
 
-import { Check, Dot, Loader2, X } from 'lucide-react'
+import { Check, Dot, Loader2, X } from 'lucide-react';
 
-import { labelForTool } from '@/lib/tool-labels'
+import { labelForTool } from '@/lib/tool-labels';
 
 export interface ChipView {
   /** Unique within one list; the React key. */
-  id: string
-  name: string
-  done: boolean
-  ok: boolean | null
+  id: string;
+  name: string;
+  done: boolean;
+  ok: boolean | null;
 }
 
 export function ToolChips({ tools }: { tools: ChipView[] }) {
-  if (tools.length === 0) return null
+  if (tools.length === 0) return null;
 
   return (
     <ul className="flex flex-wrap gap-1.5" data-testid="tool-chips">
@@ -55,5 +55,5 @@ export function ToolChips({ tools }: { tools: ChipView[] }) {
         </li>
       ))}
     </ul>
-  )
+  );
 }

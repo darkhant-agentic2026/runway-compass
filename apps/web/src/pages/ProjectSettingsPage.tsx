@@ -9,38 +9,38 @@
  * to inheriting.
  */
 
-import { useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom';
 
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
-import { useEffectivePrefs, useMe, useProject, usePatchProject } from '@/features/queries'
-import { formatMinutes } from '@/lib/format'
-import type { ProjectPrefs } from '@/lib/schemas'
+} from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
+import { useEffectivePrefs, useMe, usePatchProject, useProject } from '@/features/queries';
+import { formatMinutes } from '@/lib/format';
+import type { ProjectPrefs } from '@/lib/schemas';
 
-const DEPTHS: NonNullable<ProjectPrefs['researchDepth']>[] = ['light', 'standard', 'deep']
+const DEPTHS: NonNullable<ProjectPrefs['researchDepth']>[] = ['light', 'standard', 'deep'];
 
 export default function ProjectSettingsPage() {
-  const { projectId = '' } = useParams()
-  const project = useProject(projectId)
-  const effective = useEffectivePrefs(projectId)
-  const me = useMe()
-  const patch = usePatchProject(projectId)
+  const { projectId = '' } = useParams();
+  const project = useProject(projectId);
+  const effective = useEffectivePrefs(projectId);
+  const me = useMe();
+  const patch = usePatchProject(projectId);
 
-  const prefs = project.data?.prefs
-  const globalMinutes = me.data?.globalPrefs.defaultTaskMinutes
+  const prefs = project.data?.prefs;
+  const globalMinutes = me.data?.globalPrefs.defaultTaskMinutes;
 
   if (!prefs) {
-    return <p className="p-6 text-muted-foreground">Loading project settings…</p>
+    return <p className="p-6 text-muted-foreground">Loading project settings…</p>;
   }
 
   return (
@@ -58,8 +58,8 @@ export default function ProjectSettingsPage() {
               id="project-title"
               defaultValue={project.data?.title ?? ''}
               onBlur={(event) => {
-                const value = event.target.value.trim()
-                if (value && value !== project.data?.title) patch.mutate({ title: value })
+                const value = event.target.value.trim();
+                if (value && value !== project.data?.title) patch.mutate({ title: value });
               }}
             />
           </div>
@@ -69,8 +69,8 @@ export default function ProjectSettingsPage() {
               id="project-goal"
               defaultValue={project.data?.goal ?? ''}
               onBlur={(event) => {
-                const value = event.target.value.trim()
-                if (value !== project.data?.goal) patch.mutate({ goal: value })
+                const value = event.target.value.trim();
+                if (value !== project.data?.goal) patch.mutate({ goal: value });
               }}
             />
           </div>
@@ -93,10 +93,10 @@ export default function ProjectSettingsPage() {
                 placeholder={globalMinutes ? String(globalMinutes) : ''}
                 defaultValue={prefs.defaultTaskMinutes ?? ''}
                 onBlur={(event) => {
-                  const raw = event.target.value.trim()
-                  const value = raw === '' ? null : Number(raw)
+                  const raw = event.target.value.trim();
+                  const value = raw === '' ? null : Number(raw);
                   if (value !== prefs.defaultTaskMinutes) {
-                    patch.mutate({ prefs: { defaultTaskMinutes: value } })
+                    patch.mutate({ prefs: { defaultTaskMinutes: value } });
                   }
                 }}
               />
@@ -158,5 +158,5 @@ export default function ProjectSettingsPage() {
         </CardContent>
       </Card>
     </div>
-  )
+  );
 }

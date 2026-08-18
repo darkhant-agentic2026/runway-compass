@@ -221,7 +221,10 @@ constructors — `coach/core/lazy.py` explains why and
 the order there is deliberate: `eslint --fix` first, `prettier --write` second, because a
 fixer rewrites code and the formatter has to be the last thing that touches it.
 `eslint-config-prettier` is the last entry in `eslint.config.js`, so no rule has an opinion
-about layout; do not add `eslint-plugin-prettier`. **Prettier's remit stops at
+about layout; do not add `eslint-plugin-prettier`. **Import order is Prettier's too** —
+`@ianvs/prettier-plugin-sort-imports`, which is only safe as a formatter because it never
+moves an import across a side-effect import; `prettier-plugin-tailwindcss` must stay last
+in the plugin list. **Prettier's remit stops at
 `apps/web`** — `.prettierignore` excludes `docs/`, every other `*.md`, `infra/`, and
 `apps/api/`, whose prose is hand-wrapped and whose tables are aligned for reading. Python
 formatting is still `ruff format`. `docs/07-infra-deploy.md#formatting-and-linting`

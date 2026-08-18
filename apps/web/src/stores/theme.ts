@@ -23,34 +23,34 @@
  * readable before auth resolves — the login screen needs a theme too.
  */
 
-import { create } from 'zustand'
+import { create } from 'zustand';
 
-export type ThemePref = 'light' | 'dark' | 'system'
-export type ResolvedTheme = 'light' | 'dark'
+export type ThemePref = 'light' | 'dark' | 'system';
+export type ResolvedTheme = 'light' | 'dark';
 
 /** Shared with the inline script in `index.html`. Changing this breaks the no-flash path. */
-export const THEME_STORAGE_KEY = 'coach.theme'
+export const THEME_STORAGE_KEY = 'coach.theme';
 
-const DARK_QUERY = '(prefers-color-scheme: dark)'
+const DARK_QUERY = '(prefers-color-scheme: dark)';
 
 function isThemePref(value: unknown): value is ThemePref {
-  return value === 'light' || value === 'dark' || value === 'system'
+  return value === 'light' || value === 'dark' || value === 'system';
 }
 
 /** Read the persisted preference. Falls back to `system` on anything unexpected. */
 export function readStoredPref(): ThemePref {
   try {
-    const raw = localStorage.getItem(THEME_STORAGE_KEY)
-    return isThemePref(raw) ? raw : 'system'
+    const raw = localStorage.getItem(THEME_STORAGE_KEY);
+    return isThemePref(raw) ? raw : 'system';
   } catch {
     // Private mode: fall through rather than crashing the app.
-    return 'system'
+    return 'system';
   }
 }
 
 function writeStoredPref(pref: ThemePref): void {
   try {
-    localStorage.setItem(THEME_STORAGE_KEY, pref)
+    localStorage.setItem(THEME_STORAGE_KEY, pref);
   } catch {
     /* private mode: the theme simply will not persist */
   }
@@ -58,15 +58,15 @@ function writeStoredPref(pref: ThemePref): void {
 
 function systemPrefersDark(): boolean {
   try {
-    return window.matchMedia(DARK_QUERY).matches
+    return window.matchMedia(DARK_QUERY).matches;
   } catch {
-    return false
+    return false;
   }
 }
 
 export function resolveTheme(pref: ThemePref, prefersDark: boolean): ResolvedTheme {
-  if (pref === 'system') return prefersDark ? 'dark' : 'light'
-  return pref
+  if (pref === 'system') return prefersDark ? 'dark' : 'light';
+  return pref;
 }
 
 /**
@@ -77,46 +77,46 @@ export function resolveTheme(pref: ThemePref, prefersDark: boolean): ResolvedThe
  * `<meta name="theme-color">` is updated so mobile browser chrome matches.
  */
 export function applyTheme(resolved: ResolvedTheme): void {
-  if (typeof document === 'undefined') return
-  const root = document.documentElement
-  root.classList.toggle('dark', resolved === 'dark')
-  root.style.colorScheme = resolved
+  if (typeof document === 'undefined') return;
+  const root = document.documentElement;
+  root.classList.toggle('dark', resolved === 'dark');
+  root.style.colorScheme = resolved;
   document
     .querySelector('meta[name="theme-color"]')
-    ?.setAttribute('content', resolved === 'dark' ? '#0a0a0a' : '#ffffff')
+    ?.setAttribute('content', resolved === 'dark' ? '#0a0a0a' : '#ffffff');
 }
 
 interface ThemeState {
-  pref: ThemePref
-  resolved: ResolvedTheme
-  setPref: (pref: ThemePref) => void
+  pref: ThemePref;
+  resolved: ResolvedTheme;
+  setPref: (pref: ThemePref) => void;
   /** Called by the `matchMedia` listener; a no-op unless `pref` is `system`. */
-  syncWithSystem: (prefersDark: boolean) => void
+  syncWithSystem: (prefersDark: boolean) => void;
 }
 
 export const useThemeStore = create<ThemeState>((set, get) => {
-  const pref = readStoredPref()
+  const pref = readStoredPref();
   return {
     pref,
     resolved: resolveTheme(pref, systemPrefersDark()),
 
     setPref(next) {
-      const resolved = resolveTheme(next, systemPrefersDark())
-      writeStoredPref(next)
-      applyTheme(resolved)
-      set({ pref: next, resolved })
+      const resolved = resolveTheme(next, systemPrefersDark());
+      writeStoredPref(next);
+      applyTheme(resolved);
+      set({ pref: next, resolved });
     },
 
     syncWithSystem(prefersDark) {
       // Attached always, but inert unless the user chose `system` — simpler than
       // attaching and detaching the listener on every preference change.
-      if (get().pref !== 'system') return
-      const resolved = resolveTheme('system', prefersDark)
-      applyTheme(resolved)
-      set({ resolved })
+      if (get().pref !== 'system') return;
+      const resolved = resolveTheme('system', prefersDark);
+      applyTheme(resolved);
+      set({ resolved });
     },
-  }
-})
+  };
+});
 
 /**
  * Attach the OS listener. Called once from the app root.
@@ -125,14 +125,14 @@ export const useThemeStore = create<ThemeState>((set, get) => {
  */
 export function startThemeSync(): () => void {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
-    return () => {}
+    return () => {};
   }
-  const query = window.matchMedia(DARK_QUERY)
+  const query = window.matchMedia(DARK_QUERY);
   const onChange = (event: MediaQueryListEvent) => {
-    useThemeStore.getState().syncWithSystem(event.matches)
-  }
-  query.addEventListener('change', onChange)
+    useThemeStore.getState().syncWithSystem(event.matches);
+  };
+  query.addEventListener('change', onChange);
   // The inline script has already painted; re-apply so a remount cannot drift from it.
-  applyTheme(useThemeStore.getState().resolved)
-  return () => query.removeEventListener('change', onChange)
+  applyTheme(useThemeStore.getState().resolved);
+  return () => query.removeEventListener('change', onChange);
 }

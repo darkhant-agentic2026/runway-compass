@@ -404,13 +404,43 @@ the cost of a full format.
 **Prettier's remit stops at `apps/web`.** `.prettierignore` excludes `docs/`, every other
 `*.md`, `infra/`, and `apps/api/`. The design documents are hand-wrapped prose with tables
 aligned for reading in a terminal; reflowing them would produce a large diff that says
-nothing. Configuration lives in `apps/web/.prettierrc.json` and matches the style the
-codebase was already written in — no semicolons, single quotes, a 96-column width —
-so adopting it was a churn commit about class-attribute ordering rather than a rewrite.
+nothing.
 
-`prettier-plugin-tailwindcss` sorts `className` into Tailwind's canonical order. It is a
-formatter plugin rather than a lint rule for the reason above, and it is what makes a
-duplicated or shadowed utility visible in review instead of buried mid-string.
+Configuration lives in `apps/web/.prettierrc.json`:
+
+| Option | Value | Why it is written out |
+| --- | --- | --- |
+| `semi` | `true` | **A departure from the style the tree was written in**, which terminated nothing. Deliberate: with ASI, whether a line ends a statement depends on what the *next* line starts with, and a leading `(` or `[` silently continues it — which is why the no-semi style needs the defensive `;(function () {…})()` the inline theme script used to carry |
+| `singleQuote` | `true` | What the codebase already used |
+| `printWidth` | `96` | The width the hand-wrapped code was already at; 80 would have rewrapped nearly every JSX attribute list |
+| `tabWidth` | `2` | Prettier's default *today*. Written out because a default is a thing that can move in a major version, and the one tool that must never surprise anyone with a diff is the formatter |
+| `endOfLine` | `"lf"` | Same reasoning. The repo has no CRLF in it, the image is Linux, and this keeps a Windows checkout from producing a whole-file diff |
+| `trailingComma`, `arrowParens` | `all`, `always` | Both already the house style |
+
+Adopting all of this was one churn commit; the semicolons and the sorted class attributes
+are most of it.
+
+Two formatter plugins, and the order they are listed in matters:
+
+1. **`@ianvs/prettier-plugin-sort-imports`** sorts import declarations, and the named
+   specifiers inside them. Groups are `importOrder` in `.prettierrc.json`: Node built-ins,
+   third-party packages, a blank line, `@/…`, a blank line, relative paths — which is the
+   convention the codebase was already written to, now enforced instead of remembered.
+
+   **It preserves side-effect imports where they are.** `import 'katex/dist/katex.min.css'`
+   is not a value anyone reads; it is a statement that runs, and a sorter that hoisted it
+   above the module it must follow would be making a semantic change while claiming to
+   format. The plugin treats such an import as a barrier and does not move imports across
+   it. That property is the reason a sorter is acceptable in a formatter at all, and it is
+   worth re-checking on a bump.
+
+2. **`prettier-plugin-tailwindcss`** sorts `className` into Tailwind's canonical order, and
+   must be listed **last** — it composes with whatever precedes it, and upstream documents
+   that requirement. It is what makes a duplicated or shadowed utility visible in review
+   instead of buried mid-string.
+
+Both are formatter plugins rather than lint rules for the reason above: a layout
+disagreement should not be an ESLint error in the editor.
 
 CI runs the check halves — `ruff format --check`, `prettier --check` — so a branch that
 skipped the local gate fails on the formatting rather than landing it.

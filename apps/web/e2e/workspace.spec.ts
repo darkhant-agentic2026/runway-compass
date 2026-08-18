@@ -20,9 +20,9 @@
  * control run" is a character-for-character assertion rather than a similarity check.
  */
 
-import type { Page } from '@playwright/test'
+import type { Page } from '@playwright/test';
 
-import { expect, test } from './fixtures'
+import { expect, test } from './fixtures';
 
 /** Mirrors `coach.integrations.stub_model.stub_reply`. */
 function stubReply(prompt: string): string {
@@ -30,42 +30,42 @@ function stubReply(prompt: string): string {
     `Here is what I think about ${prompt}.` +
     ' Let us break it down together, one step at a time, and check your understanding' +
     ' as we go.'
-  )
+  );
 }
 
 async function openWorkspace(page: Page, projectTitle: string, taskTitle: string) {
-  await page.goto('/')
-  await page.getByLabel('New project').fill(projectTitle)
-  await page.getByRole('button', { name: 'Create' }).click()
-  await page.getByRole('link', { name: projectTitle }).click()
+  await page.goto('/');
+  await page.getByLabel('New project').fill(projectTitle);
+  await page.getByRole('button', { name: 'Create' }).click();
+  await page.getByRole('link', { name: projectTitle }).click();
 
-  await page.getByLabel('New task').fill(taskTitle)
-  await page.getByRole('button', { name: 'Add task' }).click()
-  await page.getByTestId('open-workspace').filter({ hasText: taskTitle }).click()
+  await page.getByLabel('New task').fill(taskTitle);
+  await page.getByRole('button', { name: 'Add task' }).click();
+  await page.getByTestId('open-workspace').filter({ hasText: taskTitle }).click();
 
-  await expect(page.getByRole('heading', { name: taskTitle })).toBeVisible()
-  await expect(page.getByTestId('transcript')).toBeVisible()
+  await expect(page.getByRole('heading', { name: taskTitle })).toBeVisible();
+  await expect(page.getByTestId('transcript')).toBeVisible();
 }
 
 async function send(page: Page, message: string) {
-  await page.getByLabel('Message your coach').fill(message)
-  await page.getByRole('button', { name: 'Send' }).click()
+  await page.getByLabel('Message your coach').fill(message);
+  await page.getByRole('button', { name: 'Send' }).click();
 }
 
 /** The settled assistant bubble, once the turn has been handed to the transcript. */
 function assistantBubbles(page: Page) {
-  return page.getByTestId('transcript').locator('[data-role="model"]')
+  return page.getByTestId('transcript').locator('[data-role="model"]');
 }
 
 test('a turn streams into the transcript and settles there', async ({ signedIn: page }) => {
-  await openWorkspace(page, 'Streaming', 'Understand asyncio')
+  await openWorkspace(page, 'Streaming', 'Understand asyncio');
 
-  await send(page, 'locks')
+  await send(page, 'locks');
 
   await expect(assistantBubbles(page).last()).toHaveText(stubReply('locks'), {
     timeout: 30_000,
-  })
-})
+  });
+});
 
 test('the sender sees their own message immediately, not when the reply lands', async ({
   signedIn: page,
@@ -74,35 +74,35 @@ test('the sender sees their own message immediately, not when the reply lands', 
   // show only "Your coach is thinking…" — no record of what had been asked. ADK writes
   // the user event during generation and the transcript is refetched on `turn_complete`,
   // so without an optimistic echo the sender's own message is invisible until the end.
-  await openWorkspace(page, 'Echo', 'See my own message')
+  await openWorkspace(page, 'Echo', 'See my own message');
 
-  await send(page, 'is this visible yet?')
+  await send(page, 'is this visible yet?');
 
-  const own = page.getByTestId('transcript').locator('[data-role="user"]')
+  const own = page.getByTestId('transcript').locator('[data-role="user"]');
   // Asserted *before* any assistant text exists, which is the whole point.
-  await expect(own.last()).toHaveText('is this visible yet?', { timeout: 5_000 })
-  await expect(page.getByTestId('still-working')).toBeVisible()
+  await expect(own.last()).toHaveText('is this visible yet?', { timeout: 5_000 });
+  await expect(page.getByTestId('still-working')).toBeVisible();
 
   // And it survives the handoff: the echo is replaced by the stored event, not duplicated.
   await expect(assistantBubbles(page).last()).toHaveText(stubReply('is this visible yet?'), {
     timeout: 30_000,
-  })
-  await expect(own).toHaveCount(1)
-})
+  });
+  await expect(own).toHaveCount(1);
+});
 
 test('the sent message survives a reload, once', async ({ signedIn: page }) => {
-  await openWorkspace(page, 'Echo reload', 'Persist my own message')
-  await send(page, 'remember this')
+  await openWorkspace(page, 'Echo reload', 'Persist my own message');
+  await send(page, 'remember this');
   await expect(assistantBubbles(page).last()).toHaveText(stubReply('remember this'), {
     timeout: 30_000,
-  })
+  });
 
-  await page.reload()
+  await page.reload();
 
-  const own = page.getByTestId('transcript').locator('[data-role="user"]')
-  await expect(own).toHaveCount(1)
-  await expect(own.first()).toHaveText('remember this')
-})
+  const own = page.getByTestId('transcript').locator('[data-role="user"]');
+  await expect(own).toHaveCount(1);
+  await expect(own.first()).toHaveText('remember this');
+});
 
 test('a disconnect mid-stream resumes and produces the identical message', async ({
   signedIn: page,
@@ -115,21 +115,21 @@ test('a disconnect mid-stream resumes and produces the identical message', async
   // `armed` keeps the control run honest: both runs go through the same proxy, and only
   // the second one is cut. `dropped` makes the cut happen exactly once, so the reconnect
   // reaches the real server.
-  let armed = false
-  let dropped = false
+  let armed = false;
+  let dropped = false;
   await context.routeWebSocket(/\/ws/, (ws) => {
-    const server = ws.connectToServer()
+    const server = ws.connectToServer();
     server.onMessage((message) => {
-      ws.send(message)
+      ws.send(message);
       // Cut once text is actually flowing. Dropping before the first delta would only
       // test reconnection; the guarantee is about losing the socket *mid-generation*.
       if (armed && !dropped && String(message).includes('"delta"')) {
-        dropped = true
-        ws.close()
+        dropped = true;
+        ws.close();
       }
-    })
-    ws.onMessage((message) => server.send(message))
-  })
+    });
+    ws.onMessage((message) => server.send(message));
+  });
 
   // Hold the *reconnect's* ticket, so the reconnecting window is a duration this test
   // chose rather than one it races. Left alone it is `backoffDelay(0)` — a random
@@ -143,73 +143,73 @@ test('a disconnect mid-stream resumes and produces the identical message', async
   // a second and a half with nobody attached, which is the guarantee under test rather
   // than a few milliseconds of it.
   await page.route('**/api/ws-ticket', async (route) => {
-    if (armed) await new Promise((resolve) => setTimeout(resolve, 1_500))
-    await route.continue()
-  })
+    if (armed) await new Promise((resolve) => setTimeout(resolve, 1_500));
+    await route.continue();
+  });
 
-  await openWorkspace(page, 'Disconnect', 'Survive a dropped socket')
+  await openWorkspace(page, 'Disconnect', 'Survive a dropped socket');
 
   // --- control run: no interruption ---------------------------------------------------
-  await send(page, 'control')
+  await send(page, 'control');
   await expect(assistantBubbles(page).last()).toHaveText(stubReply('control'), {
     timeout: 30_000,
-  })
-  const control = await assistantBubbles(page).last().innerText()
+  });
+  const control = await assistantBubbles(page).last().innerText();
 
   // --- interrupted run ------------------------------------------------------------------
-  armed = true
-  await send(page, 'interrupted')
+  armed = true;
+  await send(page, 'interrupted');
 
   // The "still working" state has to be *visible*: a user who is told the connection
   // dropped without being told the work continues will start over, which is the wasted
   // inference the whole design exists to avoid.
-  await expect(page.getByTestId('connection-banner')).toBeVisible({ timeout: 15_000 })
-  await expect(page.getByTestId('connection-banner')).toContainText('still working')
+  await expect(page.getByTestId('connection-banner')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('connection-banner')).toContainText('still working');
 
   // Then the stream continues from where it left off, over the reconnected socket.
   await expect(assistantBubbles(page).last()).toHaveText(stubReply('interrupted'), {
     timeout: 45_000,
-  })
+  });
 
   // The assertion the flow exists for: identical output, modulo the prompt.
   expect(await assistantBubbles(page).last().innerText()).toBe(
     control.replace('control', 'interrupted'),
-  )
-})
+  );
+});
 
 test('the transcript survives a full page reload', async ({ signedIn: page }) => {
   // Complementary to the disconnect above: that one proves the *stream* resumes, this one
   // proves the finalized events were durably written — the two halves of "inference is
   // not wasted".
-  await openWorkspace(page, 'Reload', 'Persist the transcript')
-  await send(page, 'durability')
+  await openWorkspace(page, 'Reload', 'Persist the transcript');
+  await send(page, 'durability');
   await expect(assistantBubbles(page).last()).toHaveText(stubReply('durability'), {
     timeout: 30_000,
-  })
+  });
 
-  await page.reload()
+  await page.reload();
 
   await expect(assistantBubbles(page).last()).toHaveText(stubReply('durability'), {
     timeout: 30_000,
-  })
-  await expect(page.getByTestId('transcript')).toContainText('durability')
-})
+  });
+  await expect(page.getByTestId('transcript')).toContainText('durability');
+});
 
 test('cancelling a turn stops it and says so', async ({ signedIn: page }) => {
-  await openWorkspace(page, 'Cancel', 'Stop a turn')
+  await openWorkspace(page, 'Cancel', 'Stop a turn');
 
   // The stub echoes the prompt back, so a long prompt is a long reply: at 40 ms a chunk
   // this leaves several seconds of generation to cancel *into*, rather than a window the
   // click has to hit.
-  const prompt = Array.from({ length: 60 }, (_, index) => `word${index}`).join(' ')
-  await send(page, prompt)
+  const prompt = Array.from({ length: 60 }, (_, index) => `word${index}`).join(' ');
+  await send(page, prompt);
 
   // Wait until it is demonstrably in flight, so the click cannot race the 202 that
   // registers the turn — until then the composer still shows Send.
-  await expect(page.getByTestId('live-turn')).toContainText('Here is what I think about')
-  await page.getByRole('button', { name: 'Cancel' }).click()
+  await expect(page.getByTestId('live-turn')).toContainText('Here is what I think about');
+  await page.getByRole('button', { name: 'Cancel' }).click();
 
-  await expect(page.getByRole('alert')).toContainText('cancelled', { timeout: 20_000 })
+  await expect(page.getByRole('alert')).toContainText('cancelled', { timeout: 20_000 });
   // Not retryable: the user asked for this, so offering a retry would be wrong.
-  await expect(page.getByRole('alert')).not.toContainText('try again')
-})
+  await expect(page.getByRole('alert')).not.toContainText('try again');
+});

@@ -1,8 +1,7 @@
-import { fileURLToPath, URL } from 'node:url'
-
-import tailwindcss from '@tailwindcss/vite'
-import react from '@vitejs/plugin-react'
-import { defineConfig } from 'vite'
+import { fileURLToPath, URL } from 'node:url';
+import tailwindcss from '@tailwindcss/vite';
+import react from '@vitejs/plugin-react';
+import { defineConfig } from 'vite';
 
 /**
  * Tailwind v4 is wired through `@tailwindcss/vite`, not a PostCSS config — there is no
@@ -35,4 +34,4 @@ export default defineConfig({
     outDir: 'dist',
     sourcemap: true,
   },
-})
+});

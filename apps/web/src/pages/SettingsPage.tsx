@@ -7,28 +7,28 @@
  * rather than being silently absent.
  */
 
-import { ThemeToggle } from '@/components/ThemeToggle'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+import { ThemeToggle } from '@/components/ThemeToggle';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
-import { useMe, usePatchGlobalPrefs } from '@/features/queries'
-import type { GlobalPrefs } from '@/lib/schemas'
+} from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
+import { useMe, usePatchGlobalPrefs } from '@/features/queries';
+import type { GlobalPrefs } from '@/lib/schemas';
 
-const GUIDANCE_STYLES: GlobalPrefs['guidanceStyle'][] = ['socratic', 'direct', 'mixed']
-const VERBOSITIES: GlobalPrefs['verbosity'][] = ['terse', 'balanced', 'thorough']
+const GUIDANCE_STYLES: GlobalPrefs['guidanceStyle'][] = ['socratic', 'direct', 'mixed'];
+const VERBOSITIES: GlobalPrefs['verbosity'][] = ['terse', 'balanced', 'thorough'];
 
 export default function SettingsPage() {
-  const me = useMe()
-  const patch = usePatchGlobalPrefs()
-  const prefs = me.data?.globalPrefs
+  const me = useMe();
+  const patch = usePatchGlobalPrefs();
+  const prefs = me.data?.globalPrefs;
 
   return (
     <div className="mx-auto w-full max-w-2xl space-y-6 p-4 sm:p-6">
@@ -64,9 +64,9 @@ export default function SettingsPage() {
                   max={1440}
                   defaultValue={prefs.defaultTaskMinutes}
                   onBlur={(event) => {
-                    const value = Number(event.target.value)
+                    const value = Number(event.target.value);
                     if (value > 0 && value !== prefs.defaultTaskMinutes) {
-                      patch.mutate({ defaultTaskMinutes: value })
+                      patch.mutate({ defaultTaskMinutes: value });
                     }
                   }}
                 />
@@ -123,8 +123,8 @@ export default function SettingsPage() {
                   id="timezone"
                   defaultValue={prefs.timezone}
                   onBlur={(event) => {
-                    const value = event.target.value.trim()
-                    if (value && value !== prefs.timezone) patch.mutate({ timezone: value })
+                    const value = event.target.value.trim();
+                    if (value && value !== prefs.timezone) patch.mutate({ timezone: value });
                   }}
                 />
               </div>
@@ -164,5 +164,5 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
     </div>
-  )
+  );
 }

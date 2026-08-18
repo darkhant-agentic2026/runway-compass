@@ -36,37 +36,37 @@
  * to be.
  */
 
-import { useQueryClient } from '@tanstack/react-query'
-import { useEffect, useRef, useState, type DragEvent } from 'react'
+import { useQueryClient } from '@tanstack/react-query';
+import { useEffect, useRef, useState, type DragEvent } from 'react';
 
-import { Composer } from '@/components/session/Composer'
-import { ConfirmationPrompt } from '@/components/session/ConfirmationPrompt'
-import { ConnectionBanner } from '@/components/session/ConnectionBanner'
-import { Transcript } from '@/components/session/Transcript'
-import { useCancelTurn, useSessionEvents, useStartTurn } from '@/features/queries'
-import { useAttachmentUploads } from '@/features/use-uploads'
-import { pendingConfirmation, toMessages } from '@/lib/transcript'
-import { useComposerStore } from '@/stores/composer'
-import { useStreamStore } from '@/stores/stream'
+import { Composer } from '@/components/session/Composer';
+import { ConfirmationPrompt } from '@/components/session/ConfirmationPrompt';
+import { ConnectionBanner } from '@/components/session/ConnectionBanner';
+import { Transcript } from '@/components/session/Transcript';
+import { useCancelTurn, useSessionEvents, useStartTurn } from '@/features/queries';
+import { useAttachmentUploads } from '@/features/use-uploads';
+import { pendingConfirmation, toMessages } from '@/lib/transcript';
+import { useComposerStore } from '@/stores/composer';
+import { useStreamStore } from '@/stores/stream';
 
 /** Whether a drag carries files, as opposed to selected text or a dragged link. */
 function hasFiles(event: DragEvent): boolean {
-  return Array.from(event.dataTransfer.types).includes('Files')
+  return Array.from(event.dataTransfer.types).includes('Files');
 }
 
 export interface SessionPaneProps {
-  sessionId: string
+  sessionId: string;
   /** The board a turn in this session may change. See the module docstring. */
-  projectId: string
+  projectId: string;
   /** Announced to assistive technology; the heading itself is visually hidden. */
-  heading: string
+  heading: string;
   /** Shown above the composer while the conversation is still empty. */
-  emptyHint?: string
-  className?: string
+  emptyHint?: string;
+  className?: string;
 }
 
 const DEFAULT_CLASS =
-  'relative flex h-[70svh] flex-col rounded-lg border lg:h-auto lg:min-h-0 lg:flex-1'
+  'relative flex h-[70svh] flex-col rounded-lg border lg:h-auto lg:min-h-0 lg:flex-1';
 
 export function SessionPane({
   sessionId,
@@ -75,60 +75,60 @@ export function SessionPane({
   emptyHint,
   className = DEFAULT_CLASS,
 }: SessionPaneProps) {
-  const queryClient = useQueryClient()
-  const events = useSessionEvents(sessionId)
-  const startTurn = useStartTurn(sessionId)
-  const cancelTurn = useCancelTurn(sessionId)
+  const queryClient = useQueryClient();
+  const events = useSessionEvents(sessionId);
+  const startTurn = useStartTurn(sessionId);
+  const cancelTurn = useCancelTurn(sessionId);
 
-  const turns = useStreamStore((state) => state.turns)
-  const clearTurn = useStreamStore((state) => state.clear)
-  const resetComposer = useComposerStore((state) => state.reset)
-  const { uploadAll } = useAttachmentUploads(sessionId)
-  const [dragDepth, setDragDepth] = useState(0)
+  const turns = useStreamStore((state) => state.turns);
+  const clearTurn = useStreamStore((state) => state.clear);
+  const resetComposer = useComposerStore((state) => state.reset);
+  const { uploadAll } = useAttachmentUploads(sessionId);
+  const [dragDepth, setDragDepth] = useState(0);
 
-  const live = Object.values(turns).find((turn) => turn.sessionId === sessionId) ?? null
+  const live = Object.values(turns).find((turn) => turn.sessionId === sessionId) ?? null;
 
   // The handoff. Refetch first, then drop the buffer.
-  const handled = useRef<string | null>(null)
+  const handled = useRef<string | null>(null);
   useEffect(() => {
-    if (!live || live.status !== 'complete' || handled.current === live.turnId) return
-    handled.current = live.turnId
-    const turnId = live.turnId
-    void events.refetch().then(() => clearTurn(turnId))
+    if (!live || live.status !== 'complete' || handled.current === live.turnId) return;
+    handled.current = live.turnId;
+    const turnId = live.turnId;
+    void events.refetch().then(() => clearTurn(turnId));
     if (projectId) {
-      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] })
-      void queryClient.invalidateQueries({ queryKey: ['project', projectId] })
+      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['project', projectId] });
     }
-  }, [live, events, clearTurn, projectId, queryClient])
+  }, [live, events, clearTurn, projectId, queryClient]);
 
-  const messages = toMessages(events.data ?? [])
-  const streaming = live?.status === 'running'
+  const messages = toMessages(events.data ?? []);
+  const streaming = live?.status === 'running';
   // Only while nothing is generating: the request is answered by starting a turn, and a
   // second turn on a session that already has one running is a conflict.
-  const pending = streaming ? null : pendingConfirmation(events.data ?? [])
-  const headingId = `session-heading-${sessionId || 'pending'}`
+  const pending = streaming ? null : pendingConfirmation(events.data ?? []);
+  const headingId = `session-heading-${sessionId || 'pending'}`;
 
   return (
     <section
       className={className}
       aria-labelledby={headingId}
       onDragEnter={(event) => {
-        if (!hasFiles(event)) return
-        event.preventDefault()
+        if (!hasFiles(event)) return;
+        event.preventDefault();
         // `dragDepth` rather than a boolean, because `dragenter`/`dragleave` fire for
         // every descendant the pointer crosses — a boolean flickers off the moment the
         // cursor moves from the transcript onto a message bubble.
-        setDragDepth((depth) => depth + 1)
+        setDragDepth((depth) => depth + 1);
       }}
       onDragOver={(event) => {
-        if (hasFiles(event)) event.preventDefault()
+        if (hasFiles(event)) event.preventDefault();
       }}
       onDragLeave={() => setDragDepth((depth) => Math.max(0, depth - 1))}
       onDrop={(event) => {
-        if (!hasFiles(event)) return
-        event.preventDefault()
-        setDragDepth(0)
-        uploadAll(event.dataTransfer.files)
+        if (!hasFiles(event)) return;
+        event.preventDefault();
+        setDragDepth(0);
+        uploadAll(event.dataTransfer.files);
       }}
     >
       <h2 id={headingId} className="sr-only">
@@ -182,14 +182,14 @@ export function SessionPane({
           onSend={(text, attachments) => {
             // `attachments` carries `filename` for the optimistic echo; `api.startTurn`
             // strips it, because `TurnAttachment` forbids unknown fields.
-            startTurn.mutate({ text, attachments })
-            resetComposer(sessionId)
+            startTurn.mutate({ text, attachments });
+            resetComposer(sessionId);
           }}
           onCancel={() => {
-            if (live) cancelTurn.mutate(live.turnId)
+            if (live) cancelTurn.mutate(live.turnId);
           }}
         />
       ) : null}
     </section>
-  )
+  );
 }

@@ -16,24 +16,24 @@
  * for the same row.
  */
 
-import { ProgressRing } from '@/components/board/ProgressRing'
-import { TaskRowActions } from '@/components/board/TaskRowActions'
-import { STATE_LABELS, transitionsFor } from '@/components/board/task-state'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { formatMinutes, pluralize } from '@/lib/format'
-import type { Rollup, Task, TaskState } from '@/lib/schemas'
-import { cn } from '@/lib/utils'
+import { ProgressRing } from '@/components/board/ProgressRing';
+import { STATE_LABELS, transitionsFor } from '@/components/board/task-state';
+import { TaskRowActions } from '@/components/board/TaskRowActions';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { formatMinutes, pluralize } from '@/lib/format';
+import type { Rollup, Task, TaskState } from '@/lib/schemas';
+import { cn } from '@/lib/utils';
 
 interface SubtaskListProps {
-  subtasks: Task[]
+  subtasks: Task[];
   /** The parent's rollup, which is what the board's parent card shows. */
-  rollup: Rollup | null
-  onSetState: (taskId: string, state: TaskState, postponedUntil?: string) => void
+  rollup: Rollup | null;
+  onSetState: (taskId: string, state: TaskState, postponedUntil?: string) => void;
 }
 
 export function SubtaskList({ subtasks, rollup, onSetState }: SubtaskListProps) {
-  if (subtasks.length === 0) return null
+  if (subtasks.length === 0) return null;
 
   return (
     // `subtask-cards`, not `subtask-list`: the board's expanded parent already owns that
@@ -78,24 +78,24 @@ export function SubtaskList({ subtasks, rollup, onSetState }: SubtaskListProps) 
         ))}
       </ul>
     </section>
-  )
+  );
 }
 
 function SubtaskCard({
   subtask,
   onSetState,
 }: {
-  subtask: Task
-  onSetState: (state: TaskState, postponedUntil?: string) => void
+  subtask: Task;
+  onSetState: (state: TaskState, postponedUntil?: string) => void;
 }) {
   // The one obvious next step, promoted out of the menu: "Start" on a fresh subtask,
   // "Complete" on the one being worked on. Taken from `transitionsFor` rather than
   // written out, so it is legal by construction and cannot produce a 409 — notably,
   // `not_started` → `completed` is *not* a transition, so a bare completion checkbox
   // would be an error for every subtask nobody has started yet.
-  const [primary] = transitionsFor(subtask.state)
-  const quickAction = primary && !primary.needsDate ? primary : null
-  const dimmed = subtask.state === 'discarded'
+  const [primary] = transitionsFor(subtask.state);
+  const quickAction = primary && !primary.needsDate ? primary : null;
+  const dimmed = subtask.state === 'discarded';
 
   return (
     <li
@@ -154,5 +154,5 @@ function SubtaskCard({
         </div>
       </div>
     </li>
-  )
+  );
 }

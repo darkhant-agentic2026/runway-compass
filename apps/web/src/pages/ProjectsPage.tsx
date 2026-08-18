@@ -5,21 +5,21 @@
  * The badge lands with autonomous runs at M5; the counts are live now.
  */
 
-import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useState } from 'react';
+import { Link } from 'react-router-dom';
 
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { useCreateProject, useProjects } from '@/features/queries'
-import { formatMinutes } from '@/lib/format'
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { useCreateProject, useProjects } from '@/features/queries';
+import { formatMinutes } from '@/lib/format';
 
 export default function ProjectsPage() {
-  const projects = useProjects('active')
-  const createProject = useCreateProject()
-  const [title, setTitle] = useState('')
-  const [goal, setGoal] = useState('')
+  const projects = useProjects('active');
+  const createProject = useCreateProject();
+  const [title, setTitle] = useState('');
+  const [goal, setGoal] = useState('');
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6 p-4 sm:p-6">
@@ -28,12 +28,12 @@ export default function ProjectsPage() {
       <form
         className="flex flex-wrap items-end gap-2"
         onSubmit={(event) => {
-          event.preventDefault()
-          const trimmed = title.trim()
-          if (!trimmed) return
-          createProject.mutate({ title: trimmed, goal: goal.trim() })
-          setTitle('')
-          setGoal('')
+          event.preventDefault();
+          const trimmed = title.trim();
+          if (!trimmed) return;
+          createProject.mutate({ title: trimmed, goal: goal.trim() });
+          setTitle('');
+          setGoal('');
         }}
       >
         <div className="min-w-40 flex-1">
@@ -90,5 +90,5 @@ export default function ProjectsPage() {
         </ul>
       )}
     </div>
-  )
+  );
 }

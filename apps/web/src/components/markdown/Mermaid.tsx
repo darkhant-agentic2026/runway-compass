@@ -14,46 +14,46 @@
  * reads as the app being broken (docs/06-frontend.md#markdown-in-the-transcript).
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react';
 
-import { useThemeStore } from '@/stores/theme'
+import { useThemeStore } from '@/stores/theme';
 
 /**
  * Mermaid identifies each render with a DOM id, and it must be unique on the page and
  * usable in a CSS selector. `useId()` is neither — React's ids contain `:` — so this is a
  * module-level counter instead.
  */
-let nextDiagramId = 0
+let nextDiagramId = 0;
 
 export function Mermaid({ code }: { code: string }) {
   // The one thing on the page that genuinely re-renders on a theme change: mermaid bakes
   // its palette into the SVG it returns, so unlike shiki's tokens there are no variables
   // left to swap (docs/06-frontend.md#integration-points-that-are-easy-to-miss).
-  const resolved = useThemeStore((state) => state.resolved)
-  const [svg, setSvg] = useState<string | null>(null)
-  const [id] = useState(() => `coach-mermaid-${(nextDiagramId += 1)}`)
+  const resolved = useThemeStore((state) => state.resolved);
+  const [svg, setSvg] = useState<string | null>(null);
+  const [id] = useState(() => `coach-mermaid-${(nextDiagramId += 1)}`);
 
   useEffect(() => {
-    let cancelled = false
+    let cancelled = false;
     void (async () => {
       try {
-        const mermaid = (await import('mermaid')).default
+        const mermaid = (await import('mermaid')).default;
         mermaid.initialize({
           startOnLoad: false,
           securityLevel: 'strict',
           theme: resolved === 'dark' ? 'dark' : 'default',
-        })
-        const rendered = await mermaid.render(id, code)
-        if (!cancelled) setSvg(rendered.svg)
+        });
+        const rendered = await mermaid.render(id, code);
+        if (!cancelled) setSvg(rendered.svg);
       } catch {
         // The definition below is the fallback, so there is nothing to report.
-        if (!cancelled) setSvg(null)
+        if (!cancelled) setSvg(null);
       }
-    })()
+    })();
     return () => {
-      cancelled = true
-    }
-  }, [code, id, resolved])
+      cancelled = true;
+    };
+  }, [code, id, resolved]);
 
   if (!svg) {
     return (
@@ -63,7 +63,7 @@ export function Mermaid({ code }: { code: string }) {
       >
         <code className="font-mono">{code}</code>
       </pre>
-    )
+    );
   }
 
   return (
@@ -73,5 +73,5 @@ export function Mermaid({ code }: { code: string }) {
       // See the module docstring: mermaid's own SVG, not the message's text.
       dangerouslySetInnerHTML={{ __html: svg }}
     />
-  )
+  );
 }

@@ -12,14 +12,14 @@
  * appearing twice for the moment between the frame and the refetch.
  */
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef } from 'react';
 
-import { Markdown } from '@/components/markdown/Markdown'
-import { AttachmentPreview } from '@/components/session/AttachmentPreview'
-import { ToolChips, type ChipView } from '@/components/session/ToolChips'
-import type { TranscriptMessage } from '@/lib/transcript'
-import { cn } from '@/lib/utils'
-import type { StreamState, ToolChip } from '@/stores/stream'
+import { Markdown } from '@/components/markdown/Markdown';
+import { AttachmentPreview } from '@/components/session/AttachmentPreview';
+import { ToolChips, type ChipView } from '@/components/session/ToolChips';
+import type { TranscriptMessage } from '@/lib/transcript';
+import { cn } from '@/lib/utils';
+import type { StreamState, ToolChip } from '@/stores/stream';
 
 /** A settled message's tools. Stored chips are always closed — the turn is over. */
 function settledChips(message: TranscriptMessage): ChipView[] {
@@ -28,7 +28,7 @@ function settledChips(message: TranscriptMessage): ChipView[] {
     name: tool.name,
     done: true,
     ok: tool.ok,
-  }))
+  }));
 }
 
 /** The live buffer's chips, which may still be open. Keyed by the `seq` they arrived on. */
@@ -38,7 +38,7 @@ function liveChips(tools: ToolChip[]): ChipView[] {
     name: chip.name,
     done: chip.done,
     ok: chip.ok,
-  }))
+  }));
 }
 
 export function Transcript({
@@ -47,14 +47,14 @@ export function Transcript({
   pending,
   sessionId,
 }: {
-  messages: TranscriptMessage[]
+  messages: TranscriptMessage[];
   /** The turn currently streaming, if any. */
-  live: StreamState | null
-  pending: boolean
+  live: StreamState | null;
+  pending: boolean;
   /** Needed to fetch an attachment's bytes for a preview. */
-  sessionId: string
+  sessionId: string;
 }) {
-  const viewport = useRef<HTMLDivElement>(null)
+  const viewport = useRef<HTMLDivElement>(null);
 
   // Scroll *this* container, not `bottom.scrollIntoView()`.
   //
@@ -67,15 +67,15 @@ export function Transcript({
   // Assigning `scrollTop` cannot escape the element, which is what "keep the transcript
   // pinned to its own bottom" actually means.
   useEffect(() => {
-    const element = viewport.current
-    if (element) element.scrollTop = element.scrollHeight
-  }, [messages.length, live?.text])
+    const element = viewport.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  }, [messages.length, live?.text]);
 
   if (pending && messages.length === 0) {
-    return <p className="p-4 text-muted-foreground">Loading the conversation…</p>
+    return <p className="p-4 text-muted-foreground">Loading the conversation…</p>;
   }
 
-  const empty = messages.length === 0 && !live
+  const empty = messages.length === 0 && !live;
 
   return (
     <div
@@ -156,7 +156,7 @@ export function Transcript({
         </div>
       ) : null}
     </div>
-  )
+  );
 }
 
 /**
@@ -170,8 +170,8 @@ export function Transcript({
  * streaming, since streaming text lives in the live buffer instead.
  */
 function MessageText({ role, text }: { role: 'user' | 'model'; text: string }) {
-  if (role === 'user') return <p className="whitespace-pre-wrap">{text}</p>
-  return <Markdown text={text} />
+  if (role === 'user') return <p className="whitespace-pre-wrap">{text}</p>;
+  return <Markdown text={text} />;
 }
 
 function Bubble({ role, children }: { role: 'user' | 'model'; children: React.ReactNode }) {
@@ -187,5 +187,5 @@ function Bubble({ role, children }: { role: 'user' | 'model'; children: React.Re
         {children}
       </div>
     </div>
-  )
+  );
 }

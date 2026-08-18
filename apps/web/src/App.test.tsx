@@ -13,27 +13,27 @@
  * is *called*, which stays true when no one is listening.
  */
 
-import { render, screen } from '@testing-library/react'
-import { expect, it, vi } from 'vitest'
-import { toast } from 'sonner'
+import { render, screen } from '@testing-library/react';
+import { toast } from 'sonner';
+import { expect, it, vi } from 'vitest';
 
-import { Toaster } from '@/components/ui/sonner'
+import { Toaster } from '@/components/ui/sonner';
 
-vi.mock('next-themes', () => ({ useTheme: () => ({ theme: 'light' }) }))
+vi.mock('next-themes', () => ({ useTheme: () => ({ theme: 'light' }) }));
 
 it('renders a live region that toasts land in', async () => {
-  render(<Toaster />)
+  render(<Toaster />);
 
-  toast.error('the upload could not be signed')
+  toast.error('the upload could not be signed');
 
-  expect(await screen.findByText('the upload could not be signed')).toBeInTheDocument()
-})
+  expect(await screen.findByText('the upload could not be signed')).toBeInTheDocument();
+});
 
 it('App mounts the Toaster', async () => {
   // Asserted against the source rather than by rendering `<App />`, which would need the
   // router, the query client, and a signed-in auth provider — three things whose failure
   // would make this test red for reasons that have nothing to do with the toaster.
-  const source = await import('@/App?raw').then((module) => module.default as string)
+  const source = await import('@/App?raw').then((module) => module.default as string);
 
-  expect(source).toContain('<Toaster')
-})
+  expect(source).toContain('<Toaster');
+});

@@ -18,26 +18,26 @@
  * is by the same number, so an out-of-order arrival cannot interleave text.
  */
 
-import { create } from 'zustand'
+import { create } from 'zustand';
 
-export type StreamStatus = 'idle' | 'running' | 'complete' | 'error'
+export type StreamStatus = 'idle' | 'running' | 'complete' | 'error';
 
 export interface ToolChip {
-  seq: number
-  name: string
+  seq: number;
+  name: string;
   /** `false` until the matching `tool_result` arrives; drives the spinner on the chip. */
-  done: boolean
-  ok: boolean
+  done: boolean;
+  ok: boolean;
 }
 
 export interface StreamState {
-  turnId: string
-  sessionId: string | null
-  text: string
-  lastSeq: number
-  status: StreamStatus
-  tools: ToolChip[]
-  error: { code: string; message: string; retryable: boolean } | null
+  turnId: string;
+  sessionId: string | null;
+  text: string;
+  lastSeq: number;
+  status: StreamStatus;
+  tools: ToolChip[];
+  error: { code: string; message: string; retryable: boolean } | null;
 }
 
 function blank(turnId: string, sessionId: string | null = null): StreamState {
@@ -49,27 +49,27 @@ function blank(turnId: string, sessionId: string | null = null): StreamState {
     status: 'running',
     tools: [],
     error: null,
-  }
+  };
 }
 
 interface StreamStore {
-  turns: Record<string, StreamState>
+  turns: Record<string, StreamState>;
 
   /** Register a turn started by `POST /turns`, before any frame has arrived. */
-  begin: (turnId: string, sessionId: string) => void
-  appendDelta: (turnId: string, seq: number, text: string) => void
-  noteToolCall: (turnId: string, seq: number, name: string) => void
-  noteToolResult: (turnId: string, seq: number, name: string, ok: boolean) => void
-  complete: (turnId: string, seq: number) => void
+  begin: (turnId: string, sessionId: string) => void;
+  appendDelta: (turnId: string, seq: number, text: string) => void;
+  noteToolCall: (turnId: string, seq: number, name: string) => void;
+  noteToolResult: (turnId: string, seq: number, name: string, ok: boolean) => void;
+  complete: (turnId: string, seq: number) => void;
   fail: (
     turnId: string,
     seq: number,
     error: { code: string; message: string; retryable: boolean },
-  ) => void
+  ) => void;
   /** Drop a turn's buffer after its text has been handed to the Query cache. */
-  clear: (turnId: string) => void
+  clear: (turnId: string) => void;
   /** Every turn still running, with its cursor — the reconnect's resume worklist. */
-  running: () => { turnId: string; lastSeq: number }[]
+  running: () => { turnId: string; lastSeq: number }[];
 }
 
 export const useStreamStore = create<StreamStore>((set, get) => ({
@@ -80,14 +80,14 @@ export const useStreamStore = create<StreamStore>((set, get) => ({
       state.turns[turnId]
         ? state
         : { turns: { ...state.turns, [turnId]: blank(turnId, sessionId) } },
-    )
+    );
   },
 
   appendDelta(turnId, seq, text) {
     set((state) => {
-      const current = state.turns[turnId] ?? blank(turnId)
+      const current = state.turns[turnId] ?? blank(turnId);
       // The dedupe. Replay after a reconnect overlaps on purpose.
-      if (seq <= current.lastSeq) return state
+      if (seq <= current.lastSeq) return state;
       return {
         turns: {
           ...state.turns,
@@ -98,14 +98,14 @@ export const useStreamStore = create<StreamStore>((set, get) => ({
             status: 'running',
           },
         },
-      }
-    })
+      };
+    });
   },
 
   noteToolCall(turnId, seq, name) {
     set((state) => {
-      const current = state.turns[turnId] ?? blank(turnId)
-      if (seq <= current.lastSeq) return state
+      const current = state.turns[turnId] ?? blank(turnId);
+      if (seq <= current.lastSeq) return state;
       return {
         turns: {
           ...state.turns,
@@ -115,35 +115,35 @@ export const useStreamStore = create<StreamStore>((set, get) => ({
             tools: [...current.tools, { seq, name, done: false, ok: true }],
           },
         },
-      }
-    })
+      };
+    });
   },
 
   noteToolResult(turnId, seq, name, ok) {
     set((state) => {
-      const current = state.turns[turnId] ?? blank(turnId)
-      if (seq <= current.lastSeq) return state
+      const current = state.turns[turnId] ?? blank(turnId);
+      if (seq <= current.lastSeq) return state;
       // Close the most recent open chip with this name. Matching by name rather than by
       // an id because the contract's `tool_result` carries no call id — and the model
       // cannot have two calls to the same tool outstanding within one turn.
-      let closed = false
+      let closed = false;
       const tools = [...current.tools].reverse().map((chip) => {
-        if (closed || chip.done || chip.name !== name) return chip
-        closed = true
-        return { ...chip, done: true, ok }
-      })
+        if (closed || chip.done || chip.name !== name) return chip;
+        closed = true;
+        return { ...chip, done: true, ok };
+      });
       return {
         turns: {
           ...state.turns,
           [turnId]: { ...current, lastSeq: seq, tools: tools.reverse() },
         },
-      }
-    })
+      };
+    });
   },
 
   complete(turnId, seq) {
     set((state) => {
-      const current = state.turns[turnId] ?? blank(turnId)
+      const current = state.turns[turnId] ?? blank(turnId);
       return {
         turns: {
           ...state.turns,
@@ -154,13 +154,13 @@ export const useStreamStore = create<StreamStore>((set, get) => ({
             tools: current.tools.map((chip) => ({ ...chip, done: true })),
           },
         },
-      }
-    })
+      };
+    });
   },
 
   fail(turnId, seq, error) {
     set((state) => {
-      const current = state.turns[turnId] ?? blank(turnId)
+      const current = state.turns[turnId] ?? blank(turnId);
       return {
         turns: {
           ...state.turns,
@@ -171,20 +171,20 @@ export const useStreamStore = create<StreamStore>((set, get) => ({
             error,
           },
         },
-      }
-    })
+      };
+    });
   },
 
   clear(turnId) {
     set((state) => {
-      const { [turnId]: _dropped, ...rest } = state.turns
-      return { turns: rest }
-    })
+      const { [turnId]: _dropped, ...rest } = state.turns;
+      return { turns: rest };
+    });
   },
 
   running() {
     return Object.values(get().turns)
       .filter((turn) => turn.status === 'running')
-      .map((turn) => ({ turnId: turn.turnId, lastSeq: turn.lastSeq }))
+      .map((turn) => ({ turnId: turn.turnId, lastSeq: turn.lastSeq }));
   },
-}))
+}));

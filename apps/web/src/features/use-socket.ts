@@ -6,11 +6,11 @@
  * tree: when to connect, and where `board_update` frames go.
  */
 
-import { useQueryClient } from '@tanstack/react-query'
-import { useEffect } from 'react'
+import { useQueryClient } from '@tanstack/react-query';
+import { useEffect } from 'react';
 
-import { useAuth } from '@/features/use-auth'
-import { getSocket, resetSocket } from '@/lib/socket'
+import { useAuth } from '@/features/use-auth';
+import { getSocket, resetSocket } from '@/lib/socket';
 
 /**
  * Hold one socket open while a user is signed in.
@@ -26,29 +26,29 @@ import { getSocket, resetSocket } from '@/lib/socket'
  * workspace. See `lib/socket.ts`.
  */
 export function useCoachSocket(): void {
-  const { user } = useAuth()
-  const queryClient = useQueryClient()
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     if (!user) {
-      resetSocket()
-      return
+      resetSocket();
+      return;
     }
-    const socket = getSocket()
+    const socket = getSocket();
     const unsubscribe = socket.onBoardUpdate((frame) => {
-      void queryClient.invalidateQueries({ queryKey: ['tasks', frame.projectId] })
-      void queryClient.invalidateQueries({ queryKey: ['project', frame.projectId] })
-    })
-    void socket.connect()
+      void queryClient.invalidateQueries({ queryKey: ['tasks', frame.projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['project', frame.projectId] });
+    });
+    void socket.connect();
 
-    const onVisibility = () => socket.setVisibility(!document.hidden)
-    document.addEventListener('visibilitychange', onVisibility)
+    const onVisibility = () => socket.setVisibility(!document.hidden);
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
-      unsubscribe()
-      document.removeEventListener('visibilitychange', onVisibility)
-    }
+      unsubscribe();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
     // Deliberately keyed on the uid alone: re-running this on every render of a parent
     // would tear down and rebuild the socket, which is the one thing a long-lived
     // connection must not do.
-  }, [user?.uid, queryClient, user])
+  }, [user?.uid, queryClient, user]);
 }

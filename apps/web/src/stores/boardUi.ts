@@ -9,31 +9,31 @@
  * just starting are different wishes.
  */
 
-import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 
 export interface BoardFilters {
   /** docs/06-frontend.md: default **on**. */
-  hideCompleted: boolean
+  hideCompleted: boolean;
   /** Default on. */
-  hideDiscarded: boolean
+  hideDiscarded: boolean;
   /** Default **off**. */
-  hidePostponed: boolean
+  hidePostponed: boolean;
 }
 
 export const DEFAULT_FILTERS: BoardFilters = {
   hideCompleted: true,
   hideDiscarded: true,
   hidePostponed: false,
-}
+};
 
 interface BoardUiState {
-  filtersByProject: Record<string, BoardFilters>
-  collapsedParents: Record<string, boolean>
-  filtersFor: (projectId: string) => BoardFilters
-  toggleFilter: (projectId: string, filter: keyof BoardFilters) => void
-  isCollapsed: (taskId: string) => boolean
-  toggleCollapsed: (taskId: string) => void
+  filtersByProject: Record<string, BoardFilters>;
+  collapsedParents: Record<string, boolean>;
+  filtersFor: (projectId: string) => BoardFilters;
+  toggleFilter: (projectId: string, filter: keyof BoardFilters) => void;
+  isCollapsed: (taskId: string) => boolean;
+  toggleCollapsed: (taskId: string) => void;
 }
 
 export const useBoardUiStore = create<BoardUiState>()(
@@ -43,22 +43,22 @@ export const useBoardUiStore = create<BoardUiState>()(
       collapsedParents: {},
 
       filtersFor(projectId) {
-        return get().filtersByProject[projectId] ?? DEFAULT_FILTERS
+        return get().filtersByProject[projectId] ?? DEFAULT_FILTERS;
       },
 
       toggleFilter(projectId, filter) {
-        const current = get().filtersFor(projectId)
+        const current = get().filtersFor(projectId);
         set((state) => ({
           filtersByProject: {
             ...state.filtersByProject,
             [projectId]: { ...current, [filter]: !current[filter] },
           },
-        }))
+        }));
       },
 
       isCollapsed(taskId) {
         // Parents start expanded: the subtasks are the point of a split.
-        return get().collapsedParents[taskId] ?? false
+        return get().collapsedParents[taskId] ?? false;
       },
 
       toggleCollapsed(taskId) {
@@ -67,7 +67,7 @@ export const useBoardUiStore = create<BoardUiState>()(
             ...state.collapsedParents,
             [taskId]: !(state.collapsedParents[taskId] ?? false),
           },
-        }))
+        }));
       },
     }),
     {
@@ -77,4 +77,4 @@ export const useBoardUiStore = create<BoardUiState>()(
       version: 1,
     },
   ),
-)
+);

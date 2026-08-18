@@ -22,20 +22,20 @@
       pinned by a test: src/stores/theme.test.ts.
     -->
     <script>
-      ;(function () {
+      (function () {
         try {
-          var pref = localStorage.getItem('coach.theme') || 'system'
+          var pref = localStorage.getItem('coach.theme') || 'system';
           var dark =
             pref === 'dark' ||
-            (pref === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)
-          document.documentElement.classList.toggle('dark', dark)
+            (pref === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.classList.toggle('dark', dark);
           // Without this, native scrollbars, form controls, and the pre-paint canvas
           // stay light while everything else goes dark.
-          document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
+          document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
         } catch (e) {
           /* private mode: fall through to light */
         }
-      })()
+      })();
     </script>
   </head>
   <body class="h-full">

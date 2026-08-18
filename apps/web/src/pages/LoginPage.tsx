@@ -10,20 +10,20 @@
  * before auth resolves rather than from `globalPrefs`.
  */
 
-import { useEffect, useState } from 'react'
-import { Navigate, useLocation, useNavigate } from 'react-router-dom'
+import { useEffect, useState } from 'react';
+import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { useAuth } from '@/features/use-auth'
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { useAuth } from '@/features/use-auth';
 
 export default function LoginPage() {
-  const auth = useAuth()
-  const navigate = useNavigate()
-  const location = useLocation()
-  const from = (location.state as { from?: string } | null)?.from ?? '/'
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
+  const auth = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const from = (location.state as { from?: string } | null)?.from ?? '/';
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   /**
    * Sign-in failures have to be visible.
@@ -35,30 +35,30 @@ export default function LoginPage() {
    * apparently succeeded, which is indistinguishable from the app being broken.
    */
   async function signIn(): Promise<void> {
-    setError(null)
-    setBusy(true)
+    setError(null);
+    setBusy(true);
     try {
-      await auth.signIn()
+      await auth.signIn();
     } catch (cause) {
       const code =
         typeof cause === 'object' && cause !== null && 'code' in cause
           ? String((cause as { code: unknown }).code)
-          : null
-      const message = cause instanceof Error ? cause.message : String(cause)
-      setError(code ? `${code} — ${message}` : message)
+          : null;
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setError(code ? `${code} — ${message}` : message);
       // Also on the console, where the full object with its stack is more useful than
       // anything that fits on a card.
-      console.error('sign-in failed', cause)
+      console.error('sign-in failed', cause);
     } finally {
-      setBusy(false)
+      setBusy(false);
     }
   }
 
   useEffect(() => {
-    if (auth.status === 'signed-in') void navigate(from, { replace: true })
-  }, [auth.status, from, navigate])
+    if (auth.status === 'signed-in') void navigate(from, { replace: true });
+  }, [auth.status, from, navigate]);
 
-  if (auth.status === 'signed-in') return <Navigate to={from} replace />
+  if (auth.status === 'signed-in') return <Navigate to={from} replace />;
 
   return (
     <div className="flex min-h-full items-center justify-center p-6">
@@ -97,5 +97,5 @@ export default function LoginPage() {
         </CardContent>
       </Card>
     </div>
-  )
+  );
 }

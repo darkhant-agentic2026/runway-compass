@@ -11,10 +11,10 @@ import {
   useQuery,
   useQueryClient,
   type UseMutationResult,
-} from '@tanstack/react-query'
+} from '@tanstack/react-query';
 
-import { ApiError, api, newIdempotencyKey } from '@/lib/api'
-import { orderForMove } from '@/lib/ordering'
+import { api, ApiError, newIdempotencyKey } from '@/lib/api';
+import { orderForMove } from '@/lib/ordering';
 import type {
   GlobalPrefs,
   Project,
@@ -23,10 +23,10 @@ import type {
   Task,
   TaskState,
   TaskWithSubtasks,
-} from '@/lib/schemas'
-import { getSocket } from '@/lib/socket'
-import type { BoardFilters } from '@/stores/boardUi'
-import { useStreamStore } from '@/stores/stream'
+} from '@/lib/schemas';
+import { getSocket } from '@/lib/socket';
+import type { BoardFilters } from '@/stores/boardUi';
+import { useStreamStore } from '@/stores/stream';
 
 export const queryKeys = {
   me: ['me'] as const,
@@ -43,7 +43,7 @@ export const queryKeys = {
    */
   projectSession: (projectId: string) => ['project-session', projectId] as const,
   sessionEvents: (sessionId: string) => ['session', sessionId, 'events'] as const,
-}
+};
 
 export function createQueryClient(): QueryClient {
   return new QueryClient({
@@ -56,40 +56,40 @@ export function createQueryClient(): QueryClient {
         refetchOnWindowFocus: false,
         retry: (failureCount, error) => {
           // Retry with backoff except on 4xx: a 404 or a 422 will not improve.
-          if (error instanceof ApiError && error.isClientError) return false
-          return failureCount < 3
+          if (error instanceof ApiError && error.isClientError) return false;
+          return failureCount < 3;
         },
       },
       mutations: { retry: false },
     },
-  })
+  });
 }
 
 // --- queries --------------------------------------------------------------------------
 
 export function useMe() {
-  return useQuery({ queryKey: queryKeys.me, queryFn: api.getMe })
+  return useQuery({ queryKey: queryKeys.me, queryFn: api.getMe });
 }
 
 export function useProjects(status?: Project['status']) {
   return useQuery({
     queryKey: status ? [...queryKeys.projects, status] : queryKeys.projects,
     queryFn: () => api.listProjects(status),
-  })
+  });
 }
 
 export function useProject(projectId: string) {
   return useQuery({
     queryKey: queryKeys.project(projectId),
     queryFn: () => api.getProject(projectId),
-  })
+  });
 }
 
 export function useEffectivePrefs(projectId: string) {
   return useQuery({
     queryKey: queryKeys.effectivePrefs(projectId),
     queryFn: () => api.getEffectivePrefs(projectId),
-  })
+  });
 }
 
 export function useBoard(projectId: string, filters: BoardFilters) {
@@ -101,7 +101,7 @@ export function useBoard(projectId: string, filters: BoardFilters) {
         includeDiscarded: !filters.hideDiscarded,
         includePostponed: !filters.hidePostponed,
       }),
-  })
+  });
 }
 
 // --- mutations ------------------------------------------------------------------------
@@ -113,19 +113,19 @@ function patchBoardTask(
   patch: Partial<Task>,
 ): TaskWithSubtasks[] {
   return board.map((parent) => {
-    if (parent.id === taskId) return { ...parent, ...patch }
-    if (!parent.subtasks.some((child) => child.id === taskId)) return parent
+    if (parent.id === taskId) return { ...parent, ...patch };
+    if (!parent.subtasks.some((child) => child.id === taskId)) return parent;
     return {
       ...parent,
       subtasks: parent.subtasks.map((child) =>
         child.id === taskId ? { ...child, ...patch } : child,
       ),
-    }
-  })
+    };
+  });
 }
 
 interface BoardMutationContext {
-  previous: TaskWithSubtasks[] | undefined
+  previous: TaskWithSubtasks[] | undefined;
 }
 
 /**
@@ -138,34 +138,34 @@ function useOptimisticBoardMutation<TVariables>(
   mutationFn: (variables: TVariables) => Promise<unknown>,
   optimisticPatch: (board: TaskWithSubtasks[], variables: TVariables) => TaskWithSubtasks[],
 ): UseMutationResult<unknown, Error, TVariables, BoardMutationContext> {
-  const queryClient = useQueryClient()
-  const key = queryKeys.tasks(projectId, filters)
+  const queryClient = useQueryClient();
+  const key = queryKeys.tasks(projectId, filters);
 
   return useMutation<unknown, Error, TVariables, BoardMutationContext>({
     mutationFn,
     async onMutate(variables) {
-      await queryClient.cancelQueries({ queryKey: key })
-      const previous = queryClient.getQueryData<TaskWithSubtasks[]>(key)
+      await queryClient.cancelQueries({ queryKey: key });
+      const previous = queryClient.getQueryData<TaskWithSubtasks[]>(key);
       if (previous) {
-        queryClient.setQueryData<TaskWithSubtasks[]>(key, optimisticPatch(previous, variables))
+        queryClient.setQueryData<TaskWithSubtasks[]>(key, optimisticPatch(previous, variables));
       }
-      return { previous }
+      return { previous };
     },
     onError(_error, _variables, context) {
-      if (context?.previous) queryClient.setQueryData(key, context.previous)
+      if (context?.previous) queryClient.setQueryData(key, context.previous);
     },
     onSettled() {
-      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] })
-      void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) })
+      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
     },
-  })
+  });
 }
 
 export function useSetTaskState(projectId: string, filters: BoardFilters) {
   return useOptimisticBoardMutation<{
-    taskId: string
-    state: TaskState
-    postponedUntil?: string | null
+    taskId: string;
+    state: TaskState;
+    postponedUntil?: string | null;
   }>(
     projectId,
     filters,
@@ -174,10 +174,10 @@ export function useSetTaskState(projectId: string, filters: BoardFilters) {
       const patched = patchBoardTask(board, taskId, {
         state,
         postponedUntil: postponedUntil ?? null,
-      })
+      });
       // Promoting a task to `current` demotes whatever was current — mirror the
       // server's invariant locally, or the board briefly shows two "Next up" rows.
-      if (state !== 'current') return patched
+      if (state !== 'current') return patched;
       return patched.map((parent) => ({
         ...parent,
         state:
@@ -186,9 +186,9 @@ export function useSetTaskState(projectId: string, filters: BoardFilters) {
           ...child,
           state: child.id !== taskId && child.state === 'current' ? 'not_started' : child.state,
         })),
-      }))
+      }));
     },
-  )
+  );
 }
 
 /**
@@ -211,8 +211,8 @@ export function useSetTaskState(projectId: string, filters: BoardFilters) {
  * row updates instantly; the ring updates when the invalidation lands.
  */
 export function useSetSubtaskState(parentTaskId: string, projectId: string) {
-  const queryClient = useQueryClient()
-  const key = queryKeys.task(parentTaskId)
+  const queryClient = useQueryClient();
+  const key = queryKeys.task(parentTaskId);
 
   return useMutation<
     unknown,
@@ -223,8 +223,8 @@ export function useSetSubtaskState(parentTaskId: string, projectId: string) {
     mutationFn: ({ taskId, state, postponedUntil }) =>
       api.setTaskState(taskId, state, postponedUntil),
     async onMutate({ taskId, state, postponedUntil }) {
-      await queryClient.cancelQueries({ queryKey: key, exact: true })
-      const previous = queryClient.getQueryData<TaskWithSubtasks>(key)
+      await queryClient.cancelQueries({ queryKey: key, exact: true });
+      const previous = queryClient.getQueryData<TaskWithSubtasks>(key);
       if (previous) {
         queryClient.setQueryData<TaskWithSubtasks>(key, {
           ...previous,
@@ -237,27 +237,27 @@ export function useSetSubtaskState(parentTaskId: string, projectId: string) {
                 ? { ...child, state: 'not_started' as const }
                 : child,
           ),
-        })
+        });
       }
-      return { previous }
+      return { previous };
     },
     onError(_error, _variables, context) {
-      if (context?.previous) queryClient.setQueryData(key, context.previous)
+      if (context?.previous) queryClient.setQueryData(key, context.previous);
     },
     onSettled() {
-      void queryClient.invalidateQueries({ queryKey: key, exact: true })
-      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] })
-      void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) })
+      void queryClient.invalidateQueries({ queryKey: key, exact: true });
+      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
     },
-  })
+  });
 }
 
 export function useReorderTask(projectId: string, filters: BoardFilters) {
   return useOptimisticBoardMutation<{
-    taskId: string
-    targetIndex: number
-    afterTaskId?: string
-    beforeTaskId?: string
+    taskId: string;
+    targetIndex: number;
+    afterTaskId?: string;
+    beforeTaskId?: string;
   }>(
     projectId,
     filters,
@@ -269,69 +269,69 @@ export function useReorderTask(projectId: string, filters: BoardFilters) {
     (board, { taskId, targetIndex }) => {
       // The same midpoint algorithm the server runs, so the optimistic order equals the
       // confirmed order and the row does not jump when the response lands.
-      const order = orderForMove(board, taskId, targetIndex)
+      const order = orderForMove(board, taskId, targetIndex);
       return patchBoardTask(board, taskId, { order }).sort((a, b) =>
         a.order < b.order ? -1 : a.order > b.order ? 1 : 0,
-      )
+      );
     },
-  )
+  );
 }
 
 export function useCreateTask(projectId: string) {
-  const queryClient = useQueryClient()
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: { title: string; estimatedMinutes: number; afterTaskId?: string }) =>
       api.createTask(projectId, body, newIdempotencyKey()),
     onSuccess() {
-      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] })
-      void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) })
+      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
     },
-  })
+  });
 }
 
 export function useSplitTask(projectId: string) {
-  const queryClient = useQueryClient()
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({
       taskId,
       subtasks,
     }: {
-      taskId: string
-      subtasks: { title: string; estimatedMinutes: number }[]
+      taskId: string;
+      subtasks: { title: string; estimatedMinutes: number }[];
     }) => api.splitTask(taskId, subtasks),
     onSuccess() {
-      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] })
-      void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) })
+      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
     },
-  })
+  });
 }
 
 export function useCreateProject() {
-  const queryClient = useQueryClient()
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: { title: string; goal?: string }) =>
       api.createProject(body, newIdempotencyKey()),
     onSuccess() {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.projects })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.projects });
     },
-  })
+  });
 }
 
 export function usePatchProject(projectId: string) {
-  const queryClient = useQueryClient()
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (patch: {
-      title?: string
-      goal?: string
-      status?: Project['status']
-      prefs?: Partial<ProjectPrefs>
+      title?: string;
+      goal?: string;
+      status?: Project['status'];
+      prefs?: Partial<ProjectPrefs>;
     }) => api.patchProject(projectId, patch),
     onSuccess() {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) })
-      void queryClient.invalidateQueries({ queryKey: queryKeys.effectivePrefs(projectId) })
-      void queryClient.invalidateQueries({ queryKey: queryKeys.projects })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.effectivePrefs(projectId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.projects });
     },
-  })
+  });
 }
 
 // --- sessions & turns -------------------------------------------------------------------
@@ -344,7 +344,7 @@ export function useTaskSession(taskId: string) {
     // not re-POST. `staleTime: Infinity` is the honest expression of that.
     staleTime: Infinity,
     enabled: taskId.length > 0,
-  })
+  });
 }
 
 /**
@@ -359,7 +359,7 @@ export function useProjectSession(projectId: string) {
     queryFn: () => api.openProjectSession(projectId),
     staleTime: Infinity,
     enabled: projectId.length > 0,
-  })
+  });
 }
 
 export function useTask(taskId: string) {
@@ -367,7 +367,7 @@ export function useTask(taskId: string) {
     queryKey: queryKeys.task(taskId),
     queryFn: () => api.getTask(taskId),
     enabled: taskId.length > 0,
-  })
+  });
 }
 
 /**
@@ -382,25 +382,25 @@ export function useSessionEvents(sessionId: string) {
     queryKey: queryKeys.sessionEvents(sessionId),
     enabled: sessionId.length > 0,
     queryFn: async () => {
-      const collected: SessionEvent[] = []
-      let cursor = 0
+      const collected: SessionEvent[] = [];
+      let cursor = 0;
       for (;;) {
-        const page = await api.listSessionEvents(sessionId, cursor, 100)
-        collected.push(...page.events)
-        if (!page.hasMore || page.nextAfterSeq === cursor) break
-        cursor = page.nextAfterSeq
+        const page = await api.listSessionEvents(sessionId, cursor, 100);
+        collected.push(...page.events);
+        if (!page.hasMore || page.nextAfterSeq === cursor) break;
+        cursor = page.nextAfterSeq;
       }
-      return collected
+      return collected;
     },
-  })
+  });
 }
 
 export interface StartTurnBody {
-  text: string
+  text: string;
   /** `filename` is used only by the optimistic echo; it is not sent to the server. */
-  attachments?: { uploadId: string; mimeType: string; filename?: string }[]
+  attachments?: { uploadId: string; mimeType: string; filename?: string }[];
   /** The answer to a tool that asked first. A turn may carry this and nothing else. */
-  confirmation?: { functionCallId: string; confirmed: boolean }
+  confirmation?: { functionCallId: string; confirmed: boolean };
 }
 
 /**
@@ -410,8 +410,8 @@ export interface StartTurnBody {
  * it cannot collide with an ADK event id.
  */
 export function pendingUserEvent(existing: SessionEvent[], body: StartTurnBody): SessionEvent {
-  const parts: Record<string, unknown>[] = []
-  if (body.text) parts.push({ text: body.text })
+  const parts: Record<string, unknown>[] = [];
+  if (body.text) parts.push({ text: body.text });
   for (const attachment of body.attachments ?? []) {
     // `snake_case`, matching what `append_event` stores, so this echo and the event that
     // replaces it are read by the same code path rather than two
@@ -422,14 +422,14 @@ export function pendingUserEvent(existing: SessionEvent[], body: StartTurnBody):
         file_uri: '',
         display_name: attachment.filename,
       },
-    })
+    });
   }
-  const highest = existing.reduce((max, event) => Math.max(max, event.seq), 0)
+  const highest = existing.reduce((max, event) => Math.max(max, event.seq), 0);
   return {
     seq: highest + 1,
     eventId: `pending:${crypto.randomUUID()}`,
     event: { author: 'user', content: { role: 'user', parts } },
-  }
+  };
 }
 
 /**
@@ -447,8 +447,8 @@ export function pendingUserEvent(existing: SessionEvent[], body: StartTurnBody):
  * between would show the message twice.
  */
 export function useStartTurn(sessionId: string) {
-  const queryClient = useQueryClient()
-  const key = queryKeys.sessionEvents(sessionId)
+  const queryClient = useQueryClient();
+  const key = queryKeys.sessionEvents(sessionId);
 
   return useMutation<
     Awaited<ReturnType<typeof api.startTurn>>,
@@ -458,41 +458,41 @@ export function useStartTurn(sessionId: string) {
   >({
     mutationFn: (body) => api.startTurn(sessionId, body, newIdempotencyKey()),
     onMutate(body) {
-      const previous = queryClient.getQueryData<SessionEvent[]>(key)
+      const previous = queryClient.getQueryData<SessionEvent[]>(key);
       queryClient.setQueryData<SessionEvent[]>(key, (current) => [
         ...(current ?? []),
         pendingUserEvent(current ?? [], body),
-      ])
-      return { previous }
+      ]);
+      return { previous };
     },
     onError(_error, _body, context) {
       // The message was never accepted, so it must not sit in the transcript looking as
       // though it had been.
-      if (context?.previous) queryClient.setQueryData(key, context.previous)
+      if (context?.previous) queryClient.setQueryData(key, context.previous);
     },
     onSuccess(turn) {
       // Register the turn before any frame arrives, so a socket that reconnects in the
       // gap between the 202 and the first delta still has something to resume.
-      useStreamStore.getState().begin(turn.turnId, turn.sessionId)
-      getSocket().subscribe(turn.turnId)
+      useStreamStore.getState().begin(turn.turnId, turn.sessionId);
+      getSocket().subscribe(turn.turnId);
     },
-  })
+  });
 }
 
 export function useCancelTurn(sessionId: string) {
   return useMutation({
     mutationFn: (turnId: string) => api.cancelTurn(sessionId, turnId),
-  })
+  });
 }
 
 export function usePatchGlobalPrefs() {
-  const queryClient = useQueryClient()
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (patch: Partial<GlobalPrefs>) => api.patchPrefs(patch),
     onSuccess(me) {
-      queryClient.setQueryData(queryKeys.me, me)
+      queryClient.setQueryData(queryKeys.me, me);
       // Every project's effective prefs may have moved with the global layer.
-      void queryClient.invalidateQueries({ queryKey: ['project'] })
+      void queryClient.invalidateQueries({ queryKey: ['project'] });
     },
-  })
+  });
 }

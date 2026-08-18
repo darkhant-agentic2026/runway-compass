@@ -10,7 +10,7 @@
  * resurfacing days later is a surprise rather than a convenience.
  */
 
-import { create } from 'zustand'
+import { create } from 'zustand';
 
 /**
  * The empty result every "no attachments yet" read shares.
@@ -22,27 +22,27 @@ import { create } from 'zustand'
  * freezing it means a caller that tries to mutate the shared empty fails loudly instead
  * of corrupting every other component's idea of "empty".
  */
-export const NO_ATTACHMENTS: readonly PendingAttachment[] = Object.freeze([])
+export const NO_ATTACHMENTS: readonly PendingAttachment[] = Object.freeze([]);
 
 export interface PendingAttachment {
-  uploadId: string
-  filename: string
-  mimeType: string
+  uploadId: string;
+  filename: string;
+  mimeType: string;
   /** `false` until `POST /api/uploads/{id}/finalize` succeeds; not sendable before then. */
-  ready: boolean
+  ready: boolean;
 }
 
 interface ComposerStore {
-  drafts: Record<string, string>
-  attachments: Record<string, PendingAttachment[]>
-  draftFor: (sessionId: string) => string
-  setDraft: (sessionId: string, text: string) => void
+  drafts: Record<string, string>;
+  attachments: Record<string, PendingAttachment[]>;
+  draftFor: (sessionId: string) => string;
+  setDraft: (sessionId: string, text: string) => void;
   /** Readonly, and stable when empty, so it is safe to call from a selector. */
-  attachmentsFor: (sessionId: string) => readonly PendingAttachment[]
-  addAttachment: (sessionId: string, attachment: PendingAttachment) => void
-  markReady: (sessionId: string, uploadId: string, mimeType: string) => void
-  removeAttachment: (sessionId: string, uploadId: string) => void
-  reset: (sessionId: string) => void
+  attachmentsFor: (sessionId: string) => readonly PendingAttachment[];
+  addAttachment: (sessionId: string, attachment: PendingAttachment) => void;
+  markReady: (sessionId: string, uploadId: string, mimeType: string) => void;
+  removeAttachment: (sessionId: string, uploadId: string) => void;
+  reset: (sessionId: string) => void;
 }
 
 export const useComposerStore = create<ComposerStore>((set, get) => ({
@@ -52,7 +52,7 @@ export const useComposerStore = create<ComposerStore>((set, get) => ({
   draftFor: (sessionId) => get().drafts[sessionId] ?? '',
 
   setDraft(sessionId, text) {
-    set((state) => ({ drafts: { ...state.drafts, [sessionId]: text } }))
+    set((state) => ({ drafts: { ...state.drafts, [sessionId]: text } }));
   },
 
   attachmentsFor: (sessionId) => get().attachments[sessionId] ?? NO_ATTACHMENTS,
@@ -63,7 +63,7 @@ export const useComposerStore = create<ComposerStore>((set, get) => ({
         ...state.attachments,
         [sessionId]: [...(state.attachments[sessionId] ?? []), attachment],
       },
-    }))
+    }));
   },
 
   markReady(sessionId, uploadId, mimeType) {
@@ -76,7 +76,7 @@ export const useComposerStore = create<ComposerStore>((set, get) => ({
             : attachment,
         ),
       },
-    }))
+    }));
   },
 
   removeAttachment(sessionId, uploadId) {
@@ -87,13 +87,13 @@ export const useComposerStore = create<ComposerStore>((set, get) => ({
           (attachment) => attachment.uploadId !== uploadId,
         ),
       },
-    }))
+    }));
   },
 
   reset(sessionId) {
     set((state) => ({
       drafts: { ...state.drafts, [sessionId]: '' },
       attachments: { ...state.attachments, [sessionId]: [] },
-    }))
+    }));
   },
-}))
+}));

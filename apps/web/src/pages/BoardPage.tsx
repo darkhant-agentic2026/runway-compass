@@ -14,28 +14,28 @@
  */
 
 import {
+  closestCenter,
   DndContext,
   KeyboardSensor,
   PointerSensor,
-  closestCenter,
   useSensor,
   useSensors,
   type DragEndEvent,
-} from '@dnd-kit/core'
+} from '@dnd-kit/core';
 import {
   SortableContext,
   sortableKeyboardCoordinates,
   verticalListSortingStrategy,
-} from '@dnd-kit/sortable'
-import { useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+} from '@dnd-kit/sortable';
+import { useState } from 'react';
+import { Link, useParams } from 'react-router-dom';
 
-import { BoardFilters } from '@/components/board/BoardFilters'
-import { TaskCard } from '@/components/board/TaskCard'
-import { SessionPane } from '@/components/session/SessionPane'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+import { BoardFilters } from '@/components/board/BoardFilters';
+import { TaskCard } from '@/components/board/TaskCard';
+import { SessionPane } from '@/components/session/SessionPane';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
   useBoard,
   useCreateTask,
@@ -45,57 +45,59 @@ import {
   useReorderTask,
   useSetTaskState,
   useSplitTask,
-} from '@/features/queries'
-import { formatMinutes } from '@/lib/format'
-import type { TaskState } from '@/lib/schemas'
-import { useBoardUiStore } from '@/stores/boardUi'
+} from '@/features/queries';
+import { formatMinutes } from '@/lib/format';
+import type { TaskState } from '@/lib/schemas';
+import { useBoardUiStore } from '@/stores/boardUi';
 
 export default function BoardPage() {
-  const { projectId = '' } = useParams()
-  const filters = useBoardUiStore((state) => state.filtersFor(projectId))
-  const toggleFilter = useBoardUiStore((state) => state.toggleFilter)
-  const isCollapsed = useBoardUiStore((state) => state.isCollapsed)
-  const toggleCollapsed = useBoardUiStore((state) => state.toggleCollapsed)
+  const { projectId = '' } = useParams();
+  const filters = useBoardUiStore((state) => state.filtersFor(projectId));
+  const toggleFilter = useBoardUiStore((state) => state.toggleFilter);
+  const isCollapsed = useBoardUiStore((state) => state.isCollapsed);
+  const toggleCollapsed = useBoardUiStore((state) => state.toggleCollapsed);
 
-  const project = useProject(projectId)
-  const prefs = useEffectivePrefs(projectId)
-  const intake = useProjectSession(projectId)
-  const board = useBoard(projectId, filters)
-  const setTaskState = useSetTaskState(projectId, filters)
-  const reorder = useReorderTask(projectId, filters)
-  const createTask = useCreateTask(projectId)
-  const splitTask = useSplitTask(projectId)
+  const project = useProject(projectId);
+  const prefs = useEffectivePrefs(projectId);
+  const intake = useProjectSession(projectId);
+  const board = useBoard(projectId, filters);
+  const setTaskState = useSetTaskState(projectId, filters);
+  const reorder = useReorderTask(projectId, filters);
+  const createTask = useCreateTask(projectId);
+  const splitTask = useSplitTask(projectId);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-  )
+  );
 
-  const tasks = board.data ?? []
-  const nextUpTaskId = project.data?.nextUpTaskId ?? null
+  const tasks = board.data ?? [];
+  const nextUpTaskId = project.data?.nextUpTaskId ?? null;
 
   function move(taskId: string, targetIndex: number) {
-    const others = tasks.filter((task) => task.id !== taskId)
-    const clamped = Math.max(0, Math.min(targetIndex, others.length))
+    const others = tasks.filter((task) => task.id !== taskId);
+    const clamped = Math.max(0, Math.min(targetIndex, others.length));
     const anchor =
-      clamped === 0 ? { beforeTaskId: others[0]?.id } : { afterTaskId: others[clamped - 1]?.id }
-    if (!anchor.beforeTaskId && !anchor.afterTaskId) return
-    reorder.mutate({ taskId, targetIndex: clamped, ...anchor })
+      clamped === 0
+        ? { beforeTaskId: others[0]?.id }
+        : { afterTaskId: others[clamped - 1]?.id };
+    if (!anchor.beforeTaskId && !anchor.afterTaskId) return;
+    reorder.mutate({ taskId, targetIndex: clamped, ...anchor });
   }
 
   function onDragEnd(event: DragEndEvent) {
-    const { active, over } = event
-    if (!over || active.id === over.id) return
-    const from = tasks.findIndex((task) => task.id === active.id)
-    const to = tasks.findIndex((task) => task.id === over.id)
-    if (from < 0 || to < 0) return
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const from = tasks.findIndex((task) => task.id === active.id);
+    const to = tasks.findIndex((task) => task.id === over.id);
+    if (from < 0 || to < 0) return;
     // dnd-kit reports the index in the *full* list; `move` positions relative to the
     // list without the dragged row, which is the same convention the server uses.
-    move(String(active.id), from < to ? to : to)
+    move(String(active.id), from < to ? to : to);
   }
 
   if (project.isError) {
-    return <p className="p-6 text-muted-foreground">That project could not be loaded.</p>
+    return <p className="p-6 text-muted-foreground">That project could not be loaded.</p>;
   }
 
   return (
@@ -207,7 +209,7 @@ export default function BoardPage() {
         className="relative flex h-[70svh] w-full flex-col rounded-lg border lg:sticky lg:top-4 lg:h-[calc(100vh-8rem)] lg:w-2/5"
       />
     </div>
-  )
+  );
 }
 
 function AddTaskForm({
@@ -215,23 +217,23 @@ function AddTaskForm({
   pending,
   onAdd,
 }: {
-  defaultMinutes: number
-  pending: boolean
-  onAdd: (title: string, estimatedMinutes: number) => void
+  defaultMinutes: number;
+  pending: boolean;
+  onAdd: (title: string, estimatedMinutes: number) => void;
 }) {
-  const [title, setTitle] = useState('')
-  const [minutes, setMinutes] = useState(String(defaultMinutes))
+  const [title, setTitle] = useState('');
+  const [minutes, setMinutes] = useState(String(defaultMinutes));
 
   return (
     <form
       className="flex flex-wrap items-end gap-2"
       onSubmit={(event) => {
-        event.preventDefault()
-        const trimmed = title.trim()
-        if (!trimmed) return
-        onAdd(trimmed, Number(minutes) || defaultMinutes)
-        setTitle('')
-        setMinutes(String(defaultMinutes))
+        event.preventDefault();
+        const trimmed = title.trim();
+        if (!trimmed) return;
+        onAdd(trimmed, Number(minutes) || defaultMinutes);
+        setTitle('');
+        setMinutes(String(defaultMinutes));
       }}
     >
       <div className="min-w-48 flex-1">
@@ -258,5 +260,5 @@ function AddTaskForm({
         Add task
       </Button>
     </form>
-  )
+  );
 }

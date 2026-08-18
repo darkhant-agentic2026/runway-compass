@@ -1,9 +1,9 @@
-import js from '@eslint/js'
-import prettier from 'eslint-config-prettier/flat'
-import reactHooks from 'eslint-plugin-react-hooks'
-import reactRefresh from 'eslint-plugin-react-refresh'
-import globals from 'globals'
-import tseslint from 'typescript-eslint'
+import js from '@eslint/js';
+import prettier from 'eslint-config-prettier/flat';
+import reactHooks from 'eslint-plugin-react-hooks';
+import reactRefresh from 'eslint-plugin-react-refresh';
+import globals from 'globals';
+import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   { ignores: ['dist', 'coverage', 'playwright-report', 'test-results', 'node_modules'] },
@@ -66,4 +66,4 @@ export default tseslint.config(
   // loop where `--fix` and `--write` undo each other on alternate runs.
   // docs/07-infra-deploy.md#formatting-and-linting
   prettier,
-)
+);

@@ -11,34 +11,34 @@
  * covers the whole composite task, and it is this one.
  */
 
-import { useEffect } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useEffect } from 'react';
+import { Link, useParams } from 'react-router-dom';
 
-import { SessionPane } from '@/components/session/SessionPane'
-import { SubtaskList } from '@/components/task/SubtaskList'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { useSetSubtaskState, useTask, useTaskSession } from '@/features/queries'
-import { formatMinutes } from '@/lib/format'
-import { getSocket } from '@/lib/socket'
+import { SessionPane } from '@/components/session/SessionPane';
+import { SubtaskList } from '@/components/task/SubtaskList';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { useSetSubtaskState, useTask, useTaskSession } from '@/features/queries';
+import { formatMinutes } from '@/lib/format';
+import { getSocket } from '@/lib/socket';
 
 export default function TaskWorkspacePage() {
-  const { projectId = '', taskId = '' } = useParams()
+  const { projectId = '', taskId = '' } = useParams();
 
-  const task = useTask(taskId)
-  const session = useTaskSession(taskId)
-  const sessionId = session.data?.id ?? ''
-  const setSubtaskState = useSetSubtaskState(taskId, projectId)
+  const task = useTask(taskId);
+  const session = useTaskSession(taskId);
+  const sessionId = session.data?.id ?? '';
+  const setSubtaskState = useSetSubtaskState(taskId, projectId);
 
   // Presence: "every 30 s while a task workspace is focused" (docs/06-frontend.md).
   // Pointed here on mount and released on unmount, so a user who navigates back to the
   // board stops claiming the project — which is what lets the autonomous agent work on it.
   useEffect(() => {
-    if (!projectId) return
-    const socket = getSocket()
-    socket.setPresenceTarget({ projectId, taskId })
-    return () => socket.setPresenceTarget(null)
-  }, [projectId, taskId])
+    if (!projectId) return;
+    const socket = getSocket();
+    socket.setPresenceTarget({ projectId, taskId });
+    return () => socket.setPresenceTarget(null);
+  }, [projectId, taskId]);
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 p-4 sm:p-6 lg:h-[calc(100vh-4rem)] lg:flex-row">
@@ -100,5 +100,5 @@ export default function TaskWorkspacePage() {
         heading="Session with your coach"
       />
     </div>
-  )
+  );
 }
