@@ -19,6 +19,11 @@ import { getSocket, resetSocket } from '@/lib/socket'
  * "the server tells us *what* changed; Query decides *when* to refetch"
  * (docs/06-frontend.md#the-bridge). Patching from the message would mean the board's
  * shape was defined in two places.
+ *
+ * The handler is *registered*, not passed to `getSocket`. The socket is a singleton and
+ * its constructor arguments belong to whoever built it first — which, because React runs
+ * child effects before parent ones, was `TaskWorkspacePage` on any direct load of a
+ * workspace. See `lib/socket.ts`.
  */
 export function useCoachSocket(): void {
   const { user } = useAuth()
@@ -29,17 +34,17 @@ export function useCoachSocket(): void {
       resetSocket()
       return
     }
-    const socket = getSocket({
-      onBoardUpdate: (frame) => {
-        void queryClient.invalidateQueries({ queryKey: ['tasks', frame.projectId] })
-        void queryClient.invalidateQueries({ queryKey: ['project', frame.projectId] })
-      },
+    const socket = getSocket()
+    const unsubscribe = socket.onBoardUpdate((frame) => {
+      void queryClient.invalidateQueries({ queryKey: ['tasks', frame.projectId] })
+      void queryClient.invalidateQueries({ queryKey: ['project', frame.projectId] })
     })
     void socket.connect()
 
     const onVisibility = () => socket.setVisibility(!document.hidden)
     document.addEventListener('visibilitychange', onVisibility)
     return () => {
+      unsubscribe()
       document.removeEventListener('visibilitychange', onVisibility)
     }
     // Deliberately keyed on the uid alone: re-running this on every render of a parent

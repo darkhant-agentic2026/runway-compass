@@ -40,6 +40,12 @@ from google.genai import types  # noqa: E402
 
 OUTPUT = REPO_ROOT / "apps" / "web" / "src" / "lib" / "session-event-vectors.json"
 
+#: Function-call ids as ADK mints them. Fixed rather than generated, because the vectors
+#: are committed and a fresh uuid per run would make every regeneration a diff.
+CALL_ID = "adk-a86ab509-631b-4261-8c28-054efab32bae"
+REFUSED_CALL_ID = "adk-c17c543d-6c03-4e22-8a10-13a2a3ac4b9d"
+MIXED_CALL_ID = "adk-37ec9330-f43f-44e4-b266-c41c3aa735c1"
+
 #: The artifact URI shape `finalize` produces, so the vector carries a realistic one.
 ARTIFACT_URI = "gs://coach-dev-coach-artifacts/coach/u_alice/user/user:up_01J7Z8/0"
 
@@ -147,8 +153,18 @@ def main() -> int:
             ),
         },
         {
-            "name": "tool call only, which is not a message",
-            "expect": {"dropped": True},
+            # The record of what the coach did, and the reason the transcript cannot drop
+            # a call-only event: the live chips are cleared on `turn_complete`, so this
+            # event is the *only* surviving evidence that a task was added by the agent.
+            "name": "tool call only, which is still tool activity",
+            # `ok: True` comes from the *next* vector, which is that call's stored result.
+            # The two are replayed as one transcript, which is the pairing under test.
+            "expect": {
+                "role": "model",
+                "text": "",
+                "attachments": 0,
+                "tools": [{"name": "add_task", "callId": CALL_ID, "ok": True}],
+            },
             "event": stored(
                 Event(
                     invocation_id="inv_5",
@@ -158,7 +174,95 @@ def main() -> int:
                         parts=[
                             types.Part(
                                 function_call=types.FunctionCall(
-                                    name="add_task", args={"title": "Read about locks"}
+                                    id=CALL_ID,
+                                    name="add_task",
+                                    args={"title": "Read about locks"},
+                                )
+                            )
+                        ],
+                    ),
+                )
+            ),
+        },
+        {
+            # ADK stores the outcome as its own event, authored `user`. It carries no
+            # chip of its own — pairing it with the call above is what gives that chip a
+            # tick — so this vector's job is to assert it produces no second entry.
+            "name": "the tool's result, which is not a message of its own",
+            "expect": {"dropped": True},
+            "event": stored(
+                Event(
+                    invocation_id="inv_5",
+                    author="coach_agent",
+                    content=types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(
+                                function_response=types.FunctionResponse(
+                                    id=CALL_ID,
+                                    name="add_task",
+                                    response={
+                                        "ok": True,
+                                        "task": {"taskId": "k_01J7Z8", "title": "Locks"},
+                                    },
+                                )
+                            )
+                        ],
+                    ),
+                )
+            ),
+        },
+        {
+            # A refused guard is a *result*, not an exception (`agents/tools.py`), so the
+            # chip has to be able to say so. Paired with the call in the next vector.
+            "name": "a tool that refused",
+            "expect": {"dropped": True},
+            "event": stored(
+                Event(
+                    invocation_id="inv_7",
+                    author="coach_agent",
+                    content=types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(
+                                function_response=types.FunctionResponse(
+                                    id=REFUSED_CALL_ID,
+                                    name="add_task",
+                                    response={
+                                        "ok": False,
+                                        "error": {
+                                            "code": "validation-error",
+                                            "message": "300 minutes is more than "
+                                            "this project allows for one task.",
+                                        },
+                                    },
+                                )
+                            )
+                        ],
+                    ),
+                )
+            ),
+        },
+        {
+            "name": "the call the refusal answers",
+            "expect": {
+                "role": "model",
+                "text": "",
+                "attachments": 0,
+                "tools": [{"name": "add_task", "callId": REFUSED_CALL_ID, "ok": False}],
+            },
+            "event": stored(
+                Event(
+                    invocation_id="inv_7",
+                    author="coach_agent",
+                    content=types.Content(
+                        role="model",
+                        parts=[
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    id=REFUSED_CALL_ID,
+                                    name="add_task",
+                                    args={"estimated_minutes": 300},
                                 )
                             )
                         ],
@@ -172,7 +276,7 @@ def main() -> int:
                 "role": "model",
                 "text": "Adding that now.",
                 "attachments": 0,
-                "toolNames": ["add_task"],
+                "tools": [{"name": "add_task", "callId": MIXED_CALL_ID, "ok": None}],
             },
             "event": stored(
                 Event(
@@ -183,7 +287,9 @@ def main() -> int:
                         parts=[
                             types.Part(text="Adding that now."),
                             types.Part(
-                                function_call=types.FunctionCall(name="add_task", args={})
+                                function_call=types.FunctionCall(
+                                    id=MIXED_CALL_ID, name="add_task", args={}
+                                )
                             ),
                         ],
                     ),

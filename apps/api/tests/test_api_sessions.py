@@ -67,7 +67,7 @@ async def test_creating_a_project_opens_an_intake_session(client, container, ali
     would be adding contract — so the assertion goes through the session service, which
     is the layer that owns the linkage.
     """
-    from coach.agents.runner import APP_NAME
+    from coach.core.app import APP_NAME
 
     project = (await client.post("/api/projects", json={"title": "Elixir"})).json()
 
@@ -314,7 +314,7 @@ async def test_finalize_registers_the_upload_as_an_adk_artifact(
     verified — never copied — stops resolving a day later, silently, long after the
     conversation that produced it.
     """
-    from coach.agents.runner import APP_NAME
+    from coach.core.app import APP_NAME
 
     upload_id = await _staged_upload(client, container, b"screenshot-bytes")
 

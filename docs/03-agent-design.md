@@ -126,6 +126,9 @@ What to re-verify against the newly installed source, and re-test:
 | `GcsArtifactService(bucket_name, **kwargs)` construction, `_get_blob_name`, `types.Part` file references | Upload and multimodal path. `artifact_part_uri` reads the blob layout out of the private method deliberately, so a rename fails a test rather than a deploy | `integrations/` |
 | `InvocationContext`'s `artifact_service` and `session_service` fields, and where `Runner` builds the context | Pydantic validates both with `isinstance`. That is why the artifact service is deferred with a *provider* and not a proxy — a proxy passed every local test and failed every deployed turn | `integrations/artifacts.py`, `agents/runner.py` |
 | Tool and callback signatures | The tool catalogue below | `agents/` |
+| **`FunctionTool(require_confirmation=…)` and the `adk_request_confirmation` handshake** | `discard_task`'s gate is ADK's, not ours. The constant is restated in `services/turns.py` and again in `apps/web/src/lib/transcript.ts`, which cannot import it, and the *ordering* of the events ADK emits is what the UI reads — the request is second-from-last, not last. `ToolConfirmation` is `@experimental` | `agents/tools.py`, `services/turns.py`, `lib/transcript.ts` |
+| `Context` (`ToolContext` == `CallbackContext` == `Context` in 2.7) — `user_id`, `state`, and `before_agent_callback`'s keyword | Every per-invocation fact a tool has arrives through these two fields; `state` write-through to `session.state` is what makes `{temp:…}` templating see them | `agents/context.py`, `agents/prompt.py` |
+| `inject_session_state` — the `{key}` / `{key?}` grammar and its `KeyError` | A placeholder with no writer fails while assembling the request, inside the detached generation task, on the first real turn of a deployed revision | `agents/coach_agent.py`, `tests/test_agent_prompt.py` |
 | `_convert_tool_union_to_tools` / `canonical_tools` built-in-tool wrapping | Decides whether `google_search` may sit beside function tools. If a bump lifts the Gemini restriction, the explicit `search_agent` hop becomes deletable ([M1 spike result](#m1-spike-result-resolved-against-the-installed-270-source)) | `agents/` |
 
 **Order of work:** install the new version, run the contract suite
@@ -281,6 +284,14 @@ making them rules removes a whole class of nondeterminism from background behavi
 All tools are typed `FunctionTool`s with Pydantic argument models, wrapping `services/`.
 Every tool returns a compact structured result (not prose) so the model reasons over facts.
 
+The domain tools landed at M3 in `agents/tools.py`. Two things about them are decisions
+rather than mechanics, and both are argued in
+[09-roadmap.md](09-roadmap.md#status-after-m3): a guard **answers** rather than raises, so
+a refused call is a fact the model can act on instead of the end of the turn; and a tool
+reads whose board it is acting on from the invocation, never from an argument — the uid
+from the session and the project from `temp:` state written by the prompt callback — so a
+tool cannot be pointed at someone else's project by an argument the model chose.
+
 ### Domain tools (available to `coach_agent`, subset to `propose_tasks`)
 
 | Tool | Signature (abridged) | Guard |
@@ -289,11 +300,11 @@ Every tool returns a compact structured result (not prose) so the model reasons 
 | `add_task` | `(project_id, title, description, estimated_minutes, needs_research, after_task_id=None)` | ≤ 5/run; minutes ≤ 3× default |
 | `split_task` | `(task_id, subtasks: list[SubtaskDraft])` | parent must be leaf; 2–8 subtasks; each ≤ default minutes |
 | `update_task` | `(task_id, title?, description?, estimated_minutes?)` | owner |
-| `set_task_state` | `(task_id, state, postponed_until?)` | state machine validated server-side |
+| `set_task_state` | `(task_id, state, postponed_until?)` | state machine validated server-side; **`completed` and `discarded` are refused** — the first is the learner's click ([10-risks.md](10-risks.md#open-questions) Q1), the second would bypass `discard_task`'s gate |
 | `set_next_up` | `(project_id, task_id)` | transactional single-`current` invariant |
 | `reorder_task` | `(task_id, after_task_id \| before_task_id)` | fractional index |
 | `discard_task` | `(task_id, reason)` | **requires user confirmation** in interactive mode; forbidden in autonomous mode |
-| `update_project_prefs` | `(project_id, prefs_patch)` | whitelist of keys |
+| `update_project_prefs` | `(default_task_minutes?, research_depth?, allow_videos?)` | one named argument per writable key — spelling them out *is* the whitelist, where a patch object would let the model invent fields |
 | `post_research_report` | `(task_id, required[], optional[], summary)` | validates `Σ required.minutes ≤ budget` |
 
 ### Memory tools

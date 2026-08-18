@@ -87,6 +87,13 @@ export const projectSchema = z.object({
   status: projectStatusSchema,
   prefs: projectPrefsSchema,
   nextUpTaskId: z.string().nullable().default(null),
+  /**
+   * The intake session `POST /api/projects` opens (docs/04-api-contract.md). A pointer on
+   * the project so that the board can render the conversation without a round trip to
+   * resolve it; `POST /api/projects/{id}/session` is the fallback for projects created
+   * before it existed.
+   */
+  intakeSessionId: z.string().nullable().default(null),
   counts: projectCountsSchema,
   lastAutonomousRunAt: z.string().nullable().default(null),
   createdAt: z.string().nullable().default(null),

@@ -21,7 +21,9 @@ from typing import TYPE_CHECKING, Annotated, cast
 from fastapi import Depends, Request
 
 from coach.adk_firestore import CoachSessionService
+from coach.agents.prompt import PromptBuilder
 from coach.agents.runner import RunnerFactory
+from coach.agents.tools import DomainTools
 from coach.core.config import Settings
 from coach.core.principal import Principal
 from coach.integrations.artifacts import artifact_service_provider
@@ -42,6 +44,7 @@ from coach.services.turns import TurnService
 from coach.services.uploads import UploadService
 from coach.services.users import UserService
 from coach.ws.broker import StreamBroker
+from coach.ws.hub import BoardUpdateHub
 from coach.ws.registry import TurnRegistry
 
 if TYPE_CHECKING:
@@ -120,12 +123,31 @@ class Container:
             self.tasks,
             self.task_repository,
             self.projects,
+            self.project_repository,
             self.uploads,
         )
 
         self.registry = TurnRegistry()
         self.broker = StreamBroker()
-        self.runners = RunnerFactory(settings, self.session_service, self.artifacts)
+        # From M3 the agent changes the board, so the board has to be told. The hub is a
+        # second fan-out beside the broker because its keyspace is the *user*, not the
+        # turn: a board update matters to every tab this user has open, including the one
+        # that is not watching the conversation (`ws/hub.py`).
+        self.board_updates = BoardUpdateHub()
+        # Held on the container as well as handed to the factory: the agent-tool tests
+        # call them directly, which is how a guard gets a test that does not depend on
+        # persuading a model to trip it.
+        self.domain_tools = DomainTools(self.tasks, self.projects, self.board_updates)
+        self.prompt_builder = PromptBuilder(
+            self.sessions, self.projects, self.tasks, self.users
+        )
+        self.runners = RunnerFactory(
+            settings,
+            self.session_service,
+            self.artifacts,
+            tools=self.domain_tools,
+            prompt=self.prompt_builder,
+        )
         self.turns = TurnService(
             settings,
             self.turn_repository,

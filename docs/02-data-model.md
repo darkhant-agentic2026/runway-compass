@@ -132,6 +132,7 @@ approach.
     "preferredSources": ["…"], "avoidSources": ["…"]
   },
   "nextUpTaskId": "…",                  // denormalized pointer, transactional
+  "intakeSessionId": "…",               // the session POST /api/projects opens (M3)
   "counts": { "total": 12, "completed": 5, "openMinutes": 340 },
   "lastAutonomousRunAt": ts,
   "createdAt": ts, "updatedAt": ts
@@ -142,6 +143,12 @@ Preference resolution is a pure function, `resolve_prefs(global, project) -> Eff
 used identically by the API, the UI (via `GET /api/projects/{id}/effective-prefs`), and
 the agent's prompt builder. The example from the brief — global default 45 min, project
 override 2 h — is exactly this: `prefs.defaultTaskMinutes = 120`.
+
+`intakeSessionId` was added at M3. `POST /api/projects` creates a session with
+`taskId: null` and nothing pointed back at it, so every later visit to the project would
+have had to find it by scanning the project's sessions. It is a denormalized pointer on
+the same footing as `nextUpTaskId`: the collection-group scan above is still the
+authority, and it repairs the pointer when it runs.
 
 ## `projects/{projectId}/tasks/{taskId}`
 
@@ -395,6 +402,7 @@ See [05-autonomous-runs.md](05-autonomous-runs.md) for the full schema and seman
 | Memory search | `memories`: `keywords ARRAY_CONTAINS_ANY, createdAt DESC` |
 | Session by task | `sessions` collection group: `taskId ASC` — resolves a task to its session without storing the reverse pointer twice |
 | Task by bare id | collection group `tasks`: `id ASC` — `GET /api/tasks/{id}` and friends address a task without its project (see below) |
+| Session by project | `sessions` collection group: `projectId ASC` — the fallback in `get_or_create_intake`, for a project created before `intakeSessionId` existed. **One filter**: `taskId is None` is applied in Python, because a second `where` makes this a composite collection-group query that the emulator answers and Firestore refuses |
 
 ## Access model
 

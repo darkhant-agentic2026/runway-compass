@@ -16,7 +16,12 @@
 import { describe, expect, it } from 'vitest'
 
 import vectors from '@/lib/session-event-vectors.json'
-import { attachmentLabel, toMessages } from '@/lib/transcript'
+import {
+  CONFIRMATION_FUNCTION_NAME,
+  attachmentLabel,
+  pendingConfirmation,
+  toMessages,
+} from '@/lib/transcript'
 import type { SessionEvent } from '@/lib/schemas'
 
 function event(seq: number, body: Record<string, unknown>): SessionEvent {
@@ -36,30 +41,36 @@ function event(seq: number, body: Record<string, unknown>): SessionEvent {
  * Regenerate with `./scripts/dev.sh gen-event-vectors` after an ADK bump.
  */
 describe('parity with events as the server stores them', () => {
-  for (const vector of vectors.events) {
+  // Replayed as **one transcript**, not one event at a time. A call and its outcome are
+  // separate stored events, so a chip's tick or cross only exists when the reader can see
+  // both — feeding them in isolation would test a pairing that never happens.
+  const all = vectors.events.map((vector, index) =>
+    event(index + 1, vector.event as Record<string, unknown>),
+  )
+  const messages = toMessages(all)
+  const byId = new Map(messages.map((message) => [message.id, message]))
+
+  for (const [index, vector] of vectors.events.entries()) {
     it(vector.name, () => {
-      const messages = toMessages([event(1, vector.event as Record<string, unknown>)])
       const expected = vector.expect as Record<string, unknown>
+      const message = byId.get(`e_${index + 1}`)
 
       if (expected.dropped) {
-        expect(messages).toHaveLength(0)
+        expect(message).toBeUndefined()
         return
       }
 
-      expect(messages).toHaveLength(1)
-      const message = messages[0]!
-      expect(message.role).toBe(expected.role)
-      expect(message.text).toBe(expected.text)
-      expect(message.attachments).toHaveLength(expected.attachments as number)
+      expect(message).toBeDefined()
+      expect(message!.role).toBe(expected.role)
+      expect(message!.text).toBe(expected.text)
+      expect(message!.attachments).toHaveLength(expected.attachments as number)
       if (expected.attachmentMimeType) {
-        expect(message.attachments[0]?.mimeType).toBe(expected.attachmentMimeType)
+        expect(message!.attachments[0]?.mimeType).toBe(expected.attachmentMimeType)
       }
       if (expected.attachmentFilename) {
-        expect(message.attachments[0]?.filename).toBe(expected.attachmentFilename)
+        expect(message!.attachments[0]?.filename).toBe(expected.attachmentFilename)
       }
-      if (expected.toolNames) {
-        expect(message.toolNames).toEqual(expected.toolNames)
-      }
+      expect(message!.tools).toEqual(expected.tools ?? [])
     })
   }
 })
@@ -207,5 +218,208 @@ describe('attachmentLabel', () => {
   it('says something rather than nothing for a type it does not know', () => {
     expect(attachmentLabel({ mimeType: 'application/x-unknown' })).toBe('Attachment')
     expect(attachmentLabel({ mimeType: '' })).toBe('Attachment')
+  })
+})
+
+/**
+ * The gated-tool handshake, read from the stored transcript.
+ *
+ * The event ordering here is the shape the server actually writes, and it is the reason
+ * this is not a one-liner: ADK emits the `adk_request_confirmation` call and *then* a
+ * function-response event carrying `requested_tool_confirmations`, so the request is
+ * never the last event. A reader that looked only at the tail found nothing and the
+ * buttons never appeared — which is exactly how it failed the first time.
+ */
+describe('a tool waiting on the learner', () => {
+  const requestId = 'adk-request-1'
+  const originalId = 'adk-call-1'
+
+  function request(seq: number): SessionEvent {
+    return event(seq, {
+      author: 'coach_agent',
+      content: {
+        role: 'model',
+        parts: [
+          {
+            function_call: {
+              id: requestId,
+              name: CONFIRMATION_FUNCTION_NAME,
+              args: {
+                originalFunctionCall: {
+                  id: originalId,
+                  name: 'discard_task',
+                  args: { task_id: 'k_1', reason: 'You asked me to drop this one.' },
+                },
+                toolConfirmation: { confirmed: false, hint: 'Approve or reject.' },
+              },
+            },
+          },
+        ],
+      },
+    })
+  }
+
+  /** What ADK appends after the request, and what used to hide it. */
+  function trailer(seq: number): SessionEvent {
+    return event(seq, {
+      author: 'coach_agent',
+      actions: { requested_tool_confirmations: { [originalId]: { confirmed: false } } },
+    })
+  }
+
+  function answer(seq: number, confirmed: boolean): SessionEvent {
+    return event(seq, {
+      author: 'user',
+      content: {
+        role: 'user',
+        parts: [
+          {
+            function_response: {
+              id: requestId,
+              name: CONFIRMATION_FUNCTION_NAME,
+              response: { confirmed },
+            },
+          },
+        ],
+      },
+    })
+  }
+
+  it('is found even though it is not the last event', () => {
+    const pending = pendingConfirmation([userText(1, 'discard that'), request(2), trailer(3)])
+    expect(pending).toEqual({
+      functionCallId: requestId,
+      toolName: 'discard_task',
+      args: { task_id: 'k_1', reason: 'You asked me to drop this one.' },
+    })
+  })
+
+  it('is gone once it has been answered', () => {
+    const events = [request(2), trailer(3), answer(4, true)]
+    expect(pendingConfirmation(events)).toBeNull()
+  })
+
+  it('is gone after a refusal too, not just after an approval', () => {
+    expect(pendingConfirmation([request(2), trailer(3), answer(4, false)])).toBeNull()
+  })
+
+  it('does not resurrect an older request when a new one is pending', () => {
+    const events = [request(2), trailer(3), answer(4, true), request(6), trailer(7)]
+    // Same id in this fixture, so the assertion that matters is that an *unanswered*
+    // later request wins over the earlier answer rather than being cancelled by it.
+    expect(pendingConfirmation(events)?.functionCallId).toBe(requestId)
+  })
+
+  it('is null for an ordinary conversation', () => {
+    expect(pendingConfirmation([userText(1, 'hello')])).toBeNull()
+  })
+
+  it('is null for an empty transcript', () => {
+    expect(pendingConfirmation([])).toBeNull()
+  })
+})
+
+/**
+ * Tool activity in the settled transcript.
+ *
+ * The bug this block exists for: chips rendered while a turn streamed and disappeared the
+ * moment it finished, because `useStreamStore` is cleared on `turn_complete` and
+ * `toMessages` dropped every event that carried only a function call. A reload, or coming
+ * back to a session, showed a conversation in which tasks had appeared by themselves.
+ */
+describe('what the coach did, after the stream is gone', () => {
+  function call(seq: number, id: string, name: string): SessionEvent {
+    return event(seq, {
+      author: 'coach_agent',
+      content: { role: 'model', parts: [{ function_call: { id, name, args: {} } }] },
+    })
+  }
+
+  function result(seq: number, id: string, name: string, payload: unknown): SessionEvent {
+    return event(seq, {
+      author: 'coach_agent',
+      content: {
+        role: 'user',
+        parts: [{ function_response: { id, name, response: payload } }],
+      },
+    })
+  }
+
+  it('survives the turn it happened in', () => {
+    const messages = toMessages([
+      userText(1, 'give me 30 minutes of work'),
+      call(2, 'adk-1', 'add_task'),
+      result(3, 'adk-1', 'add_task', { ok: true, task: { taskId: 'k_1' } }),
+      event(4, {
+        author: 'coach_agent',
+        content: { role: 'model', parts: [{ text: 'Done — your board is up to date.' }] },
+      }),
+    ])
+
+    expect(messages.map((message) => message.text)).toEqual([
+      'give me 30 minutes of work',
+      '',
+      'Done — your board is up to date.',
+    ])
+    expect(messages[1]?.tools).toEqual([{ callId: 'adk-1', name: 'add_task', ok: true }])
+  })
+
+  it('shows a refusal as a refusal', () => {
+    // A guard firing is a *result*, not an exception (`agents/tools.py`), so a chip that
+    // could only be a tick would report a board change that did not happen.
+    const messages = toMessages([
+      call(1, 'adk-2', 'add_task'),
+      result(2, 'adk-2', 'add_task', { ok: false, error: { code: 'validation-error' } }),
+    ])
+    expect(messages[0]?.tools[0]?.ok).toBe(false)
+  })
+
+  it('reports an unknown outcome as unknown, not as success', () => {
+    // ADK's answer to a call awaiting confirmation carries no `ok`, and a turn cut short
+    // carries no response at all. Both are `null` — a tick would be a claim.
+    const awaiting = toMessages([
+      call(1, 'adk-3', 'discard_task'),
+      result(2, 'adk-3', 'discard_task', {
+        error: 'This tool call requires confirmation, please approve or reject.',
+      }),
+    ])
+    expect(awaiting[0]?.tools[0]?.ok).toBeNull()
+
+    const interrupted = toMessages([call(1, 'adk-4', 'split_task')])
+    expect(interrupted[0]?.tools[0]?.ok).toBeNull()
+  })
+
+  it('does not chip the confirmation request itself', () => {
+    // It is a question, and `ConfirmationPrompt` is its UI. A chip would say the coach
+    // had done something called "adk request confirmation".
+    const messages = toMessages([
+      call(1, 'adk-5', 'discard_task'),
+      event(2, {
+        author: 'coach_agent',
+        content: {
+          role: 'model',
+          parts: [
+            {
+              function_call: {
+                id: 'adk-6',
+                name: CONFIRMATION_FUNCTION_NAME,
+                args: { originalFunctionCall: { id: 'adk-5', name: 'discard_task' } },
+              },
+            },
+          ],
+        },
+      }),
+    ])
+
+    expect(messages).toHaveLength(1)
+    expect(messages[0]?.tools).toEqual([
+      { callId: 'adk-5', name: 'discard_task', ok: null },
+    ])
+  })
+
+  it('drops the contentless event the prompt builder writes every turn', () => {
+    // `before_agent_callback` records a state delta, which ADK persists as an event with
+    // no content at all. One empty box per message is the alternative.
+    expect(toMessages([event(1, { author: 'coach_agent', actions: {} })])).toEqual([])
   })
 })

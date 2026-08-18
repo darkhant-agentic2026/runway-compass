@@ -129,6 +129,11 @@ async def start_turn(
         session_id,
         text=body.text,
         attachments=[attachment.model_dump(by_alias=True) for attachment in body.attachments],
+        confirmation=(
+            (body.confirmation.function_call_id, body.confirmation.confirmed)
+            if body.confirmation is not None
+            else None
+        ),
     )
     return TurnAcceptedResponse(
         turn_id=turn.id, session_id=session_id, status=turn.status, start_seq=0

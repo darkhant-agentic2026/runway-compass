@@ -18,14 +18,12 @@ from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import BaseSessionService
 
 from coach.agents.coach_agent import build_coach_agent
+from coach.agents.prompt import PromptBuilder
+from coach.agents.tools import DomainTools
+from coach.core.app import APP_NAME
 from coach.core.config import Settings
 from coach.integrations.artifacts import ArtifactServiceProvider
 from coach.integrations.model import build_model
-
-#: The ADK `app_name`, which is also the `{appName}` segment of every session path
-#: (docs/02-data-model.md). Changing it orphans every existing session, so it is a
-#: constant rather than a setting.
-APP_NAME = "coach"
 
 
 class RunnerFactory:
@@ -36,9 +34,18 @@ class RunnerFactory:
         settings: Settings,
         session_service: BaseSessionService,
         artifacts: ArtifactServiceProvider,
+        *,
+        tools: DomainTools,
+        prompt: PromptBuilder,
     ) -> None:
         self._settings = settings
         self._session_service = session_service
+        # Both are process-wide and stateless over the services they wrap. They are built
+        # once for the same reason the `Runner` is: `LlmAgent` derives every tool's
+        # declaration from the callable, and rebuilding the agent per turn would rebuild
+        # (and re-cache) nine JSON schemas for no change.
+        self._tools = tools
+        self._prompt = prompt
         # Injected rather than built here, because `UploadService` writes into the same
         # store on finalize. Two instances would mean two `storage.Client`s against one
         # bucket, and — worse — two places that could disagree about which bucket that is.
@@ -60,11 +67,15 @@ class RunnerFactory:
             model = self._model or build_model(self._settings)
             self._runner = Runner(
                 app_name=APP_NAME,
-                agent=build_coach_agent(model),
+                agent=build_coach_agent(
+                    model,
+                    tools=self._tools.as_tools(),
+                    before_agent_callback=self._prompt,
+                ),
                 session_service=self._session_service,
                 artifact_service=self._artifacts(),
             )
         return self._runner
 
 
-__all__ = ["APP_NAME", "RunnerFactory"]
+__all__ = ["RunnerFactory"]

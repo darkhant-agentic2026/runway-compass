@@ -77,6 +77,18 @@ The server tells us *what* changed; Query decides *when* to refetch. This gives 
 updates while the autonomous agent works, with a single auth path and no Firestore client
 SDK in the browser.
 
+**The handler is registered on the socket, not passed to it.** `getSocket` is a singleton,
+so its constructor arguments belong to whoever calls it first — and React runs child
+effects before parent ones, so a direct load of the task workspace has the *page* build
+the socket for its presence heartbeat before `AppShell`'s `useCoachSocket` runs. Passed as
+a dependency, the invalidation callback was dropped for the lifetime of that tab.
+
+**And a completed turn invalidates the board as well.** That is not a duplicate: frames
+are not checkpointed, so a client whose socket was down while a tool ran gets its text
+back on resume and never hears that the board moved — and from M5 a run executing on
+another instance never sends it one at all. The push is what makes the board feel live;
+the turn-complete invalidation is what makes it correct.
+
 ## WebSocket client
 
 A single module owns the socket:
@@ -97,6 +109,11 @@ A single module owns the socket:
 ### Task board (`/projects/:projectId`)
 
 - Ordered list of top-level tasks. The `current` task is visually pinned as "Next up."
+- **The project's intake conversation sits beside the board** (added at M3). The session
+  `POST /api/projects` opens has `taskId: null` and no route of its own, and the board is
+  the screen a new project lands on — so the learner watches cards appear as the coach
+  proposes them, which is what `board_update` is for. It is the same `SessionPane` the
+  task workspace renders; `POST /api/projects/{id}/session` resolves it on a later visit.
 - Card shows: title, estimated duration chip, state badge, research status (a small
   "materials ready" indicator), and `origin: agent` badge when the coach created it.
 - **Parent cards show `rollup.subtaskCount` and `rollup.totalEstimatedMinutes`** ("4
@@ -138,6 +155,15 @@ Left — **task detail**:
 Right — **session chat**:
 - Streamed markdown with syntax highlighting; tool activity as inline status chips
   ("Searching the web…", "Checking video lengths…") built from `tool_call`/`tool_result`.
+
+  **The chips are part of the transcript, not only of the stream.** A turn's live buffer
+  is cleared on `turn_complete`, so chips rendered only from `useStreamStore` exist for
+  the few seconds a turn is generating and then vanish — leaving a conversation in which
+  the board changed by itself. `lib/transcript.ts` therefore rebuilds them from the
+  stored events, pairing each `function_call` with its `function_response` by call id.
+  Three outcomes, not two: a tick, a cross for a tool that refused, and a neutral mark
+  for one whose outcome was never recorded — an interrupted turn, or a call still waiting
+  on the confirmation prompt below.
 - Composer with drag-and-drop upload (image/PDF/text), preview thumbnails, paste-image
   support. **The drop target is the whole chat pane, not the composer strip** — a
   two-line strip is a target people miss, and missing it is worse than having none,
@@ -158,6 +184,15 @@ Right — **session chat**:
   flight knows the user's filename, and a stored event does not unless
   `TurnService._build_content` put it in `file_data.display_name` — the artifact itself is
   named `user:{uploadId}` and the `gs://` URI has no human segment.
+- **The chat pane is height-bounded and the transcript scrolls itself**, on mobile as well
+  as on desktop. The transcript pins to its own bottom as tokens arrive, and it does that
+  by assigning `scrollTop` rather than calling `scrollIntoView` on a sentinel:
+  `scrollIntoView` scrolls every scrollable ancestor, the document included, so on a short
+  viewport it moved the *page* once per delta. The composer then walked under the reader's
+  finger and the cancel button was unreachable exactly while there was something to
+  cancel — and anyone scrolling up to reread a message was dragged back down several times
+  a second. An unbounded pane has the same effect for the same reason, since without
+  overflow there is nothing else to scroll.
 - A visible **reconnecting** state that makes the resume guarantee legible: "Connection
   lost — your coach is still working. Reconnecting…" then the stream continues from where
   it left off.

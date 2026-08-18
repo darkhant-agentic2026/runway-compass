@@ -60,6 +60,13 @@ TASK_ID_FIELD = "taskId"
 #: — anything nested under `event_data` is read-back-only and cannot be ordered on.
 SEQ_FIELD = "seq"
 
+#: How many of a project's sessions `find_intake_session_id` will scan before giving up.
+#: The intake session is one document among "one per task plus one", and the `taskId`
+#: check runs in Python, so the limit has to clear a realistic project rather than be 1.
+#: A project past this many tasks would re-create its intake session; the ceiling is
+#: chosen to be far outside that, not to be exact.
+_INTAKE_SCAN_LIMIT = 200
+
 
 @dataclass(frozen=True, slots=True)
 class SessionLinkage:
@@ -166,6 +173,33 @@ class CoachSessionService(FirestoreSessionService):
         async for document in query.stream():
             data = document.to_dict() or {}
             if data.get("appName") != app_name:
+                continue
+            identifier = data.get("id")
+            return cast(str | None, identifier) or document.id
+        return None
+
+    async def find_intake_session_id(self, *, app_name: str, project_id: str) -> str | None:
+        """Resolve a project to its intake session — the one with `taskId: null`.
+
+        `POST /api/projects` opens that session and nothing stores a pointer back to it,
+        so this query is how the workspace finds the conversation again on a later visit.
+
+        **One indexed filter, for the reason `find_session_id_for_task` spells out.** The
+        obvious query here is two filters — `projectId == …` *and* `taskId == null` — and
+        it works perfectly against the emulator, which does not enforce index
+        requirements, while real Firestore answers a composite collection-group query with
+        `FAILED_PRECONDITION` (docs/09-roadmap.md#what-a-green-local-run-does-not-prove).
+        So `projectId` is the indexed filter and `taskId` is checked in Python, which
+        needs the declared single-field index and no more.
+        """
+        query = (
+            self.client.collection_group(self.sessions_collection)
+            .where(filter=firestore.FieldFilter(PROJECT_ID_FIELD, "==", project_id))
+            .limit(_INTAKE_SCAN_LIMIT)
+        )
+        async for document in query.stream():
+            data = document.to_dict() or {}
+            if data.get("appName") != app_name or data.get(TASK_ID_FIELD) is not None:
                 continue
             identifier = data.get("id")
             return cast(str | None, identifier) or document.id

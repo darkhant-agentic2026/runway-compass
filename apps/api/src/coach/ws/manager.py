@@ -41,6 +41,7 @@ from coach.core.principal import Principal
 from coach.repositories.presence import PresenceRepository
 from coach.services.turns import TurnService
 from coach.ws.broker import StreamBroker
+from coach.ws.hub import BoardUpdateHub, attached
 from coach.ws.protocol import (
     TERMINAL_TYPES,
     ClientFrame,
@@ -78,33 +79,40 @@ class SocketSession:
         turns: TurnService,
         broker: StreamBroker,
         presence: PresenceRepository,
+        board_updates: BoardUpdateHub,
     ) -> None:
         self._socket = websocket
         self._principal = principal
         self._turns = turns
         self._broker = broker
         self._presence = presence
+        self._board_updates = board_updates
         self._pumps: dict[str, asyncio.Task[None]] = {}
         self._send_lock = asyncio.Lock()
 
     async def run(self) -> None:
         """Read client frames until the socket closes, then tear down this tab's pumps."""
         await self._presence.connected(self._principal.uid)
-        try:
-            while True:
-                try:
-                    raw = await self._socket.receive_json()
-                except WebSocketDisconnect:
-                    return
-                await self._handle(raw)
-        finally:
-            for task in list(self._pumps.values()):
-                task.cancel()
-            if self._pumps:
-                await asyncio.gather(*self._pumps.values(), return_exceptions=True)
-            self._pumps.clear()
-            with contextlib.suppress(Exception):
-                await self._presence.disconnected(self._principal.uid)
+        # `board_update` needs no subscription frame: the contract has none, and a tab
+        # that is signed in wants to know its board moved whether or not it is watching a
+        # turn. Attaching for the socket's whole lifetime is the honest expression of
+        # that (docs/04-api-contract.md#websocket-protocol-ws).
+        async with attached(self._board_updates, self._principal.uid, self._send):
+            try:
+                while True:
+                    try:
+                        raw = await self._socket.receive_json()
+                    except WebSocketDisconnect:
+                        return
+                    await self._handle(raw)
+            finally:
+                for task in list(self._pumps.values()):
+                    task.cancel()
+                if self._pumps:
+                    await asyncio.gather(*self._pumps.values(), return_exceptions=True)
+                self._pumps.clear()
+                with contextlib.suppress(Exception):
+                    await self._presence.disconnected(self._principal.uid)
 
     # --- inbound -------------------------------------------------------------------
 

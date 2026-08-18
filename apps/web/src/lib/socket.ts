@@ -18,6 +18,16 @@
  * `WebSocket` and `setTimeout` are injected rather than reached for, so the reconnect
  * schedule and the resume frames can be asserted against a fake socket with no browser
  * and no real timers involved.
+ *
+ * **`board_update` is delivered to *listeners*, not to a constructor argument**, and that
+ * distinction is load-bearing rather than stylistic. `getSocket` is a singleton: whoever
+ * calls it first builds the socket and every later call gets that instance with its
+ * arguments ignored. React runs child effects before parent ones, so a direct load of the
+ * task workspace had `TaskWorkspacePage` create the socket — for the presence heartbeat,
+ * with no arguments — before `AppShell`'s `useCoachSocket` could pass its invalidation
+ * callback. The callback was then dropped for the lifetime of the tab, and the board
+ * silently stopped refreshing when the coach changed it. A registration cannot be lost
+ * that way, because it does not depend on who constructed the socket.
  */
 
 import { api } from '@/lib/api'
@@ -50,9 +60,10 @@ export interface SocketDeps {
   setTimeout?: (handler: () => void, ms: number) => number
   clearTimeout?: (handle: number) => void
   random?: () => number
-  /** Called on `board_update`, so the socket module does not import the query client. */
-  onBoardUpdate?: (frame: BoardUpdateFrame) => void
 }
+
+/** Called on `board_update`, so the socket module does not import the query client. */
+export type BoardUpdateListener = (frame: BoardUpdateFrame) => void
 
 export function socketUrl(ticket: string): string {
   // Same origin in every environment — the SPA ships inside the API image — so the URL is
@@ -76,7 +87,7 @@ export class CoachSocket {
   private readonly schedule: (handler: () => void, ms: number) => number
   private readonly cancel: (handle: number) => void
   private readonly random: () => number
-  private readonly onBoardUpdate: (frame: BoardUpdateFrame) => void
+  private readonly boardListeners = new Set<BoardUpdateListener>()
 
   constructor(deps: SocketDeps = {}) {
     this.createWebSocket = deps.createWebSocket ?? ((url) => new WebSocket(url))
@@ -85,7 +96,20 @@ export class CoachSocket {
     this.schedule = deps.setTimeout ?? ((handler, ms) => window.setTimeout(handler, ms))
     this.cancel = deps.clearTimeout ?? ((handle) => window.clearTimeout(handle))
     this.random = deps.random ?? Math.random
-    this.onBoardUpdate = deps.onBoardUpdate ?? (() => {})
+  }
+
+  /**
+   * Subscribe to `board_update`. Returns the unsubscribe.
+   *
+   * A set rather than a single slot, so two screens can listen without one silently
+   * replacing the other — and so registering is idempotent under React's
+   * mount/unmount/remount in strict mode.
+   */
+  onBoardUpdate(listener: BoardUpdateListener): () => void {
+    this.boardListeners.add(listener)
+    return () => {
+      this.boardListeners.delete(listener)
+    }
   }
 
   // --- lifecycle -------------------------------------------------------------------
@@ -206,7 +230,7 @@ export class CoachSocket {
         })
         break
       case 'board_update':
-        this.onBoardUpdate(frame)
+        for (const listener of [...this.boardListeners]) listener(frame)
         break
       default:
         // `artifact`, `run_status`, `pong` — nothing to do with them yet.

@@ -16,9 +16,10 @@ from __future__ import annotations
 from typing import Any
 
 from coach.adk_firestore import CoachSessionService, SessionLinkage, StoredEvent
-from coach.agents.runner import APP_NAME
+from coach.core.app import APP_NAME
 from coach.core.errors import NotFound
 from coach.core.principal import Principal
+from coach.repositories.projects import ProjectRepository
 from coach.repositories.tasks import TaskRepository
 from coach.services.models import SessionSummary
 from coach.services.projects import ProjectService
@@ -37,12 +38,14 @@ class SessionService:
         tasks: TaskService,
         task_repository: TaskRepository,
         projects: ProjectService,
+        project_repository: ProjectRepository,
         uploads: UploadService,
     ) -> None:
         self._sessions = sessions
         self._tasks = tasks
         self._task_repository = task_repository
         self._projects = projects
+        self._project_repository = project_repository
         self._uploads = uploads
 
     # --- reads ---------------------------------------------------------------------
@@ -144,16 +147,52 @@ class SessionService:
     async def create_intake(self, principal: Principal, project_id: str) -> SessionSummary:
         """The session `POST /api/projects` opens: a session with `taskId: null`.
 
-        docs/04-api-contract.md. The Socratic intake *conversation* that fills it is M3
-        (docs/09-roadmap.md#m3--the-coach-acts-on-the-board-15-weeks); creating the
-        session here means a project made at M2 already has somewhere for that
-        conversation to live, rather than needing a migration when it lands.
+        docs/04-api-contract.md. The Socratic intake conversation that fills it is M3;
+        creating it at project creation means the conversation has somewhere to live from
+        the first moment, and `project.intakeSessionId` is written here so that finding it
+        again later is a field read rather than a query.
         """
         await self._projects.require_owned(principal, project_id)
         session = await self._sessions.create_session(
             app_name=APP_NAME, user_id=principal.uid, project_id=project_id, task_id=None
         )
+        await self._project_repository.patch(project_id, {"intakeSessionId": session.id})
         return SessionSummary(id=session.id, project_id=project_id, task_id=None)
+
+    async def get_or_create_intake(
+        self, principal: Principal, project_id: str
+    ) -> SessionSummary:
+        """`POST /api/projects/{id}/session` — the project's intake conversation.
+
+        Added at M3. docs/04-api-contract.md has `POST /api/projects` *create* the intake
+        session but nothing that resolves a project back to it, and the workspace needs
+        that on every later visit: the id is not in the creation response the client
+        cached, and a second visit is a fresh page load.
+
+        Three sources, in order of cost: the pointer on the project document; the
+        collection-group scan, for projects created before the pointer existed; and
+        creation, for a project whose intake session was never made. The pointer is
+        repaired whenever one of the later two answers, so the scan happens once per
+        legacy project rather than once per visit.
+        """
+        project = await self._projects.require_owned(principal, project_id)
+        if project.intake_session_id is not None:
+            linkage = await self._sessions.get_linkage(
+                app_name=APP_NAME, user_id=principal.uid, session_id=project.intake_session_id
+            )
+            if linkage is not None:
+                return SessionSummary(
+                    id=linkage.session_id, project_id=project_id, task_id=None
+                )
+
+        existing = await self._sessions.find_intake_session_id(
+            app_name=APP_NAME, project_id=project_id
+        )
+        if existing is not None:
+            await self._project_repository.patch(project_id, {"intakeSessionId": existing})
+            return SessionSummary(id=existing, project_id=project_id, task_id=None)
+
+        return await self.create_intake(principal, project_id)
 
 
 def _attachment_uri(event_data: dict[str, Any], index: int) -> str | None:

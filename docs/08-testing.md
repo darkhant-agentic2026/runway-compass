@@ -191,6 +191,13 @@ which is what gives flow #4 a window to disconnect inside *and* makes "identical
 control run" a character-for-character assertion. It is refused for any `ENV` other than
 `local` ([07-infra-deploy.md](07-infra-deploy.md#local-development)).
 
+**From M3 it also emits scripted function calls**, and derives those from the prompt for
+the same reason it derives its text from one: a canned call would assert nothing about the
+prompt that produced it. It reads the task budget out of the *rendered system instruction*
+and plans from *this turn's* function responses — the second being what makes the tool
+loop terminate. Both are pinned by `tests/test_stub_model.py`, because a stub is one of
+the three surfaces whose failure mode is silent success.
+
 Sign-in is seeded rather than performed: the app under test runs with `ENV=local`, and the
 Playwright fixture injects a `dev:<uid>` token so every flow starts authenticated. No flow
 here is testing Google's sign-in popup, and seeding keeps the suite fast and deterministic.
@@ -229,6 +236,32 @@ Golden flows:
    the completed message is identical to the un-interrupted control run. *This is the
    highest-value e2e test in the suite — it verifies the one guarantee that is invisible
    from the UI when it works and catastrophic when it silently doesn't.*
+
+   **Hold the reconnect's ticket, or the assertion races the banner.** The reconnecting
+   state lasts `backoffDelay(0)` — a random 0–500 ms ([06-frontend.md](06-frontend.md#websocket-client))
+   — plus a local round trip, which on a fast machine is regularly shorter than one
+   polling interval. The banner renders correctly and the assertion misses it, so the
+   test fails intermittently on whichever browser happened to be quickest; the response
+   to an intermittent test is to re-run it rather than to look, which is why this one is
+   made deterministic instead. Delaying the reconnect's `POST /api/ws-ticket` by a fixed
+   1.5 s also makes the disconnect *mean* something — generation carries on with nobody
+   attached for a window the test chose.
+
+   The same discipline applies to the cancel flow: it sends a long prompt — the stub
+   echoes it, so a long prompt is a long reply — and waits for text on screen before
+   clicking, so the click races neither the 202 nor the end of generation. **Asserting on
+   a transient state means owning how long it lasts.**
+
+   That spec also found a real defect, and the sequence is worth keeping. It failed only
+   on the two *mobile* projects, roughly one run in eight, with the click reported as
+   successful and the handler never running — because `Transcript` scrolled itself to the
+   bottom on every delta with `scrollIntoView`, which scrolls **every** scrollable
+   ancestor including the document. On a viewport too short to hold the whole screen the
+   page moved several times a second, so Playwright scrolled the button into view and the
+   app scrolled it back out before the click landed. A mobile-only, timing-shaped failure
+   whose cause was neither mobile-specific nor a timing bug: the two-pane layout is
+   "stacked on mobile" ([06-frontend.md](06-frontend.md#task-workspace-projectsprojectidtaskstaskid)),
+   and stacked meant unbounded. **Suspect the page scrolling before suspecting the clock.**
 
    **Use `routeWebSocket`, not a CDP session.** `newCDPSession()` is Chromium-only and
    throws on WebKit — so specifying flow #4 in terms of CDP would make it unrunnable on the

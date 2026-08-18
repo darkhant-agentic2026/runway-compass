@@ -69,6 +69,7 @@ export function makeProject(overrides: Partial<Project> = {}): Project {
       avoidSources: null,
     },
     nextUpTaskId: null,
+    intakeSessionId: 's_intake',
     counts: { total: 0, completed: 0, openMinutes: 0 },
     lastAutonomousRunAt: null,
     createdAt: null,

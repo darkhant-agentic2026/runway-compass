@@ -131,6 +131,22 @@ test('a disconnect mid-stream resumes and produces the identical message', async
     ws.onMessage((message) => server.send(message))
   })
 
+  // Hold the *reconnect's* ticket, so the reconnecting window is a duration this test
+  // chose rather than one it races. Left alone it is `backoffDelay(0)` — a random
+  // 0-500 ms — plus a local round trip, which on a fast machine is regularly shorter than
+  // one polling interval: the banner renders, the assertion misses it, and flow #4 fails
+  // intermittently on whichever browser happened to be quickest. An intermittent version
+  // of the suite's highest-value test is worse than none, because the response to it is
+  // to re-run rather than to look.
+  //
+  // It also makes the disconnect *mean* something: generation carries on server-side for
+  // a second and a half with nobody attached, which is the guarantee under test rather
+  // than a few milliseconds of it.
+  await page.route('**/api/ws-ticket', async (route) => {
+    if (armed) await new Promise((resolve) => setTimeout(resolve, 1_500))
+    await route.continue()
+  })
+
   await openWorkspace(page, 'Disconnect', 'Survive a dropped socket')
 
   // --- control run: no interruption ---------------------------------------------------
@@ -182,7 +198,15 @@ test('the transcript survives a full page reload', async ({ signedIn: page }) =>
 test('cancelling a turn stops it and says so', async ({ signedIn: page }) => {
   await openWorkspace(page, 'Cancel', 'Stop a turn')
 
-  await send(page, 'a very long answer please')
+  // The stub echoes the prompt back, so a long prompt is a long reply: at 40 ms a chunk
+  // this leaves several seconds of generation to cancel *into*, rather than a window the
+  // click has to hit.
+  const prompt = Array.from({ length: 60 }, (_, index) => `word${index}`).join(' ')
+  await send(page, prompt)
+
+  // Wait until it is demonstrably in flight, so the click cannot race the 202 that
+  // registers the turn — until then the composer still shows Send.
+  await expect(page.getByTestId('live-turn')).toContainText('Here is what I think about')
   await page.getByRole('button', { name: 'Cancel' }).click()
 
   await expect(page.getByRole('alert')).toContainText('cancelled', { timeout: 20_000 })

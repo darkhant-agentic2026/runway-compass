@@ -17,12 +17,12 @@
           ],
           "role": "user"
         },
-        "id": "37dac403-c8dc-4cd2-9b63-de2e28041023",
+        "id": "714764f1-7355-4472-9e6a-33c29d2b47ee",
         "invocation_id": "inv_1",
         "node_info": {
           "path": ""
         },
-        "timestamp": 1786979780.9572294
+        "timestamp": 1787008054.6433504
       },
       "expect": {
         "attachments": 0,
@@ -48,12 +48,12 @@
           ],
           "role": "model"
         },
-        "id": "aa489977-06c4-4909-8cac-7e0e8d8e86dd",
+        "id": "8d8e03ab-1005-474d-853c-dd6576e373ed",
         "invocation_id": "inv_1",
         "node_info": {
           "path": ""
         },
-        "timestamp": 1786979780.9573565
+        "timestamp": 1787008054.643475
       },
       "expect": {
         "attachments": 0,
@@ -86,12 +86,12 @@
           ],
           "role": "user"
         },
-        "id": "4b824377-d535-4fc7-a8f0-b33e4a32b0ea",
+        "id": "76beba9d-121c-49b9-93ff-ba9dbacce7ed",
         "invocation_id": "inv_2",
         "node_info": {
           "path": ""
         },
-        "timestamp": 1786979780.957783
+        "timestamp": 1787008054.643902
       },
       "expect": {
         "attachmentFilename": "screenshot.png",
@@ -122,12 +122,12 @@
           ],
           "role": "user"
         },
-        "id": "6ed91307-f561-44bd-8b7b-4d596130f412",
+        "id": "6173b60c-f38d-4503-8ebb-3fdcd3bfb370",
         "invocation_id": "inv_3",
         "node_info": {
           "path": ""
         },
-        "timestamp": 1786979780.95787
+        "timestamp": 1787008054.6439803
       },
       "expect": {
         "attachmentMimeType": "image/png",
@@ -157,12 +157,12 @@
           ],
           "role": "user"
         },
-        "id": "8f18e23e-c6da-469d-b1b9-69aa6ac2b9ed",
+        "id": "2871921d-fb3c-4160-85ba-7588c120b533",
         "invocation_id": "inv_4",
         "node_info": {
           "path": ""
         },
-        "timestamp": 1786979780.9579413
+        "timestamp": 1787008054.64405
       },
       "expect": {
         "attachmentMimeType": "application/pdf",
@@ -188,23 +188,155 @@
                 "args": {
                   "title": "Read about locks"
                 },
+                "id": "adk-a86ab509-631b-4261-8c28-054efab32bae",
                 "name": "add_task"
               }
             }
           ],
           "role": "model"
         },
-        "id": "f0c1f2ac-2cd8-4c7c-95d0-03c32bfdcb87",
+        "id": "edb098b0-8785-4d60-9b8a-874b1b77c2d6",
         "invocation_id": "inv_5",
         "node_info": {
           "path": ""
         },
-        "timestamp": 1786979780.9588919
+        "timestamp": 1787008054.6449625
+      },
+      "expect": {
+        "attachments": 0,
+        "role": "model",
+        "text": "",
+        "tools": [
+          {
+            "callId": "adk-a86ab509-631b-4261-8c28-054efab32bae",
+            "name": "add_task",
+            "ok": true
+          }
+        ]
+      },
+      "name": "tool call only, which is still tool activity"
+    },
+    {
+      "event": {
+        "actions": {
+          "artifact_delta": {},
+          "requested_auth_configs": {},
+          "requested_tool_confirmations": {},
+          "state_delta": {}
+        },
+        "author": "coach_agent",
+        "content": {
+          "parts": [
+            {
+              "function_response": {
+                "id": "adk-a86ab509-631b-4261-8c28-054efab32bae",
+                "name": "add_task",
+                "response": {
+                  "ok": true,
+                  "task": {
+                    "taskId": "k_01J7Z8",
+                    "title": "Locks"
+                  }
+                }
+              }
+            }
+          ],
+          "role": "user"
+        },
+        "id": "ee9a14da-0d31-4012-b079-d4f5ac0d3ad9",
+        "invocation_id": "inv_5",
+        "node_info": {
+          "path": ""
+        },
+        "timestamp": 1787008054.646228
       },
       "expect": {
         "dropped": true
       },
-      "name": "tool call only, which is not a message"
+      "name": "the tool's result, which is not a message of its own"
+    },
+    {
+      "event": {
+        "actions": {
+          "artifact_delta": {},
+          "requested_auth_configs": {},
+          "requested_tool_confirmations": {},
+          "state_delta": {}
+        },
+        "author": "coach_agent",
+        "content": {
+          "parts": [
+            {
+              "function_response": {
+                "id": "adk-c17c543d-6c03-4e22-8a10-13a2a3ac4b9d",
+                "name": "add_task",
+                "response": {
+                  "error": {
+                    "code": "validation-error",
+                    "message": "300 minutes is more than this project allows for one task."
+                  },
+                  "ok": false
+                }
+              }
+            }
+          ],
+          "role": "user"
+        },
+        "id": "bb774af2-9b6e-4258-a3ba-2439ce039d2e",
+        "invocation_id": "inv_7",
+        "node_info": {
+          "path": ""
+        },
+        "timestamp": 1787008054.646335
+      },
+      "expect": {
+        "dropped": true
+      },
+      "name": "a tool that refused"
+    },
+    {
+      "event": {
+        "actions": {
+          "artifact_delta": {},
+          "requested_auth_configs": {},
+          "requested_tool_confirmations": {},
+          "state_delta": {}
+        },
+        "author": "coach_agent",
+        "content": {
+          "parts": [
+            {
+              "function_call": {
+                "args": {
+                  "estimated_minutes": 300
+                },
+                "id": "adk-c17c543d-6c03-4e22-8a10-13a2a3ac4b9d",
+                "name": "add_task"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        "id": "8b3a52dd-5ce1-41ec-8caf-58ed273da990",
+        "invocation_id": "inv_7",
+        "node_info": {
+          "path": ""
+        },
+        "timestamp": 1787008054.6464102
+      },
+      "expect": {
+        "attachments": 0,
+        "role": "model",
+        "text": "",
+        "tools": [
+          {
+            "callId": "adk-c17c543d-6c03-4e22-8a10-13a2a3ac4b9d",
+            "name": "add_task",
+            "ok": false
+          }
+        ]
+      },
+      "name": "the call the refusal answers"
     },
     {
       "event": {
@@ -223,25 +355,30 @@
             {
               "function_call": {
                 "args": {},
+                "id": "adk-37ec9330-f43f-44e4-b266-c41c3aa735c1",
                 "name": "add_task"
               }
             }
           ],
           "role": "model"
         },
-        "id": "872c11c7-3e98-419d-81ee-84e0a851eafb",
+        "id": "35ba1d61-cbd0-4ce4-9f74-7fd0194d5664",
         "invocation_id": "inv_6",
         "node_info": {
           "path": ""
         },
-        "timestamp": 1786979780.9589791
+        "timestamp": 1787008054.6464872
       },
       "expect": {
         "attachments": 0,
         "role": "model",
         "text": "Adding that now.",
-        "toolNames": [
-          "add_task"
+        "tools": [
+          {
+            "callId": "adk-37ec9330-f43f-44e4-b266-c41c3aa735c1",
+            "name": "add_task",
+            "ok": null
+          }
         ]
       },
       "name": "text alongside a tool call"

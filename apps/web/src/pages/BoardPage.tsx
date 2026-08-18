@@ -4,6 +4,13 @@
  * docs/06-frontend.md#task-board. Drag-and-drop is dnd-kit, optimistic, and computes the
  * new fractional index with the same algorithm the server uses, so the row lands where it
  * will finally sit and does not jump when the response arrives.
+ *
+ * **The intake conversation lives here, from M3.** docs/04-api-contract.md has
+ * `POST /api/projects` open a session with `taskId: null`, and docs/06-frontend.md gives
+ * that session no screen of its own — so it belongs on the one screen a new project lands
+ * on. Beside the board rather than on a route of its own, which is also what makes golden
+ * flow #1 legible: the learner watches tasks appear as the coach proposes them, which is
+ * what the `board_update` push is for.
  */
 
 import {
@@ -25,6 +32,7 @@ import { Link, useParams } from 'react-router-dom'
 
 import { BoardFilters } from '@/components/board/BoardFilters'
 import { TaskCard } from '@/components/board/TaskCard'
+import { SessionPane } from '@/components/session/SessionPane'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -33,6 +41,7 @@ import {
   useCreateTask,
   useEffectivePrefs,
   useProject,
+  useProjectSession,
   useReorderTask,
   useSetTaskState,
   useSplitTask,
@@ -50,6 +59,7 @@ export default function BoardPage() {
 
   const project = useProject(projectId)
   const prefs = useEffectivePrefs(projectId)
+  const intake = useProjectSession(projectId)
   const board = useBoard(projectId, filters)
   const setTaskState = useSetTaskState(projectId, filters)
   const reorder = useReorderTask(projectId, filters)
@@ -91,8 +101,9 @@ export default function BoardPage() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-3xl space-y-6 p-4 sm:p-6">
-      <header className="space-y-1">
+    <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 p-4 sm:p-6 lg:flex-row lg:items-start">
+      <div className="w-full space-y-6 lg:w-3/5">
+        <header className="space-y-1">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h1 className="text-2xl font-semibold">{project.data?.title ?? 'Board'}</h1>
           <Button variant="outline" render={<Link to={`/projects/${projectId}/settings`} />}>
@@ -178,8 +189,17 @@ export default function BoardPage() {
               ))}
             </ul>
           </SortableContext>
-        </DndContext>
-      )}
+          </DndContext>
+        )}
+      </div>
+
+      <SessionPane
+        sessionId={intake.data?.id ?? project.data?.intakeSessionId ?? ''}
+        projectId={projectId}
+        heading="Planning conversation with your coach"
+        emptyHint="Tell your coach what you want to learn and how much time you have. It will ask a few questions before proposing tasks."
+        className="relative flex h-[70svh] w-full flex-col rounded-lg border lg:sticky lg:top-4 lg:h-[calc(100vh-8rem)] lg:w-2/5"
+      />
     </div>
   )
 }

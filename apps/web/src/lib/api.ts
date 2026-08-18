@@ -22,6 +22,7 @@ import {
   projectSchema,
   sessionEventsSchema,
   sessionResponseSchema,
+  sessionSummarySchema,
   taskDetailSchema,
   taskMutationSchema,
   turnAcceptedSchema,
@@ -230,6 +231,15 @@ export const api = {
 
   // --- sessions & turns ---------------------------------------------------------------
 
+  /**
+   * Get-or-create the project's intake conversation.
+   *
+   * Added at M3 alongside the endpoint. A POST, and named like `openTaskSession`, because
+   * it is the same get-or-create: opening the board twice must not fork the conversation.
+   */
+  openProjectSession: (projectId: string) =>
+    request(`/api/projects/${projectId}/session`, sessionSummarySchema, { method: 'POST' }),
+
   /** Get-or-create. Every workspace open calls this, so it is not a create. */
   openTaskSession: (taskId: string) =>
     request(`/api/tasks/${taskId}/session`, sessionResponseSchema, { method: 'POST' }).then(
@@ -253,6 +263,8 @@ export const api = {
     body: {
       text: string
       attachments?: { uploadId: string; mimeType: string; filename?: string }[]
+      /** The answer to a gated tool; see `ConfirmationPrompt`. */
+      confirmation?: { functionCallId: string; confirmed: boolean }
     },
     idempotencyKey?: string,
   ) =>
@@ -267,6 +279,7 @@ export const api = {
           uploadId: attachment.uploadId,
           mimeType: attachment.mimeType,
         })),
+        ...(body.confirmation ? { confirmation: body.confirmation } : {}),
       },
       ...(idempotencyKey ? { idempotencyKey } : {}),
     }),

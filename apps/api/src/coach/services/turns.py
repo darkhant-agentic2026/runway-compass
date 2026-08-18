@@ -61,6 +61,13 @@ CANCELLED_CODE = "cancelled"
 
 MAX_TURN_TEXT = 32_000
 
+#: ADK's own name for the synthetic call a `require_confirmation` tool produces
+#: (`google.adk.flows.llm_flows.functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME`).
+#: Restated rather than imported, deliberately: it is a private module, and the constant
+#: is also parsed by `apps/web/src/lib/transcript.ts`, which cannot import it at all. The
+#: bump checklist in docs/03-agent-design.md carries the pair.
+CONFIRMATION_FUNCTION_NAME = "adk_request_confirmation"
+
 
 class TurnService:
     def __init__(
@@ -98,6 +105,7 @@ class TurnService:
         *,
         text: str = "",
         attachments: list[dict[str, str]] | None = None,
+        confirmation: tuple[str, bool] | None = None,
     ) -> Turn:
         """`POST /api/sessions/{sid}/turns` — 202, generation continues in background."""
         if self._registry.draining:
@@ -109,7 +117,7 @@ class TurnService:
             raise ValidationProblem(f"A turn's text is capped at {MAX_TURN_TEXT} characters.")
         await self._sessions.require_owned(principal, session_id)
 
-        content = await self._build_content(principal, text, attachments or [])
+        content = await self._build_content(principal, text, attachments or [], confirmation)
         if content is None:
             raise ValidationProblem("A turn needs text, an attachment, or both.")
 
@@ -222,9 +230,28 @@ class TurnService:
     # --- generation ------------------------------------------------------------------
 
     async def _build_content(
-        self, principal: Principal, text: str, attachments: list[dict[str, str]]
+        self,
+        principal: Principal,
+        text: str,
+        attachments: list[dict[str, str]],
+        confirmation: tuple[str, bool] | None = None,
     ) -> types.Content | None:
         parts: list[types.Part] = []
+        if confirmation is not None:
+            # The answer to a `require_confirmation` tool. ADK's request-confirmation flow
+            # looks for a function *response* to `adk_request_confirmation` on the last
+            # user-authored event and resumes the original call from it, so this part has
+            # to carry the call id it is answering — which is why the client sends one.
+            call_id, confirmed = confirmation
+            parts.append(
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id=call_id,
+                        name=CONFIRMATION_FUNCTION_NAME,
+                        response={"confirmed": confirmed},
+                    )
+                )
+            )
         if text.strip():
             parts.append(types.Part(text=text))
         for attachment in attachments:
@@ -375,7 +402,10 @@ class TurnService:
             await self._broker.publish(
                 turn.id,
                 ToolResult(
-                    turn_id=turn.id, seq=seq, name=response.name or "", ok=True
+                    turn_id=turn.id,
+                    seq=seq,
+                    name=response.name or "",
+                    ok=_tool_succeeded(response.response),
                 ).to_wire(),
             )
             await self._turns.advance_seq(turn.id, seq)
@@ -437,6 +467,23 @@ def classify_generation_error(exc: BaseException) -> TurnError:
     )
 
 
+def _tool_succeeded(payload: object) -> bool:
+    """Whether a tool result reports success, for the `tool_result` frame's `ok`.
+
+    Domain tools answer `{"ok": …}` — a refused guard is a *result*, not an exception
+    (`agents/tools.py`) — so a frame that hard-coded `True` told the user their board had
+    been changed when the change had been turned down.
+
+    Anything without a boolean `ok` counts as success here, because the alternative reads
+    worse: ADK's own placeholder for a call awaiting confirmation would render as a failed
+    step. The stored transcript makes the finer distinction, where it has the whole turn
+    to look at rather than one frame (`lib/transcript.ts`, `TranscriptTool.ok`).
+    """
+    if isinstance(payload, dict) and isinstance(payload.get("ok"), bool):
+        return bool(payload["ok"])
+    return True
+
+
 def _text_of(event: Event) -> str:
     """Every text part of an event, concatenated. Thought parts are not transcript."""
     if event.content is None or not event.content.parts:
@@ -451,6 +498,7 @@ def _text_of(event: Event) -> str:
 __all__ = [
     "CANCELLED_CODE",
     "CANCEL_POLL_SECONDS",
+    "CONFIRMATION_FUNCTION_NAME",
     "MAX_TURN_TEXT",
     "TurnService",
     "classify_generation_error",
