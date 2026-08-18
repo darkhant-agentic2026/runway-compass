@@ -223,35 +223,55 @@ subtasks with a correct parent rollup; project-level duration overrides are resp
 
 ## Status after M3
 
-Complete locally; not yet verified on `coach-dev`. What follows is the carry-over a later
-milestone needs, recorded here because it is not derivable from the code.
+Complete locally and on `main`; **not yet verified on `coach-dev`**. That deploy is the
+one exit criterion M3 has not paid, and the table at the end of this section is the reason
+to expect it to find something — every milestone so far has.
 
 **Met.** Golden flows #1, #2, and #7 pass on all four Playwright projects, alongside the
-M1 and M2 specs — 23 specs, 92 runs. Asking for a four-hour task yields subtasks that each fit
-the budget with a parent rollup equal to their sum, and a project with a two-hour override
-sizes work differently from one on the 45-minute global default *in the same browser, from
-the same sentence*. 382 backend tests, 184 web.
+M1 and M2 specs: 25 specs, 100 runs. Asking for a four-hour task yields subtasks that each
+fit the budget with a parent rollup equal to their sum, and a project with a two-hour
+override sizes work differently from one on the 45-minute global default *in the same
+browser, from the same sentence*. 384 backend tests, 194 web.
 
-**The evidence in flow #7 is worth naming, because it is what makes the flow more than a
-staging exercise.** The stubbed model reads its task budget out of the *rendered system
-instruction* (`Default task length: 120 minutes`), so nothing in the browser or in the
-stub knows which project it is in. Subtasks that follow a project's override can therefore
-only have come from the prompt the server assembled, which is the thing
+**Flow #7 is evidence rather than staging, and that is a property of how it is built.**
+The stubbed model reads its task budget out of the *rendered system instruction* — the
+line `agents/prompt.py` writes as `Default task length: 120 minutes` — so nothing in the
+browser or in the stub knows which project it is in. Subtasks that follow a project's
+override can therefore only have come from the prompt the server assembled, which is what
 "project-level duration overrides are respected" actually means.
-`tests/test_stub_model.py` owns both ends of that parse.
+`tests/test_stub_model.py` owns both ends of that parse, so a change to the wording fails
+there rather than as a Playwright timeout.
+
+**Two defects were reported from use after the milestone was green**, both invisible to
+the full local gate and both already rows in the table below:
+
+- **Tool activity vanished when a turn finished.** Chips lived only in `useStreamStore`,
+  which is cleared on `turn_complete`, and `toMessages` dropped every stored event that
+  carried only a function call — so a reload or a revisit showed a conversation in which
+  tasks had appeared by themselves. M2 deferred this with the note that a resumed client
+  "rebuilds them from the finalized transcript"; nothing rebuilt them.
+- **The board stopped refreshing on a tab that had opened a workspace first.**
+  `getSocket(deps)` ignores its arguments after the first call, and React runs child
+  effects before parent ones, so `TaskWorkspacePage` built the socket for its presence
+  heartbeat before `AppShell` could hand over the `board_update` callback.
 
 **Deliberately deferred, and the milestone that needs it:**
 
 | Item | Needed by | Note |
 | --- | --- | --- |
+| **Deploy verification on `coach-dev`** | **now** | The board, the intake conversation, and the tool round trip have never run against Vertex, a real model's tool-calling, or real Firestore indexes. `POST /api/projects/{id}/session`'s fallback scan is the one query M3 added, and its index is declared but unapplied |
 | `board_update` **across instances** | **M5** | `ws/hub.py` reaches the sockets on *this* process. For M3 that is the whole population: the tool runs inside the turn the user's own request started, and session affinity puts their socket there. A scheduled run executes wherever Cloud Tasks lands it, with no relation to where the owner is connected, so the ledger needs a cross-instance channel — Firestore, since one already exists |
-| `list_tasks` as the model's **only** board read | — | The prompt also carries the board, so the tool is a refresh rather than the source. Cheap, and it keeps the first turn from costing a tool round trip; revisit if prompt size becomes the constraint |
-| Autonomous mode's **reduced tool set** | **M5** | docs/03-agent-design.md#safety-rails-on-autonomy forbids `discard_task`, `update_learner_profile`, and `update_project_prefs` in background work. There is no autonomous agent yet, so there is nothing to reduce; the `propose_tasks` subset is built there, from the same `DomainTools` |
-| Everything still open after M2 | as recorded | Content scanning (M7), `subscribe` by `runId` (M5), `turns` composite indexes (M5), nightly evalsets (M4-M6), `prod` and `terraform destroy` |
+| Autonomous mode's **reduced tool set** | **M5** | [03-agent-design.md](03-agent-design.md#safety-rails-on-autonomy) forbids `discard_task`, `update_learner_profile`, and `update_project_prefs` in background work. There is no autonomous agent yet, so there is nothing to reduce; `propose_tasks` builds its subset there, from the same `DomainTools` |
+| `origin: "agent"` badging is on tasks, not on **runs** | **M5** | Every agent write records `origin`, which the board badges. `runId` and the per-run undo the "Updated by your coach" banner needs arrive with the ledger |
+| `list_tasks` as the model's **only** board read | — | The prompt carries the board too, so the tool is a refresh rather than the source. Cheap, and it saves a tool round trip on the first turn; revisit if prompt size becomes the constraint |
+| Everything still open after M2 | as recorded | Content scanning (M7), `subscribe` by `runId` (M5), `turns` composite indexes (M5), nightly evalsets (M4–M6), `prod` and `terraform destroy` |
 
 **Endpoints in the API contract still unimplemented**: `POST /api/sessions/{sid}/research`
-and reports (M4), runs (M5), `PATCH /api/me/learner-profile`'s Settings UI (M6), and
-`DELETE /api/me` (M7).
+and everything under reports (M4), runs (M5), `PATCH /api/me/learner-profile`'s Settings
+UI (M6), and `DELETE /api/me` (M7).
+
+**Open questions Q1–Q3** ([10-risks.md](10-risks.md#open-questions)) were due at this
+milestone and are settled, each taking its default. Q4 is due at M4.
 
 **Decisions made during implementation** that the design documents did not fix:
 
@@ -260,55 +280,32 @@ and reports (M4), runs (M5), `PATCH /api/me/learner-profile`'s Settings UI (M6),
 | `POST /api/projects/{id}/session` added | [04-api-contract.md](04-api-contract.md) has `POST /api/projects` *create* the intake session and nothing that resolves a project back to it. Every visit after the one that created it needs exactly that | `api/routers/projects.py` |
 | `projects/{id}.intakeSessionId` added | The alternative is a collection-group scan of the project's sessions on every board load. The scan survives as the fallback for projects created before the pointer, and repairs it when it runs | [02-data-model.md](02-data-model.md#projectsprojectid) |
 | The intake conversation lives **on the board screen** | [06-frontend.md](06-frontend.md#routes) gives the intake session no route of its own, and the board is the screen a new project lands on. Beside the board rather than on its own page is also what makes flow #1 legible — the learner watches cards appear as the coach proposes them | `pages/BoardPage.tsx` |
-| Prompt context is injected as **`temp:`** state | [03-agent-design.md](03-agent-design.md#coach_agent) says "injected as state"; `temp:` is the lifetime that means. Session `state` is stored as a JSON *string*, so a plain key would re-serialize the whole board onto the session document on every appended event. ADK trims `temp:` deltas before persistence. The cost is one contentless event per turn, which the transcript already drops | `agents/prompt.py` |
+| Prompt context is injected as **`temp:` state** | [03-agent-design.md](03-agent-design.md#coach_agent) says "injected as state"; `temp:` is the lifetime that means. Session `state` is stored as a JSON *string*, so a plain key would re-serialize the whole board onto the session document on every appended event, and ADK trims `temp:` deltas before persistence. The cost is one contentless event per turn, which the transcript drops | `agents/prompt.py` |
 | `add_task`'s per-run cap lives in `temp:` state too | The cap is "≤ 5/run". A persisted counter would make the sixth task of a *conversation* impossible rather than the sixth of a turn | `agents/context.py` |
-| A failed tool **returns** a result rather than raising | An exception out of a tool aborts the invocation, so a model that asked for a nine-hour task would end the turn instead of being told the number is too big. Guards answer `{"ok": false, "error": …}`; anything that is not a `CoachError` still propagates | `agents/tools.py` |
-| `update_project_prefs` takes named arguments, not a patch object | [03-agent-design.md](03-agent-design.md#domain-tools) says "whitelist of keys". Spelling the keys out as parameters *is* the whitelist, and an open patch argument would let the model write fields it invented onto the project document | `agents/tools.py` |
-| `discard_task` is gated with ADK's `require_confirmation`, and a turn may carry only a confirmation | The gate then holds whether or not the model cooperates — the tool call becomes `adk_request_confirmation` and the body runs on the answer. Answering is a turn with no text and no attachment, so `start`'s "a turn needs text, an attachment, or both" had to count a confirmation as content | `agents/tools.py`, `services/turns.py` |
+| A failed tool **returns** a result rather than raising | An exception out of a tool aborts the invocation, so a model that asked for a nine-hour task would end the turn instead of being told the number is too big and trying again. Guards answer `{"ok": false, "error": …}`; anything that is not a `CoachError` still propagates | `agents/tools.py` |
+| `update_project_prefs` takes named arguments, not a patch object | [03-agent-design.md](03-agent-design.md#domain-tools) says "whitelist of keys". Spelling the keys out as parameters *is* the whitelist; an open patch argument would let the model write fields it invented onto the project document | `agents/tools.py` |
+| `discard_task` is gated with ADK's `require_confirmation`, and a turn may carry **only** a confirmation | The gate then holds whether or not the model cooperates: the call becomes `adk_request_confirmation` and the body runs on the answer. Answering is a turn with no text and no attachment, so `start`'s "a turn needs text, an attachment, or both" had to count a confirmation as content | `agents/tools.py`, `services/turns.py` |
+| Tool activity is part of the **stored transcript**, not only of the live stream | The live buffer is cleared on `turn_complete`, so chips rendered from it alone last seconds. Calls and outcomes are *separate* stored events, paired by call id | `lib/transcript.ts`, `components/session/ToolChips.tsx` |
+| A chip has **three** outcomes, not two | A refused guard is a result (`{"ok": false}`), and ADK's answer to a call awaiting confirmation is neither an `ok` nor an error — `null` renders as neither a tick nor a cross, because both would be a claim the transcript cannot support. `tool_result`'s `ok` was hard-coded `True` for the same reason and now reads the tool's result | `lib/transcript.ts`, `services/turns.py` |
+| `board_update` is a **registration** on the socket, and a completed turn invalidates the board as well | The first because `getSocket`'s constructor arguments belong to whoever called it first. The second because frames are not checkpointed: a client whose socket was down while a tool ran resumes its *text* and never hears the board moved, and from M5 a run on another instance never sends it one. The push makes the board feel live; the invalidation makes it correct | `lib/socket.ts`, `components/session/SessionPane.tsx` |
+| The agent may not complete or discard a task through `set_task_state` | [10-risks.md](10-risks.md#open-questions) Q1 was due at M3 and takes its default: completion is the learner's click. Enforced in the tool rather than asked for in the instruction, and `discarded` is refused on the same line because it would otherwise be a second route around `discard_task`'s confirmation gate | `agents/tools.py` |
 | `Principal.source` gained `"agent"` | Nothing branches on it; it is the audit label. Calling a tool call an `id_token` request would be a lie in the one place a reader goes to find out who did something | `core/principal.py` |
-| `APP_NAME` moved to `core/app.py` | It was in `agents/runner.py`, so `services/sessions.py` imported from `agents/` — an inversion of the layering that only became visible (as an import cycle) once `agents/` grew a module importing `services/` | `core/app.py` |
-| A completed turn invalidates the board, beside the `board_update` push | Frames are not checkpointed: a client whose socket was down while a tool ran resumes its *text* and never hears the board moved, and from M5 a run on another instance never sends it one. The push is what makes the board feel live; this is what makes it correct | `components/session/SessionPane.tsx` |
-| Tool activity is part of the **stored transcript**, not only of the live stream | M2 deferred this as "a resumed client rebuilds them from the finalized transcript", which was not true: `toMessages` dropped every event carrying only a function call, so a finished turn erased every record that the coach had touched the board. Calls and outcomes are separate stored events and are paired by call id | `lib/transcript.ts`, `components/session/ToolChips.tsx` |
-| A chip has **three** outcomes, not two | A refused guard is a result (`{"ok": false}`), and ADK's answer to a call awaiting confirmation is neither — `null` renders as neither a tick nor a cross, because both would be a claim the transcript cannot support | `lib/transcript.ts` |
-| `tool_result`'s `ok` is read from the tool's result | It was hard-coded `True`, so a guard refusing a change announced it as done | `services/turns.py` |
-| The stubbed model emits **scripted tool calls**, planned from this turn's function responses | Flows #1, #2, and #7 need the coach to act. Scoping the plan to the turn is the loop's termination argument: asked of the whole session history, "have I already split something?" answers yes forever; asked of nothing, the stub re-issues `split_task` until the turn never ends | `integrations/stub_model.py` |
+| `APP_NAME` moved to `core/app.py` | It was in `agents/runner.py`, so `services/sessions.py` imported from `agents/` — an inversion of the layering that became visible, as an import cycle, only once `agents/` grew a module importing `services/` | `core/app.py` |
+| Two M2 e2e specs were made deterministic rather than left intermittent | Flow #4 raced the reconnect banner (`backoffDelay(0)` plus a round trip, often shorter than one polling interval) and the cancel spec raced the turn finishing before the click landed. Both pre-existing, both found only by running the suite eight times in a row while closing M3, and both fixed by owning the duration of the state being asserted on. [08-testing.md](08-testing.md#end-to-end-playwright) | `e2e/workspace.spec.ts` |
+| The stubbed model emits **scripted tool calls**, planned from *this turn's* function responses | Flows #1, #2, and #7 need the coach to act. Scoping the plan to the turn is the loop's termination argument: asked of the whole session history, "have I already split something?" answers yes forever; asked of nothing, the stub re-issues `split_task` until the turn never ends | `integrations/stub_model.py` |
 
-### What a green local run did not prove, again
+### Three more rows for the table above
 
-Two of M3's defects were of the kind [the M2 table](#what-a-green-local-run-does-not-prove)
-predicts, and both are already rows in it:
+M3 recurred two rows of [the M2 table](#what-a-green-local-run-does-not-prove) — the
+composite collection-group query (avoided rather than hit, in `find_intake_session_id`)
+and the shape of a stored ADK event — and added three of its own. M4 and M5 touch all
+five.
 
-- **A stored ADK event is not shaped the way the flow that produced it reads.** The
-  confirmation request is *second*-from-last — ADK appends a function-response event
-  carrying `requested_tool_confirmations` after it — so a reader that looked at the tail
-  found nothing and rendered no buttons. Every backend test passed, because they counted
-  function calls rather than asking what the UI would see. Fixed by cancelling requests
-  against answers rather than reading a position; `transcript.test.ts` pins the ordering.
-- **The composite collection-group query, avoided rather than hit.** `find_intake_session_id`
-  wants `projectId == …` *and* `taskId == null`; it filters the second in Python, and the
-  index table gained the row for the first in the same change.
-
-A third arrived from a user rather than from a test, and is the same row again — *a
-stored ADK event is not shaped the way the code that produced it reads*. Tool chips were
-rendered from `useStreamStore`, which is cleared on `turn_complete`, and the transcript
-dropped every event that carried only a function call. So the chips were correct for the
-few seconds a turn was streaming and gone for good afterwards: a reload, or coming back
-to the session, showed a conversation in which tasks had appeared by themselves. Nothing
-in the suite could see it, because the backend tests counted function calls in the stored
-events and the web tests fed `toMessages` one event at a time — and a call and its
-outcome are two events, so the pairing they were meant to prove was never exercised.
-`session-event-vectors.json` now carries a call/response pair and the parity suite
-replays the vectors as **one transcript**.
-
-A fourth was reported the same way and is not an ADK trap at all, but the oldest kind of
-bug in a singleton: `getSocket(deps)` builds the socket on the first call and ignores the
-arguments on every later one, and **React runs child effects before parent ones**. A
-direct load of the task workspace therefore had the page build the socket for its presence
-heartbeat before `AppShell` could hand over the `board_update` invalidation callback — so
-for the rest of that tab's life the board never refreshed when the coach changed it. Every
-golden flow missed it by starting on the board. `board_update` is now a *registration*,
-which cannot be lost to whoever constructed the socket, and the e2e that reproduces it
-loads a workspace first on purpose.
+| Trap | How it presents | Where it will recur |
+| --- | --- | --- |
+| **The event a UI reads is rarely the last one written** | ADK appends a function-response event *after* the confirmation request, so a reader keying on position finds nothing and renders no control. Silent: the transcript looks merely uneventful | M4's report events and M5's run-status events are both read out of a transcript that keeps growing after them. Key on identity — a call id, a report id — never on position |
+| **A test that replays one fixture at a time cannot see a pairing** | A call and its outcome are two stored events. Feeding them separately proved the reader parsed each one and never that it joined them, so a chip with no result passed every assertion | Any two-event relationship: a report and its items, a run and its steps. Replay the vectors as **one** transcript, which `transcript.test.ts` now does |
+| **A singleton's constructor arguments belong to whoever called it first** | `getSocket(deps)` ignores them afterwards, and React runs child effects before parent ones — so the *page* built the socket and the app shell's callback was dropped for the life of the tab. Every golden flow missed it by starting on the same screen | Anything configured at construction and reached for from more than one component. Prefer a registration; and vary an e2e's entry screen, because a suite that always starts in the same place tests one mount order |
 
 ---
 

@@ -134,6 +134,12 @@ user's button calls.
   assembling the LLM request — inside the detached generation task, on the first real turn
   of a deployed revision. `tests/test_agent_prompt.py` reads the template and asserts every
   placeholder has a writer; keep it reading the template rather than restating the list.
+- **`board_update` is *registered* on the socket, never passed to `getSocket`.**
+  `getSocket(deps)` builds the singleton on the first call and ignores its arguments
+  afterwards, and React runs child effects before parent ones — so a screen that reaches
+  for the socket can silently win the race against `AppShell` and leave the board never
+  refreshing. Nothing about that fails a test that starts on the board.
+  `docs/06-frontend.md#the-bridge`
 - **Nothing in `ws/` may cancel generation.** `TurnRegistry` owns the task and a socket
   closing is a subscriber leaving. If `TurnService.start` ever grows an `await` on the
   generation task, or the task moves into a request handler's scope, the disconnect
@@ -143,12 +149,13 @@ user's button calls.
 ## A green local gate is weaker evidence than it looks
 
 Seven of the nine defects fixed while closing M2 were invisible to a fully passing local
-run. The failure modes, what each looks like, and where each is likely to recur are
-tabulated in `docs/09-roadmap.md#what-a-green-local-run-does-not-prove`. **Read that
-table before writing anything that queries Firestore, calls a second Google API, or reads a
-stored ADK event** — M3 onwards does all three.
+run, and M3 added three more rows plus two defects that a *user* found after the gate went
+green. The failure modes, what each looks like, and where each is likely to recur are
+tabulated in `docs/09-roadmap.md#what-a-green-local-run-does-not-prove` and continued in
+`docs/09-roadmap.md#three-more-rows-for-the-table-above`. **Read both before writing
+anything that queries Firestore, calls a second Google API, or reads a stored ADK event.**
 
-Two working habits follow from it, and neither belongs in `docs/`:
+Four working habits follow, and none belongs in `docs/`:
 
 - **When a fixture stands in for a shape this project does not define, generate it.**
   Hand-written fixtures encode the same assumption as the code they test, so both are wrong
@@ -159,6 +166,20 @@ Two working habits follow from it, and neither belongs in `docs/`:
   differ. A composite Firestore query and a single-field one return the same rows locally,
   and only one of them works deployed; the same is true of a signed URL's arguments. In
   those cases assert the call, not the output.
+- **When a fix has two mechanisms, disable each one and re-run the test.** A test that
+  passes is not evidence about the mechanism you think it is testing: M3's board-refresh
+  fix had a push *and* a fallback, and only turning each off in turn showed which one the
+  regression test was actually exercising. Two five-minute runs, and the alternative is a
+  test that keeps passing after the interesting half is deleted.
+- **When ADK's behaviour is the question, dump it — do not reason about it.** A throwaway
+  pytest that prints the stored events answered "where does the confirmation request sit
+  in the transcript" and "what shape is a function response" in one run, after two wrong
+  guesses. Delete the probe afterwards; the answer belongs in a vector or a test.
+- **Run the e2e suite several times before believing it.** Two specs that had passed since
+  M2 turned out to fail roughly one run in three, each racing a UI state that lasts
+  milliseconds. One green run is not evidence of a stable suite, and an intermittent test
+  trains everyone to re-run rather than to look — so fix the timing rather than the
+  symptom, and never quietly retry.
 
 ## Reporting a deployed failure
 
@@ -189,6 +210,10 @@ anonymous Firestore client. CI has no such variable until a fixture starts the e
 which is after collection. It also usually has ADC, which CI does not. Keep cloud-client construction out of
 constructors — `coach/core/lazy.py` explains why and
 `tests/test_import_without_credentials.py` pins it.
+
+**There is no Prettier in this repo.** Formatting is `ruff format` and `eslint --fix`, both
+run by `dev.sh lint`. Running `npx prettier --write` on a `.ts` file rewrites it in a style
+nothing else here uses (semicolons, double quotes) and eslint will not put it back.
 
 **Reach for `dev.sh` before reaching for the underlying tool.** `dev.sh test api` starts the
 emulator and exports `ENV`, `GOOGLE_CLOUD_PROJECT`, and `FIRESTORE_EMULATOR_HOST` before

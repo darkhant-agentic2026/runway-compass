@@ -297,9 +297,11 @@ class DomainTools:
     ) -> dict[str, Any]:
         """Move a task to a new state.
 
-        Valid states are `not_started`, `current`, `completed`, `postponed`, and
-        `postponed_until`. Only transitions the board allows will succeed; the result says
-        which ones were available if one is refused. To discard a task, use `discard_task`.
+        Valid states are `not_started`, `current`, `postponed`, and `postponed_until`.
+        Only transitions the board allows will succeed. To discard a task, use
+        `discard_task` — and **you cannot mark a task complete**: finishing a piece of work
+        is the learner's own judgement of it. Say you think they are done and let them
+        click.
 
         Args:
             task_id: The task to move.
@@ -318,10 +320,25 @@ class DomainTools:
         state: str,
         postponed_until: str | None,
     ) -> dict[str, Any]:
+        target = _task_state(state)
+        if target is TaskState.COMPLETED:
+            # docs/10-risks.md Q1: "completion is always the user's click; the agent may
+            # *suggest* completion." A guard rather than an instruction, on the same
+            # reasoning as `discard_task`'s confirmation — a rule the model can decline to
+            # follow is not a rule. Answered as a result so the coach can say so out loud.
+            raise ValidationProblem(
+                "Only the learner marks a task complete — finishing a piece of work is "
+                "their judgement of it, not yours. Say you think they are done and let "
+                "them click."
+            )
+        if target is TaskState.DISCARDED:
+            raise ValidationProblem(
+                "Use discard_task to propose discarding a task; it asks the learner first."
+            )
         task = await self._tasks.set_state(
             context.principal,
             task_id,
-            _task_state(state),
+            target,
             postponed_until=_timestamp(postponed_until),
         )
         await self._announce(context, [task.id])

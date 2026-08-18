@@ -284,6 +284,14 @@ making them rules removes a whole class of nondeterminism from background behavi
 All tools are typed `FunctionTool`s with Pydantic argument models, wrapping `services/`.
 Every tool returns a compact structured result (not prose) so the model reasons over facts.
 
+The domain tools landed at M3 in `agents/tools.py`. Two things about them are decisions
+rather than mechanics, and both are argued in
+[09-roadmap.md](09-roadmap.md#status-after-m3): a guard **answers** rather than raises, so
+a refused call is a fact the model can act on instead of the end of the turn; and a tool
+reads whose board it is acting on from the invocation, never from an argument — the uid
+from the session and the project from `temp:` state written by the prompt callback — so a
+tool cannot be pointed at someone else's project by an argument the model chose.
+
 ### Domain tools (available to `coach_agent`, subset to `propose_tasks`)
 
 | Tool | Signature (abridged) | Guard |
@@ -292,11 +300,11 @@ Every tool returns a compact structured result (not prose) so the model reasons 
 | `add_task` | `(project_id, title, description, estimated_minutes, needs_research, after_task_id=None)` | ≤ 5/run; minutes ≤ 3× default |
 | `split_task` | `(task_id, subtasks: list[SubtaskDraft])` | parent must be leaf; 2–8 subtasks; each ≤ default minutes |
 | `update_task` | `(task_id, title?, description?, estimated_minutes?)` | owner |
-| `set_task_state` | `(task_id, state, postponed_until?)` | state machine validated server-side |
+| `set_task_state` | `(task_id, state, postponed_until?)` | state machine validated server-side; **`completed` and `discarded` are refused** — the first is the learner's click ([10-risks.md](10-risks.md#open-questions) Q1), the second would bypass `discard_task`'s gate |
 | `set_next_up` | `(project_id, task_id)` | transactional single-`current` invariant |
 | `reorder_task` | `(task_id, after_task_id \| before_task_id)` | fractional index |
 | `discard_task` | `(task_id, reason)` | **requires user confirmation** in interactive mode; forbidden in autonomous mode |
-| `update_project_prefs` | `(project_id, prefs_patch)` | whitelist of keys |
+| `update_project_prefs` | `(default_task_minutes?, research_depth?, allow_videos?)` | one named argument per writable key — spelling them out *is* the whitelist, where a patch object would let the model invent fields |
 | `post_research_report` | `(task_id, required[], optional[], summary)` | validates `Σ required.minutes ≤ budget` |
 
 ### Memory tools

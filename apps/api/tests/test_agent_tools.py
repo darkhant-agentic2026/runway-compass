@@ -337,6 +337,58 @@ async def test_a_run_may_add_only_five_tasks(client: httpx.AsyncClient, containe
     )["ok"]
 
 
+async def test_the_coach_cannot_mark_a_task_complete(
+    client: httpx.AsyncClient, container
+) -> None:
+    """docs/10-risks.md Q1: completion is always the learner's click.
+
+    A guard rather than a line in the instruction, on the same reasoning as
+    `discard_task`'s confirmation: a rule the model can decline to follow is not a rule.
+    Whether a piece of work is finished is the learner's judgement of their own work, and
+    a coach that could tick it off would be marking its own homework.
+    """
+    project = await _project(client, "Judgement")
+    task = (
+        await client.post(
+            f"/api/projects/{project['id']}/tasks",
+            json={"title": "The exercise", "estimatedMinutes": 45},
+        )
+    ).json()["task"]
+    context = _FakeToolContext("u_alice", project["id"])
+    await container.domain_tools.set_task_state(task["id"], "current", context)
+
+    refused = await container.domain_tools.set_task_state(task["id"], "completed", context)
+
+    assert not refused["ok"]
+    assert "learner" in refused["error"]["message"]
+    assert (await _board(client, project["id"]))[0]["state"] == "current"
+
+
+async def test_the_coach_cannot_discard_around_the_confirmation(
+    client: httpx.AsyncClient, container
+) -> None:
+    """`set_task_state(state="discarded")` would be the gate's back door.
+
+    `discard_task` is the tool ADK holds behind `require_confirmation`; a second route to
+    the same state would make that gate a matter of which tool the model happened to pick.
+    """
+    project = await _project(client, "The back door")
+    task = (
+        await client.post(
+            f"/api/projects/{project['id']}/tasks",
+            json={"title": "Still wanted", "estimatedMinutes": 45},
+        )
+    ).json()["task"]
+
+    refused = await container.domain_tools.set_task_state(
+        task["id"], "discarded", _FakeToolContext("u_alice", project["id"])
+    )
+
+    assert not refused["ok"]
+    assert "discard_task" in refused["error"]["message"]
+    assert (await _board(client, project["id"]))[0]["state"] == "not_started"
+
+
 async def test_a_tool_in_an_unlinked_session_refuses_rather_than_guesses(
     container,
 ) -> None:

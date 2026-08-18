@@ -111,11 +111,16 @@ alias in production.
 
 These do not block M0–M2. Each needs an answer before the milestone named.
 
+**Q1–Q3 were due at M3 and are settled — each took its default.** Where a default is a
+rule about what the agent may do, it is enforced in `agents/tools.py` rather than in the
+instruction, on the same reasoning as `discard_task`'s confirmation gate: a rule the model
+can decline to follow is not a rule.
+
 | # | Question | Needed by | Default if unanswered |
 | --- | --- | --- | --- |
-| Q1 | Should the coach ever mark a task complete on its own (e.g. after grading a submitted exercise), or is completion always the user's click? | M3 | User's click only. The agent may *suggest* completion. |
-| Q2 | How deep should task nesting go? The plan assumes exactly one level (task → subtask). | M3 | One level. Deeper nesting complicates rollups, ordering, and the board for little gain. |
-| Q3 | When the user's estimate and the agent's disagree (user says 30 min, agent says 90), who wins? | M3 | User wins; the agent flags the mismatch once and offers to split. |
+| Q1 | Should the coach ever mark a task complete on its own (e.g. after grading a submitted exercise), or is completion always the user's click? | ~~M3~~ **settled** | User's click only. The agent may *suggest* completion. `set_task_state` refuses `completed` — and refuses `discarded` too, which would otherwise be a second route around the confirmation gate. |
+| Q2 | How deep should task nesting go? The plan assumes exactly one level (task → subtask). | ~~M3~~ **settled** | One level, enforced transactionally in `TaskService`. Deeper nesting complicates rollups, ordering, and the board for little gain. |
+| Q3 | When the user's estimate and the agent's disagree (user says 30 min, agent says 90), who wins? | ~~M3~~ **settled** | User wins. Prompt behaviour rather than a guard, because the disagreement is a conversation: the coach flags it once, offers to split, and then works to their number. `update_task` may still change an estimate the learner asked it to change. |
 | Q4 | Should research reports accumulate per task (history) or should a re-run replace the previous report? | M4 | Accumulate, newest shown by default, older ones collapsible. Cheap and non-destructive. |
 | Q5 | Autonomous cadence — is every 15 minutes with a 6-hour per-project cooldown right, or should it be a nightly batch? | M5 | The 15 min / 6 h combination. Revisit against real cost data at M7. |
 | Q6 | Does the user need to see and approve agent-proposed tasks before they appear on the board, or do they appear directly with undo? | M5 | Appear directly, badged, with undo. A pending-approval queue is more friction than an unread badge. |

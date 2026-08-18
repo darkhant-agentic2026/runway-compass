@@ -109,6 +109,11 @@ A single module owns the socket:
 ### Task board (`/projects/:projectId`)
 
 - Ordered list of top-level tasks. The `current` task is visually pinned as "Next up."
+- **The project's intake conversation sits beside the board** (added at M3). The session
+  `POST /api/projects` opens has `taskId: null` and no route of its own, and the board is
+  the screen a new project lands on — so the learner watches cards appear as the coach
+  proposes them, which is what `board_update` is for. It is the same `SessionPane` the
+  task workspace renders; `POST /api/projects/{id}/session` resolves it on a later visit.
 - Card shows: title, estimated duration chip, state badge, research status (a small
   "materials ready" indicator), and `origin: agent` badge when the coach created it.
 - **Parent cards show `rollup.subtaskCount` and `rollup.totalEstimatedMinutes`** ("4

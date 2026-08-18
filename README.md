@@ -4,13 +4,16 @@ An adaptive agentic coach that turns your technical goals into bite-sized tasks,
 the material for the next one while you're away, and adjusts how it guides you as it
 learns how you think.
 
-**Status:** M0–M2 landed and deployed. A signed-in user can work the board by hand and hold
-a streaming conversation with the coach about an uploaded screenshot on a Cloud Run dev
-environment; generation survives a dropped socket and resumes across instances. CI builds,
-tests, and deploys on merge. The design is in [`docs/`](docs/);
-[09-roadmap.md](docs/09-roadmap.md#status-after-m2) records what is deferred, what was
-decided during implementation, and the seven failure modes a fully green local test run
-did not catch.
+**Status:** M0–M3 landed; M0–M2 are deployed and M3 is not yet verified on the dev
+environment. A signed-in user can work the board by hand, hold a streaming conversation
+with the coach about an uploaded screenshot, and have the coach *change the board* —
+proposing a task list through a Socratic intake, splitting oversized work to fit the
+project's own duration budget, and asking before it discards anything. Generation survives
+a dropped socket and resumes across instances. CI builds, tests, and deploys on merge.
+
+The design is in [`docs/`](docs/). [09-roadmap.md](docs/09-roadmap.md#status-after-m3)
+records what is deferred, what was decided during implementation, and — worth reading
+before writing anything — the failure modes a fully green local test run did not catch.
 
 ## What it does
 
@@ -75,12 +78,20 @@ steps each environment needs before its first `terraform apply`.
 
 ## Next step
 
-**M3** in [the roadmap](docs/09-roadmap.md#m3--the-coach-acts-on-the-board-15-weeks): the
-coach acts on the board. Domain tools wrapping the service layer, Socratic project intake
-in the session `POST /api/projects` already opens, prompt assembly from the effective
-prefs, and tool-activity chips driving `board_update` invalidations.
+**M4** in [the roadmap](docs/09-roadmap.md#m4--research-15-weeks): research. A
+`search_agent` behind an `AgentTool` hop, `fetch_url` with SSRF guards,
+`youtube_find_by_duration` with real ISO-8601 duration filtering, and the `ResearchReport`
+schema whose required/optional split is a product requirement rather than a rendering
+choice.
 
-Read [Status after M2](docs/09-roadmap.md#status-after-m2) first — particularly
-[What a green local run does not prove](docs/09-roadmap.md#what-a-green-local-run-does-not-prove).
-M3 adds the first agent tools, and therefore the first queries and writes the emulator will
-happily accept and production will not.
+Read [Status after M3](docs/09-roadmap.md#status-after-m3) first, and then the two tables
+of failure modes it points at — [the M2 one](docs/09-roadmap.md#what-a-green-local-run-does-not-prove)
+and [M3's three additions](docs/09-roadmap.md#three-more-rows-for-the-table-above). M4 is
+the milestone that hits every row of both: new Firestore queries that need indexes the
+emulator will not ask for, a *second* Google API whose credentials resolve at a different
+scope than the first, and report events read back out of a transcript that keeps growing
+after them.
+
+One carry-over is worth doing before M4 rather than during it: **M3 has never run on
+`coach-dev`.** Its agent tools, its intake session lookup, and its one new index have only
+met the emulator and a stubbed model.
