@@ -14,11 +14,20 @@
  * blanks the finished message for however long the refetch takes
  * (docs/06-frontend.md#state-management-split).
  *
+ * **A finished turn also invalidates the board**, and that is not a duplicate of the
+ * `board_update` push. Board updates are frames, and frames are not checkpointed: a
+ * client whose socket was down while a tool ran gets its *text* back on resume and never
+ * hears that the board moved. From M5 the same is true of a run executing on another
+ * instance. So the push is what makes the board feel live, and this is what makes it
+ * correct — one refetch per turn, against a `staleTime` that would otherwise hold a stale
+ * board for thirty seconds after the coach rewrote it.
+ *
  * **The drop target is the whole pane, not the composer strip.** A two-line strip is a
  * target people miss, and missing it is worse than having none: the browser's default
  * action for a file dropped on a page is to navigate away from the app.
  */
 
+import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState, type DragEvent } from 'react'
 
 import { Composer } from '@/components/session/Composer'
@@ -38,6 +47,8 @@ function hasFiles(event: DragEvent): boolean {
 
 export interface SessionPaneProps {
   sessionId: string
+  /** The board a turn in this session may change. See the module docstring. */
+  projectId: string
   /** Announced to assistive technology; the heading itself is visually hidden. */
   heading: string
   /** Shown above the composer while the conversation is still empty. */
@@ -50,10 +61,12 @@ const DEFAULT_CLASS =
 
 export function SessionPane({
   sessionId,
+  projectId,
   heading,
   emptyHint,
   className = DEFAULT_CLASS,
 }: SessionPaneProps) {
+  const queryClient = useQueryClient()
   const events = useSessionEvents(sessionId)
   const startTurn = useStartTurn(sessionId)
   const cancelTurn = useCancelTurn(sessionId)
@@ -73,7 +86,11 @@ export function SessionPane({
     handled.current = live.turnId
     const turnId = live.turnId
     void events.refetch().then(() => clearTurn(turnId))
-  }, [live, events, clearTurn])
+    if (projectId) {
+      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] })
+      void queryClient.invalidateQueries({ queryKey: ['project', projectId] })
+    }
+  }, [live, events, clearTurn, projectId, queryClient])
 
   const messages = toMessages(events.data ?? [])
   const streaming = live?.status === 'running'

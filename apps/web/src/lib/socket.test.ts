@@ -268,25 +268,64 @@ describe('resume', () => {
 })
 
 describe('board updates', () => {
+  const frame = {
+    type: 'board_update',
+    projectId: 'p_1',
+    taskIds: ['k_1'],
+    origin: 'agent',
+  }
+
   it('hands board_update to the invalidation callback', async () => {
     const onBoardUpdate = vi.fn()
-    FakeSocket.instances = []
-    const socket = new CoachSocket({
-      createWebSocket: (url) => new FakeSocket(url) as unknown as WebSocket,
-      fetchTicket: async () => 't',
-      setTimeout: () => 0,
-      clearTimeout: () => {},
-      onBoardUpdate,
-    })
-    await socket.connect()
-    const fake = FakeSocket.instances.at(-1)!
-    fake.open()
+    const rig = harness()
+    rig.socket.onBoardUpdate(onBoardUpdate)
+    await rig.socket.connect()
+    rig.last().open()
 
-    fake.receive({ type: 'board_update', projectId: 'p_1', taskIds: ['k_1'], origin: 'agent' })
+    rig.last().receive(frame)
 
     expect(onBoardUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ projectId: 'p_1', taskIds: ['k_1'] }),
     )
+  })
+
+  it('delivers to a listener registered after the socket was built', async () => {
+    // The regression. `getSocket` is a singleton, so its constructor arguments belong to
+    // whoever called it first — and React runs child effects before parent ones, so a
+    // direct load of the task workspace had the *page* build the socket for its presence
+    // heartbeat before `useCoachSocket` could pass an invalidation callback. Passed as a
+    // dependency, the callback was dropped for the lifetime of the tab and the board
+    // silently stopped refreshing when the coach changed it.
+    const rig = harness()
+    await rig.socket.connect()
+    rig.last().open()
+
+    const late = vi.fn()
+    rig.socket.onBoardUpdate(late)
+    rig.last().receive(frame)
+
+    expect(late).toHaveBeenCalledOnce()
+  })
+
+  it('delivers to every listener, and stops on unsubscribe', async () => {
+    const rig = harness()
+    const first = vi.fn()
+    const second = vi.fn()
+    const drop = rig.socket.onBoardUpdate(first)
+    rig.socket.onBoardUpdate(second)
+    await rig.socket.connect()
+    rig.last().open()
+
+    rig.last().receive(frame)
+    expect(first).toHaveBeenCalledOnce()
+    expect(second).toHaveBeenCalledOnce()
+
+    // Two screens must be able to listen without one replacing the other, and a
+    // remount must not leave a stale closure holding a dead query client.
+    drop()
+    rig.last().receive(frame)
+    expect(first).toHaveBeenCalledOnce()
+    expect(second).toHaveBeenCalledTimes(2)
   })
 
   it('ignores a frame type it does not know', async () => {

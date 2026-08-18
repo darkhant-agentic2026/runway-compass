@@ -66,7 +66,11 @@ export default function TaskWorkspacePage() {
         </p>
       </section>
 
-      <SessionPane sessionId={sessionId} heading="Session with your coach" />
+      <SessionPane
+        sessionId={sessionId}
+        projectId={projectId}
+        heading="Session with your coach"
+      />
     </div>
   )
 }

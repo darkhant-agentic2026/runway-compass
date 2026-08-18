@@ -142,6 +142,37 @@ test('what the coach did stays in the conversation', async ({ signedIn: page }) 
   await expect(chips.locator('[data-tool="split_task"]')).toBeVisible()
 })
 
+test('the board refreshes after a tool call, even on a tab that opened elsewhere', async ({
+  signedIn: page,
+}) => {
+  // The reported bug, and the path that produces it. `getSocket` is a singleton and React
+  // runs child effects before parent ones, so loading a task workspace *first* had the
+  // page build the socket for its presence heartbeat before `useCoachSocket` could hand
+  // over its invalidation callback. The callback was dropped for the lifetime of the tab,
+  // and from then on the board never refreshed when the coach changed it — which is
+  // invisible to a flow that starts on the board, as every other flow here does.
+  await createProject(page, 'Opened from a workspace')
+  await page.getByLabel('New task').fill('Somewhere to start')
+  await page.getByRole('button', { name: 'Add task' }).click()
+  await expect(cards(page)).toHaveCount(1)
+
+  await page.getByTestId('open-workspace').first().click()
+  await expect(page.getByTestId('transcript')).toBeVisible()
+  // A reload here is what makes the workspace the first screen to mount, rather than one
+  // navigated to after the board had already built the socket.
+  await page.reload()
+  await expect(page.getByTestId('transcript')).toBeVisible()
+
+  await page.getByRole('link', { name: '← Back to the board' }).click()
+  await expect(cards(page)).toHaveCount(1)
+
+  await say(page, 'The parser is about 4 hours of work')
+
+  // No reload, no navigation: the board has to move on its own.
+  await expect(cards(page)).toHaveCount(2)
+  await expect(cards(page).nth(1)).toContainText('3 subtasks')
+})
+
 test('discarding a task waits for the learner to say so', async ({ signedIn: page }) => {
   await createProject(page, 'Housekeeping')
   await page.getByLabel('New task').fill('Something obsolete')

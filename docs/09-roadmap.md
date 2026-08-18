@@ -267,6 +267,7 @@ and reports (M4), runs (M5), `PATCH /api/me/learner-profile`'s Settings UI (M6),
 | `discard_task` is gated with ADK's `require_confirmation`, and a turn may carry only a confirmation | The gate then holds whether or not the model cooperates — the tool call becomes `adk_request_confirmation` and the body runs on the answer. Answering is a turn with no text and no attachment, so `start`'s "a turn needs text, an attachment, or both" had to count a confirmation as content | `agents/tools.py`, `services/turns.py` |
 | `Principal.source` gained `"agent"` | Nothing branches on it; it is the audit label. Calling a tool call an `id_token` request would be a lie in the one place a reader goes to find out who did something | `core/principal.py` |
 | `APP_NAME` moved to `core/app.py` | It was in `agents/runner.py`, so `services/sessions.py` imported from `agents/` — an inversion of the layering that only became visible (as an import cycle) once `agents/` grew a module importing `services/` | `core/app.py` |
+| A completed turn invalidates the board, beside the `board_update` push | Frames are not checkpointed: a client whose socket was down while a tool ran resumes its *text* and never hears the board moved, and from M5 a run on another instance never sends it one. The push is what makes the board feel live; this is what makes it correct | `components/session/SessionPane.tsx` |
 | Tool activity is part of the **stored transcript**, not only of the live stream | M2 deferred this as "a resumed client rebuilds them from the finalized transcript", which was not true: `toMessages` dropped every event carrying only a function call, so a finished turn erased every record that the coach had touched the board. Calls and outcomes are separate stored events and are paired by call id | `lib/transcript.ts`, `components/session/ToolChips.tsx` |
 | A chip has **three** outcomes, not two | A refused guard is a result (`{"ok": false}`), and ADK's answer to a call awaiting confirmation is neither — `null` renders as neither a tick nor a cross, because both would be a claim the transcript cannot support | `lib/transcript.ts` |
 | `tool_result`'s `ok` is read from the tool's result | It was hard-coded `True`, so a guard refusing a change announced it as done | `services/turns.py` |
@@ -298,6 +299,16 @@ events and the web tests fed `toMessages` one event at a time — and a call and
 outcome are two events, so the pairing they were meant to prove was never exercised.
 `session-event-vectors.json` now carries a call/response pair and the parity suite
 replays the vectors as **one transcript**.
+
+A fourth was reported the same way and is not an ADK trap at all, but the oldest kind of
+bug in a singleton: `getSocket(deps)` builds the socket on the first call and ignores the
+arguments on every later one, and **React runs child effects before parent ones**. A
+direct load of the task workspace therefore had the page build the socket for its presence
+heartbeat before `AppShell` could hand over the `board_update` invalidation callback — so
+for the rest of that tab's life the board never refreshed when the coach changed it. Every
+golden flow missed it by starting on the board. `board_update` is now a *registration*,
+which cannot be lost to whoever constructed the socket, and the e2e that reproduces it
+loads a workspace first on purpose.
 
 ---
 

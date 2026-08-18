@@ -195,6 +195,7 @@ export default function BoardPage() {
 
       <SessionPane
         sessionId={intake.data?.id ?? project.data?.intakeSessionId ?? ''}
+        projectId={projectId}
         heading="Planning conversation with your coach"
         emptyHint="Tell your coach what you want to learn and how much time you have. It will ask a few questions before proposing tasks."
         className="relative flex min-h-[26rem] w-full flex-col rounded-lg border lg:sticky lg:top-4 lg:h-[calc(100vh-8rem)] lg:w-2/5"

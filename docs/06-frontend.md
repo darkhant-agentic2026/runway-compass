@@ -77,6 +77,18 @@ The server tells us *what* changed; Query decides *when* to refetch. This gives 
 updates while the autonomous agent works, with a single auth path and no Firestore client
 SDK in the browser.
 
+**The handler is registered on the socket, not passed to it.** `getSocket` is a singleton,
+so its constructor arguments belong to whoever calls it first — and React runs child
+effects before parent ones, so a direct load of the task workspace has the *page* build
+the socket for its presence heartbeat before `AppShell`'s `useCoachSocket` runs. Passed as
+a dependency, the invalidation callback was dropped for the lifetime of that tab.
+
+**And a completed turn invalidates the board as well.** That is not a duplicate: frames
+are not checkpointed, so a client whose socket was down while a tool ran gets its text
+back on resume and never hears that the board moved — and from M5 a run executing on
+another instance never sends it one at all. The push is what makes the board feel live;
+the turn-complete invalidation is what makes it correct.
+
 ## WebSocket client
 
 A single module owns the socket:
