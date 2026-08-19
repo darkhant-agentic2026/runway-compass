@@ -92,6 +92,7 @@ class ProjectPrefsPatch(RequestModel):
     guidance_style: GuidanceStyle | None = None
     research_depth: ResearchDepth | None = None
     allow_videos: bool | None = None
+    confirm_item_completion: bool | None = None
     preferred_sources: list[str] | None = None
     avoid_sources: list[str] | None = None
 

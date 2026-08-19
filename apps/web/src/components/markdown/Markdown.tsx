@@ -20,6 +20,7 @@
 import { isValidElement, useMemo, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import rehypeKatex from 'rehype-katex';
+import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 
@@ -145,11 +146,22 @@ export function Markdown({
   text,
   streaming = false,
   className,
+  softBreaks = false,
 }: {
   text: string;
   /** True while the turn that produced this text is still generating. */
   streaming?: boolean;
   className?: string;
+  /**
+   * Treat a single newline as a line break, which markdown otherwise does not.
+   *
+   * On for the learner's own messages and off for the coach's. Someone typing into a chat
+   * box presses Enter to break a line, not to start a new paragraph — and the recorded
+   * reason for not rendering their text at all was precisely that markdown "would collapse
+   * the line breaks they put in". The coach writes markdown deliberately, so its output is
+   * left to mean what markdown says it means.
+   */
+  softBreaks?: boolean;
 }) {
   // Rebuilt only when the streaming flag flips, so a delta does not hand react-markdown a
   // new component map on every frame.
@@ -158,7 +170,7 @@ export function Markdown({
   return (
     <div className={cn('break-words', className)} data-testid="markdown">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
+        remarkPlugins={softBreaks ? [remarkGfm, remarkMath, remarkBreaks] : [remarkGfm, remarkMath]}
         rehypePlugins={[rehypeKatex]}
         components={components}
       >

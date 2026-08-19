@@ -227,6 +227,11 @@ Right — **session chat**:
   the context the question is about. "None of these" appears only when the tool said it was
   a real answer.
 
+  **Every message carries a copy control**, yielding its *source* text rather than the
+  rendered output — a table pastes back as a table, and the learner's own message comes
+  back exactly as typed. That second half is what makes rendering their markdown safe:
+  the transcript is still the record of what they sent, one click away.
+
   **The chips are part of the transcript, not only of the stream.** A turn's live buffer
   is cleared on `turn_complete`, so chips rendered only from `useStreamStore` exist for
   the few seconds a turn is generating and then vanish — leaving a conversation in which

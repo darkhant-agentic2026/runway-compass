@@ -136,6 +136,14 @@ class ProjectPrefs(DomainModel):
     guidance_style: GuidanceStyle | None = None
     research_depth: ResearchDepth | None = None
     allow_videos: bool | None = None
+    #: Whether `complete_task_item` asks the learner before ticking a step.
+    #:
+    #: On by default, because completing the last step completes the task and that is the
+    #: click docs/10-risks.md Q1 rests on. Off is for a project of short, obvious tasks,
+    #: where a dialog per step is friction rather than a safeguard — and it is a *project*
+    #: preference rather than a global one for exactly that reason: the same learner can
+    #: want the gate on a research project and off on a drill.
+    confirm_item_completion: bool | None = None
     preferred_sources: list[str] | None = None
     avoid_sources: list[str] | None = None
 
@@ -152,6 +160,7 @@ class EffectivePrefs(DomainModel):
     timezone: str
     research_depth: ResearchDepth
     allow_videos: bool
+    confirm_item_completion: bool
     preferred_sources: list[str]
     avoid_sources: list[str]
 

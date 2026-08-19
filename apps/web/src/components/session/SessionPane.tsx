@@ -193,10 +193,14 @@ export function SessionPane({
         <ConfirmationPrompt
           pending={pending}
           disabled={startTurn.isPending}
-          onAnswer={(confirmed) =>
+          onAnswer={(confirmed, payload) =>
             startTurn.mutate({
               text: '',
-              confirmation: { functionCallId: pending.functionCallId, confirmed },
+              confirmation: {
+                functionCallId: pending.functionCallId,
+                confirmed,
+                ...(payload ? { payload } : {}),
+              },
             })
           }
         />

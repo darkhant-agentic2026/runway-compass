@@ -38,6 +38,7 @@ from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 
 from coach.agents.context import (
+    CONFIRM_ITEMS_KEY,
     AgentContext,
     agent_context,
     claim_task_slot,
@@ -832,17 +833,41 @@ class DomainTools:
                 on the subtasks then, not on the parent.
         """
         return await self._guarded(
-            tool_context, self._complete_task_item, item_id, note, subtask_id
+            tool_context, self._complete_task_item, item_id, note, subtask_id, tool_context
         )
 
     async def _complete_task_item(
-        self, context: AgentContext, item_id: str, note: str, subtask_id: str
+        self,
+        context: AgentContext,
+        item_id: str,
+        note: str,
+        subtask_id: str,
+        tool_context: ToolContext,
     ) -> dict[str, Any]:
         task_id = await self._item_task(context, subtask_id)
         task = await self._tasks.patch_item(context.principal, task_id, item_id, completed=True)
+
+        # "…and stop asking for this project", the dialog's third button. It rides in the
+        # confirmation's payload rather than being a second request from the client, so the
+        # learner's one click is one round trip and the preference cannot land without the
+        # completion it was attached to.
+        silenced = False
+        if _answer_asks_to_stop_confirming(tool_context):
+            await self._projects.patch(
+                context.principal,
+                context.project_id,
+                prefs={"confirmItemCompletion": False},
+            )
+            silenced = True
+
         logger.info(
             "agent completed a checklist item",
-            extra={"task_id": task_id, "item_id": item_id, "note": note},
+            extra={
+                "task_id": task_id,
+                "item_id": item_id,
+                "note": note,
+                "confirmation_disabled": silenced,
+            },
         )
         await self._announce(context, [task.id])
         return {
@@ -853,6 +878,9 @@ class DomainTools:
             # completion is a consequence of this call, and a coach that does not notice it
             # happened will congratulate the learner on one item and miss the task.
             "taskCompleted": task.state is TaskState.COMPLETED,
+            # So the coach can say it out loud. A preference that changed silently is one
+            # the learner discovers by noticing an absence.
+            **({"confirmationDisabledForProject": True} if silenced else {}),
         }
 
     async def ask_learner(
@@ -1091,6 +1119,11 @@ class DomainTools:
             # completes the task (invariant 6). Left ungated it would be a route around
             # `complete_task_item`'s confirmation — the same hole `set_task_state` closes
             # by refusing `completed` and `discarded`.
+            #
+            # Not subject to the project opt-out below. That preference is about the
+            # *friction* of confirming routine completions; deleting a step is neither
+            # routine nor recoverable, and a learner who turned off one did not ask for the
+            # other.
             FunctionTool(self.delete_task_item, require_confirmation=True),
             # Not `require_confirmation=True`: this tool asks for a *choice*, not for
             # approval, so it posts its own confirmation carrying the question. See
@@ -1100,9 +1133,57 @@ class DomainTools:
             # last item completes the task (docs/02-data-model.md#task-items), so this is
             # what keeps "completion is the learner's click" true now that a task can
             # finish itself.
-            FunctionTool(self.complete_task_item, require_confirmation=True),
+            #
+            # **A callable rather than `True`**, so a project can turn the gate off. ADK
+            # supports either (`FunctionTool.check_require_confirmation`), and evaluating it
+            # per call is what makes the preference take effect on the very next completion
+            # rather than at the next process restart. It reads `temp:` state rather than
+            # the project document because this runs while the tool call is being assembled,
+            # and a Firestore read on that path would be one per gated call.
+            FunctionTool(
+                self.complete_task_item, require_confirmation=_confirm_completions
+            ),
             FunctionTool(self.update_project_prefs),
         ]
+
+
+#: The flag the dialog's third button sets in its answer payload.
+#:
+#: Restated in `apps/web/src/components/session/ConfirmationPrompt.tsx`, which cannot import
+#: it — the same arrangement as `adk_request_confirmation` and the question payload's kind,
+#: and on the ADK bump checklist for the same reason.
+STOP_CONFIRMING_KEY = "stopConfirming"
+
+
+def _answer_asks_to_stop_confirming(tool_context: ToolContext) -> bool:
+    """Whether the learner used the "and stop asking" button rather than plain approval."""
+    answer = getattr(tool_context, "tool_confirmation", None)
+    payload = getattr(answer, "payload", None)
+    return isinstance(payload, dict) and payload.get(STOP_CONFIRMING_KEY) is True
+
+
+def _confirm_completions(tool_context: ToolContext, **_: Any) -> bool:
+    """Whether this project wants to be asked before a step is ticked.
+
+    docs/02-data-model.md: `confirmItemCompletion`, on unless a project turns it off. Off is
+    for a project of short, obvious tasks, where a dialog per step is friction rather than a
+    safeguard.
+
+    **`**_` is load-bearing.** ADK invokes this callable with the *tool's* arguments, not
+    with a context: `check_require_confirmation` builds them through
+    `_prepare_invocation_args`, which filters against `FunctionTool.func`'s signature and
+    then calls `callable(**args)`. So this receives `item_id`, `note`, `subtask_id` and
+    `tool_context` — and a one-parameter version raises `TypeError` *inside the flow*, where
+    it surfaces as `DynamicNodeFailError` and a failed turn rather than as anything naming
+    the gate. Swallowing the rest by keyword also means the tool can grow an argument
+    without this breaking.
+
+    **Defaults to asking**, on a missing key as much as on an unreadable board. Q1 rests on
+    this click (docs/10-risks.md#open-questions), so the failure mode of a preference that
+    could not be resolved has to be the safe one — `not False` is a cheaper mistake than
+    `not True`.
+    """
+    return tool_context.state.get(CONFIRM_ITEMS_KEY, True) is not False
 
 
 def _checklist_budget(task: Task, context: AgentContext) -> dict[str, Any]:

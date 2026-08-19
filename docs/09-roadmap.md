@@ -344,7 +344,7 @@ of the repo is written against.
 | Raw HTML stays off, permanently | The transcript renders model output, some of it quoted from fetched pages. No `rehype-raw`; the only `dangerouslySetInnerHTML` in the app is mermaid's own SVG, which mermaid sanitizes at `securityLevel: 'strict'` | `components/markdown/` |
 | Mermaid renders only after `turn_complete` | Half a table is a table; half a graph is a parse error, and an error box flashing for the two seconds a definition streams in is worse than a diagram arriving a moment late. It also keeps mermaid out of the streaming path | `components/markdown/CodeBlock.tsx` |
 | Highlighting is dual-theme output, not a runtime restyle | Shiki emits `--shiki-light` and `--shiki-dark` per token and a rule gated on `.dark` picks; the theme switch stays one class on `<html>` and nothing re-highlights. Mermaid cannot do this — its SVG is baked — so a diagram is the one thing that re-renders on a theme change | `index.css`, `components/markdown/Mermaid.tsx` |
-| Only the coach's messages are markdown | The learner's message is the record of what they sent. Rendering it would collapse their line breaks, reflow a pasted stack trace, and emphasise a literal `*` | `components/session/Transcript.tsx` |
+| ~~Only the coach's messages are markdown~~ — **reversed after M4** | The original reason was that the learner's message is the record of what they sent, and rendering it would collapse their line breaks, reflow a pasted stack trace, and emphasise a literal `*`. Two of the three are now answered rather than accepted: `remark-breaks` keeps the line breaks for their messages only, and every message carries a copy control yielding the *source*, so the exact thing they sent is a click away. The literal `*` remains a real cost and is the smaller one | `components/session/Transcript.tsx` |
 | Tokens, not HTML, from the highlighter | `codeToHtml` returns a string only `dangerouslySetInnerHTML` can render, and the transcript's whole rule is that model text never becomes markup. `codeToTokens` returns data. The one exception in the app is mermaid's own SVG, which it constructs and sanitizes itself | `lib/highlighter.ts` |
 | Shiki runs on the JavaScript regex engine | The default oniguruma engine's WebAssembly is most of the download and the only part a strict CSP would object to. Passing an engine also keeps `shiki/wasm` from ever being fetched, though the build still emits the chunk | `lib/highlighter.ts` |
 | M1's reorder spec waits for the server before reloading | It failed once on webkit in nine runs and never again. The window is real rather than slow: a navigation cancels in-flight requests, so reloading before the `POST /reorder` lands stops it reaching the server at all, and the reloaded board then honestly shows the original order. An optimistic mutation makes that window invisible from the UI, which is what let a pre-existing race sit in a spec since M1 | `e2e/board.spec.ts` |
@@ -489,6 +489,26 @@ touched.
 
 ## M6 — Learner model and adaptation (~1 week)
 
+- **Split the one coach agent into two.** Reported from use after M4: asked to add optional
+  topics to a study plan, the coach reaches for `add_task` — putting them on the *board* —
+  where the learner meant `add_subtask`, inside the work in front of them. The board is one
+  level up from the task the conversation is about, and one instruction serving both a
+  project-level conversation and a task-level one has to keep saying which is which.
+
+  The shape to build: a **project coach** for the intake session, which reasons about the
+  board and has no item tools at all; and a **task teacher** for a task's session, which
+  owns the checklist, the guided/unguided distinction, and `add_subtask`, and knows that
+  everything it does is inside one entry of a list it can see. `MODE_KEY` already carries
+  the distinction and the instruction already branches on it in prose, which is the version
+  of this that does not work well enough.
+
+  It lands here rather than sooner because it is a rework of the agent graph rather than a
+  wording fix, and because it wants the same session-scoped context the learner model
+  introduces. A prompt clarification went in after M4 as the cheap half.
+- **Task-level preference overrides**, which [02-data-model.md](02-data-model.md#task-items)
+  and `agents/tools.py` both anticipate: the checklist-size guidance currently reads the
+  *project's* default task length, and a single task that is deliberately longer has no way
+  to say so.
 - `CoachMemoryService` + contract suite; `load_memory` wired into the coach.
 - Session-close summarization into memory; `update_learner_profile` typed tool with
   versioning and an audit trail.

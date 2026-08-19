@@ -10,6 +10,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
+import { ConfirmationPrompt } from '@/components/session/ConfirmationPrompt';
 import { QuestionPrompt } from '@/components/session/QuestionPrompt';
 import type { ConfirmationQuestion } from '@/lib/transcript';
 
@@ -123,5 +124,63 @@ describe('QuestionPrompt', () => {
     render(<QuestionPrompt question={question()} disabled onAnswer={vi.fn()} />);
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
     expect(screen.getByLabelText('The parser')).toBeDisabled();
+  });
+});
+
+describe('ConfirmationPrompt’s third option', () => {
+  /**
+   * "Mark it done and stop asking in this project."
+   *
+   * The setting is offered in the dialog as well as in project settings because the moment
+   * the friction becomes obvious is the moment you are looking at it. It rides in the
+   * answer's payload rather than being a second request, so one click is one round trip and
+   * the preference cannot land without the completion it was attached to.
+   */
+  const pending = {
+    functionCallId: 'adk-1',
+    toolName: 'complete_task_item',
+    args: { note: 'you talked me through it' },
+    question: null,
+  };
+
+  it('answers and asks to stop confirming, in one payload', async () => {
+    const onAnswer = vi.fn();
+    render(<ConfirmationPrompt pending={pending} disabled={false} onAnswer={onAnswer} />);
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Mark it done and stop asking in this project' }),
+    );
+    expect(onAnswer).toHaveBeenCalledWith(true, { stopConfirming: true });
+  });
+
+  it('plain approval carries no payload', async () => {
+    const onAnswer = vi.fn();
+    render(<ConfirmationPrompt pending={pending} disabled={false} onAnswer={onAnswer} />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Mark it done' }));
+    expect(onAnswer).toHaveBeenCalledWith(true);
+  });
+
+  it('declines with wording that fits a completion', async () => {
+    // "Keep it" is the safe answer to a *discard*; the safe answer to a completion is that
+    // they have not finished yet.
+    const onAnswer = vi.fn();
+    render(<ConfirmationPrompt pending={pending} disabled={false} onAnswer={onAnswer} />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Not yet' }));
+    expect(onAnswer).toHaveBeenCalledWith(false);
+  });
+
+  it('offers no opt-out on the destructive gates', () => {
+    // A learner who silenced completions did not ask to silence discarding.
+    render(
+      <ConfirmationPrompt
+        pending={{ ...pending, toolName: 'discard_task', args: { reason: 'obsolete' } }}
+        disabled={false}
+        onAnswer={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Keep it' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /stop asking/ })).not.toBeInTheDocument();
   });
 });

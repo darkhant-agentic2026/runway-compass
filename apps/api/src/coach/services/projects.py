@@ -26,6 +26,7 @@ WRITABLE_PREF_KEYS = frozenset(
         "guidanceStyle",
         "researchDepth",
         "allowVideos",
+        "confirmItemCompletion",
         "preferredSources",
         "avoidSources",
     }

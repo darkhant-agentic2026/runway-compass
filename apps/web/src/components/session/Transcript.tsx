@@ -16,6 +16,7 @@ import { useEffect, useRef } from 'react';
 
 import { Markdown } from '@/components/markdown/Markdown';
 import { AttachmentPreview } from '@/components/session/AttachmentPreview';
+import { CopyMessage } from '@/components/session/CopyMessage';
 import { ToolChips, type ChipView } from '@/components/session/ToolChips';
 import { describeTool } from '@/lib/tool-labels';
 import type { TranscriptMessage } from '@/lib/transcript';
@@ -127,6 +128,21 @@ export function Transcript({
               ) : null}
             </Bubble>
           ) : null}
+          {/*
+            Under the bubble and aligned with it, so the control sits with the message it
+            copies rather than in a corner of the row. Only when there is text: copying an
+            attachment-only message would put an empty string on the clipboard.
+          */}
+          {message.text ? (
+            <div
+              className={cn(
+                'flex',
+                message.role === 'user' ? 'justify-end' : 'justify-start',
+              )}
+            >
+              <CopyMessage text={message.text} />
+            </div>
+          ) : null}
         </div>
       ))}
 
@@ -167,16 +183,24 @@ export function Transcript({
 /**
  * A message's text.
  *
- * **The coach's messages are markdown; the learner's are what they typed.** Rendering a
- * user's message as markdown would collapse the line breaks they put in, silently reflow
- * a pasted stack trace, and turn a `*` they meant literally into emphasis — the transcript
- * is the record of what they sent, so it shows that. The coach writes markdown on purpose
- * (docs/06-frontend.md#markdown-in-the-transcript), and a settled message is never
- * streaming, since streaming text lives in the live buffer instead.
+ * **Both roles render as markdown, and the learner's with soft breaks.** This reverses an
+ * earlier decision, so the reasoning that overturned it is worth keeping: the objection was
+ * that rendering a learner's message "would collapse the line breaks they put in, silently
+ * reflow a pasted stack trace, and turn a `*` they meant literally into emphasis", because
+ * the transcript is the record of what they sent.
+ *
+ * Two of those three are now answered rather than accepted. `remark-breaks` keeps the line
+ * breaks, so a pasted traceback stays a pasted traceback. And every message carries a copy
+ * control that yields the *source* text, so the exact thing they sent is still one click
+ * away — which is what "the record of what they sent" actually needed, rather than
+ * withholding the formatting they meant. The literal `*` remains a real cost, and it is the
+ * smaller one: people who write `**important**` in a chat box mean emphasis far more often
+ * than people who mean a star.
+ *
+ * A settled message is never streaming, since streaming text lives in the live buffer.
  */
 function MessageText({ role, text }: { role: 'user' | 'model'; text: string }) {
-  if (role === 'user') return <p className="whitespace-pre-wrap">{text}</p>;
-  return <Markdown text={text} />;
+  return <Markdown text={text} softBreaks={role === 'user'} />;
 }
 
 function Bubble({ role, children }: { role: 'user' | 'model'; children: React.ReactNode }) {

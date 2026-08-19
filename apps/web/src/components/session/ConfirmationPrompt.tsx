@@ -11,14 +11,35 @@
  * never "Yes", because a button that only makes sense next to a question it may have
  * scrolled away from is a button people press by accident. And "Keep it" is the primary
  * affordance: refusing is the safe answer, so it is the easy one.
+ *
+ * **`complete_task_item` gets a third button**, which approves *and* turns the gate off for
+ * this project. On a project of short, obvious tasks a dialog per step is friction rather
+ * than a safeguard, and the moment that becomes obvious is the moment you are looking at
+ * one — so the setting is offered there as well as in project settings. It rides in the
+ * answer's payload rather than being a second request, so one click is one round trip and
+ * the preference cannot land without the completion it was attached to.
  */
 
 import { Button } from '@/components/ui/button';
 import type { PendingConfirmation } from '@/lib/transcript';
 
-const LABELS: Record<string, { question: string; confirm: string }> = {
+const LABELS: Record<string, { question: string; confirm: string; decline?: string }> = {
   discard_task: { question: 'Discard this task?', confirm: 'Discard it' },
+  complete_task_item: {
+    question: 'Mark this step done?',
+    confirm: 'Mark it done',
+    // "Keep it" reads as the safe answer to a *discard*; for a completion the safe answer
+    // is that they have not finished yet, and saying so is what the button should say.
+    decline: 'Not yet',
+  },
 };
+
+/**
+ * The flag that also silences the gate. Mirrors `STOP_CONFIRMING_KEY` in
+ * `apps/api/src/coach/agents/tools.py`, which this file cannot import — the same restated
+ * constant arrangement as `adk_request_confirmation` itself.
+ */
+export const STOP_CONFIRMING_KEY = 'stopConfirming';
 
 /** The task title is not in the tool's arguments — only its id — so `reason` is the copy. */
 function describe(pending: PendingConfirmation): string {
@@ -33,12 +54,16 @@ export function ConfirmationPrompt({
 }: {
   pending: PendingConfirmation;
   disabled: boolean;
-  onAnswer: (confirmed: boolean) => void;
+  onAnswer: (confirmed: boolean, payload?: Record<string, unknown>) => void;
 }) {
   const labels = LABELS[pending.toolName] ?? {
     question: `Let your coach ${pending.toolName.replaceAll('_', ' ')}?`,
     confirm: 'Go ahead',
   };
+  // Only this tool's gate is a preference. `discard_task` and `delete_task_item` are
+  // destructive and not routine, and a learner who silenced one did not ask for the others
+  // (`agents/tools.py`).
+  const offerToSilence = pending.toolName === 'complete_task_item';
 
   return (
     <div
@@ -53,11 +78,21 @@ export function ConfirmationPrompt({
       ) : null}
       <div className="flex flex-wrap gap-2">
         <Button size="sm" disabled={disabled} onClick={() => onAnswer(false)}>
-          Keep it
+          {labels.decline ?? 'Keep it'}
         </Button>
         <Button size="sm" variant="outline" disabled={disabled} onClick={() => onAnswer(true)}>
           {labels.confirm}
         </Button>
+        {offerToSilence ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={disabled}
+            onClick={() => onAnswer(true, { [STOP_CONFIRMING_KEY]: true })}
+          >
+            Mark it done and stop asking in this project
+          </Button>
+        ) : null}
       </div>
     </div>
   );

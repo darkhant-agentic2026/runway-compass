@@ -40,6 +40,7 @@ def _prefs(minutes: int) -> EffectivePrefs:
         timezone="UTC",
         research_depth="standard",
         allow_videos=True,
+        confirm_item_completion=True,
         preferred_sources=[],
         avoid_sources=[],
     )
@@ -164,3 +165,24 @@ def test_the_stub_can_be_made_to_fail() -> None:
     assert _FAILURE_PATTERN.search("Make This Turn Fail")
     assert not _FAILURE_PATTERN.search("what happens when a turn fails?")
     assert not _FAILURE_PATTERN.search("this task will make me fail my exam")
+
+
+def test_the_stub_ticks_the_first_outstanding_step() -> None:
+    """Not merely the first step.
+
+    `render_items` writes `[x]` for a completed one, and a stub that matched it would keep
+    re-completing the same item — which is how the opt-out e2e first failed, spinning on
+    "1 of 2 done".
+    """
+    from coach.integrations.stub_model import _ITEM_ID_PATTERN
+
+    rendered = (
+        "The steps, in order:\n"
+        "  [x] Read the guide (id=i_done, 10 min)\n"
+        "  [ ] Do the exercise (id=i_next, 20 min)\n"
+    )
+    match = _ITEM_ID_PATTERN.search(rendered)
+    assert match is not None
+    assert match.group(1) == "i_next"
+
+    assert _ITEM_ID_PATTERN.search("  [x] All done (id=i_done, 10 min)\n") is None

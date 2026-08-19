@@ -155,6 +155,30 @@ export default function ProjectSettingsPage() {
               Include videos in research
             </Label>
           </div>
+
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <Switch
+                id="confirm-items"
+                checked={effective.data?.confirmItemCompletion ?? true}
+                onCheckedChange={(checked) =>
+                  patch.mutate({ prefs: { confirmItemCompletion: Boolean(checked) } })
+                }
+              />
+              <Label htmlFor="confirm-items" className="font-normal">
+                Ask before your coach ticks off a step
+              </Label>
+            </div>
+            {/*
+              Said here rather than only in the dialog, because turning it *off* from the
+              dialog is a click made in a hurry and turning it back on is a decision made
+              later, at which point the consequence should be legible.
+            */}
+            <p className="text-xs text-muted-foreground">
+              Finishing the last step finishes the task, so this stays on unless you turn it
+              off. Worth turning off for a project of short, obvious steps.
+            </p>
+          </div>
         </CardContent>
       </Card>
     </div>

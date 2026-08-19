@@ -129,6 +129,8 @@ approach.
     "guidanceStyle": null,
     "researchDepth": "standard",        // light | standard | deep
     "allowVideos": true,
+    "confirmItemCompletion": true,      // ask before the coach ticks a step off
+
     "preferredSources": ["…"], "avoidSources": ["…"]
   },
   "nextUpTaskId": "…",                  // denormalized pointer, transactional

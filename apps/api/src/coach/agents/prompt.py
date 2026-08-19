@@ -34,6 +34,7 @@ from google.adk.agents.context import Context
 from google.genai import types
 
 from coach.agents.context import (
+    CONFIRM_ITEMS_KEY,
     DEFAULT_MINUTES_KEY,
     PROJECT_ID_KEY,
     RESEARCH_BUDGET_KEY,
@@ -331,6 +332,9 @@ class PromptBuilder:
             TASK_ID_KEY: "",
             DEFAULT_MINUTES_KEY: 45,
             RESEARCH_BUDGET_KEY: 45,
+            # The safe default on the failure path too: a board this callback could not
+            # read is not a reason to stop asking before completing someone's work.
+            CONFIRM_ITEMS_KEY: True,
         }
         state.update(defaults)
 
@@ -372,6 +376,7 @@ class PromptBuilder:
                 PROJECT_ID_KEY: linkage.project_id,
                 TASK_ID_KEY: linkage.task_id or "",
                 DEFAULT_MINUTES_KEY: prefs.default_task_minutes,
+                CONFIRM_ITEMS_KEY: prefs.confirm_item_completion,
                 # The number behind the prose above. `post_research_report` validates
                 # against this rather than re-parsing the instruction.
                 RESEARCH_BUDGET_KEY: (

@@ -126,6 +126,7 @@ What to re-verify against the newly installed source, and re-test:
 | `GcsArtifactService(bucket_name, **kwargs)` construction, `_get_blob_name`, `types.Part` file references | Upload and multimodal path. `artifact_part_uri` reads the blob layout out of the private method deliberately, so a rename fails a test rather than a deploy | `integrations/` |
 | `InvocationContext`'s `artifact_service` and `session_service` fields, and where `Runner` builds the context | Pydantic validates both with `isinstance`. That is why the artifact service is deferred with a *provider* and not a proxy — a proxy passed every local test and failed every deployed turn | `integrations/artifacts.py`, `agents/runner.py` |
 | Tool and callback signatures | The tool catalogue below | `agents/` |
+| **`check_require_confirmation`'s calling convention** | A *callable* `require_confirmation` — `complete_task_item`'s, which reads the project's opt-out — is invoked with the **tool's own arguments**, not with a context: `_prepare_invocation_args` filters them against `FunctionTool.func`'s signature and calls `callable(**args)`. A signature that does not absorb them raises `TypeError` inside the flow, surfacing as `DynamicNodeFailError` and a failed turn rather than as anything naming the gate | `agents/tools.py` |
 | **`FunctionTool(require_confirmation=…)` and the `adk_request_confirmation` handshake** | The gates on `discard_task` and `complete_task_item` are ADK's, not ours. The constant is restated in `services/turns.py` and again in `apps/web/src/lib/transcript.ts`, which cannot import it, and the *ordering* of the events ADK emits is what the UI reads — the request is second-from-last, not last. `ToolConfirmation` is `@experimental`. From M4 a bump that broke this would silently take the click out of task completion, not merely out of discarding | `agents/tools.py`, `services/turns.py`, `lib/transcript.ts` |
 | `Context` (`ToolContext` == `CallbackContext` == `Context` in 2.7) — `user_id`, `state`, and `before_agent_callback`'s keyword | Every per-invocation fact a tool has arrives through these two fields; `state` write-through to `session.state` is what makes `{temp:…}` templating see them | `agents/context.py`, `agents/prompt.py` |
 | `inject_session_state` — the `{key}` / `{key?}` grammar and its `KeyError` | A placeholder with no writer fails while assembling the request, inside the detached generation task, on the first real turn of a deployed revision | `agents/coach_agent.py`, `tests/test_agent_prompt.py` |
@@ -367,8 +368,26 @@ Three consequences worth stating, because each is a thing to get wrong:
 - **The answer is not authoritative.** It has been through the client, so the selection is
   filtered against the options the tool itself offered — a small surface, and free to close.
 
+**The gate on `complete_task_item` is a project preference, and the only one that is.**
+`confirmItemCompletion` defaults on, and `require_confirmation` is a *callable* rather than
+`True` so the setting takes effect on the next completion rather than the next process
+restart. It reads `temp:` state rather than the project document, because ADK evaluates it
+while assembling the tool call and a Firestore read there would be one per gated call; the
+prompt callback resolves the preference alongside every other.
+
+`discard_task` and `delete_task_item` stay statically gated. The preference is about the
+*friction* of confirming routine completions, and neither of those is routine or
+recoverable — a learner who silenced one did not ask for the others.
+
+The dialog offers the setting as a third button ("and stop asking in this project"),
+because the moment the friction becomes obvious is the moment you are looking at it. That
+flag rides in the confirmation's answer payload rather than being a second request, so one
+click is one round trip and the preference cannot land without the completion it was
+attached to.
+
 **`complete_task_item` is the only tool that can finish a task, and it can only do so by
-asking.** The chain is deliberate and worth stating in one place: the tool call becomes an
+asking** — unless the learner has said otherwise for this project, which is itself a
+click. The chain is deliberate and worth stating in one place: the tool call becomes an
 `adk_request_confirmation`, the learner answers, the body writes `completed: true` on the
 item, and `TaskService` evaluates invariant 6 in that same transaction — so a task
 completing is always downstream of a click. `set_task_state` still refuses `completed`

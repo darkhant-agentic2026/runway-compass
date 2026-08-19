@@ -302,3 +302,132 @@ async def test_a_question_can_ask_for_several_answers(
 
     answer = (await _tool_results(client, session_id, "ask_learner"))[-1]
     assert answer["selected"] == ["Generators", "Async iterators"]
+
+
+# --- the project-level opt-out on completions -----------------------------------------------
+
+
+async def test_completing_a_step_asks_by_default(
+    client: httpx.AsyncClient, stub_model: StubModel, project_with_a_task: dict[str, Any]
+) -> None:
+    """The gate is on unless a project turns it off.
+
+    docs/10-risks.md Q1 rests on this click: finishing the last step finishes the task, so
+    the default has to be the one that asks.
+    """
+    from coach.agents.tools import _confirm_completions
+
+    class Context:
+        state: dict[str, object] = {}
+
+    assert _confirm_completions(Context()) is True
+
+
+async def test_a_project_can_turn_the_gate_off(client: httpx.AsyncClient) -> None:
+    """`confirmItemCompletion`, resolved through `resolve_prefs` like every other pref."""
+    from coach.agents.context import CONFIRM_ITEMS_KEY
+    from coach.agents.tools import _confirm_completions
+
+    project = (await client.post("/api/projects", json={"title": "Drills"})).json()
+    patched = await client.patch(
+        f"/api/projects/{project['id']}", json={"prefs": {"confirmItemCompletion": False}}
+    )
+    assert patched.status_code == 200
+
+    effective = (
+        await client.get(f"/api/projects/{project['id']}/effective-prefs")
+    ).json()["effectivePrefs"]
+    assert effective["confirmItemCompletion"] is False
+
+    class Context:
+        state = {CONFIRM_ITEMS_KEY: False}
+
+    assert _confirm_completions(Context()) is False
+
+
+async def test_an_unresolvable_preference_still_asks() -> None:
+    """The failure mode has to be the safe one.
+
+    `not False` is a cheaper mistake than `not True`: the first asks a question nobody
+    needed, the second finishes someone's work without them.
+    """
+    from coach.agents.context import CONFIRM_ITEMS_KEY
+    from coach.agents.tools import _confirm_completions
+
+    for state in ({}, {CONFIRM_ITEMS_KEY: None}, {CONFIRM_ITEMS_KEY: "no"}):
+
+        class Context:
+            pass
+
+        context = Context()
+        context.state = state  # type: ignore[attr-defined]
+        assert _confirm_completions(context) is True, state
+
+
+async def test_the_third_button_completes_and_silences_in_one_answer(
+    client: httpx.AsyncClient, stub_model: StubModel, project_with_a_task: dict[str, Any]
+) -> None:
+    """"Mark it done and stop asking in this project", end to end.
+
+    One click, one round trip: the flag rides in the confirmation's payload rather than
+    being a second request, so the preference cannot land without the completion it was
+    attached to — nor the completion without the preference.
+    """
+    session_id = project_with_a_task["session_id"]
+    project_id = project_with_a_task["project"]["id"]
+    task_id = project_with_a_task["task"]["id"]
+
+    items = (
+        await client.post(
+            f"/api/tasks/{task_id}/items",
+            json={"items": [{"shortDescription": "Read it"}, {"shortDescription": "Do it"}]},
+        )
+    ).json()["task"]["items"]
+
+    await _turn(client, session_id, text="mark the first step done")
+    request = next(
+        call
+        for call in await _function_calls(client, session_id)
+        if call["name"] == CONFIRMATION_FUNCTION_NAME
+    )
+
+    await _turn(
+        client,
+        session_id,
+        confirmation={
+            "functionCallId": request["id"],
+            "confirmed": True,
+            "payload": {"stopConfirming": True},
+        },
+    )
+
+    # The step is done…
+    task = (await client.get(f"/api/tasks/{task_id}")).json()["task"]
+    assert [i["completed"] for i in task["items"]] == [True, False]
+    assert task["items"][0]["itemId"] == items[0]["itemId"]
+
+    # …and the project will not ask again.
+    effective = (await client.get(f"/api/projects/{project_id}/effective-prefs")).json()
+    assert effective["effectivePrefs"]["confirmItemCompletion"] is False
+
+
+async def test_the_opt_out_does_not_silence_the_destructive_gates(container) -> None:
+    """A learner who silenced completions did not ask to silence deletion.
+
+    `delete_task_item` and `discard_task` stay statically gated: that preference is about
+    the *friction* of confirming routine completions, and neither of those is routine or
+    recoverable.
+    """
+    gated = {
+        tool.name
+        for tool in container.domain_tools.as_tools()
+        if getattr(tool, "_require_confirmation", False) is True
+    }
+    assert gated == {"discard_task", "delete_task_item"}
+
+    dynamic = {
+        tool.name
+        for tool in container.domain_tools.as_tools()
+        if callable(getattr(tool, "_require_confirmation", False))
+    }
+    assert dynamic == {"complete_task_item"}

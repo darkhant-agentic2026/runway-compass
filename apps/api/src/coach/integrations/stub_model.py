@@ -178,6 +178,19 @@ _DISCARD_PATTERN = re.compile(r"\b(discard|drop)\b", re.IGNORECASE)
 #: Task ids as `agents/prompt.py` renders them into the board: `(45 min, id=k_01J…)`.
 _TASK_ID_PATTERN = re.compile(r"id=([A-Za-z0-9_-]+)")
 
+#: The first *outstanding* checklist item, as `render_items` writes it:
+#: `  [ ] Read §3 (id=i_01J…, 12 min)`. A completed one is `[x]` and must not match — a
+#: coach that ticked an already-ticked step is not behaviour worth scripting, and a test
+#: driving it would spin on the same item forever.
+#:
+#: Narrower than the task pattern in a second way too: both ids are spelled `id=`, and the
+#: prefix is the only thing telling an item from a task (`coach.core.ids`).
+_ITEM_ID_PATTERN = re.compile(r"\[ \][^\n]*?\(id=(i_[A-Za-z0-9]+)")
+
+#: The prompt that makes the stub tick the first outstanding step, so the completion gate —
+#: and the project preference that silences it — are reachable end to end.
+_COMPLETE_PATTERN = re.compile(r"\bmark the first step done\b", re.IGNORECASE)
+
 
 def stub_reply(prompt: str) -> str:
     """The exact text the stub will produce for `prompt`.
@@ -409,6 +422,15 @@ def _plan_tool_call(llm_request: Any) -> types.FunctionCall | None:
                 "allow_none": True,
                 "note_prompt": "Anything else I should know?",
             },
+        )
+
+    if _COMPLETE_PATTERN.search(text) and "complete_task_item" in tools:
+        match = _ITEM_ID_PATTERN.search(_instruction(llm_request))
+        if match is None:
+            return None
+        return types.FunctionCall(
+            name="complete_task_item",
+            args={"item_id": match.group(1), "note": "you told me you had done it"},
         )
 
     if _DISCARD_PATTERN.search(text):

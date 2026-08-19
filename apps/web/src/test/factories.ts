@@ -72,6 +72,7 @@ export function makeProject(overrides: Partial<Project> = {}): Project {
       guidanceStyle: null,
       researchDepth: null,
       allowVideos: null,
+      confirmItemCompletion: null,
       preferredSources: null,
       avoidSources: null,
     },

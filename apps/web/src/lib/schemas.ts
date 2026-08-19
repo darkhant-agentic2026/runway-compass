@@ -98,6 +98,7 @@ export const projectPrefsSchema = z.object({
   guidanceStyle: guidanceStyleSchema.nullable().default(null),
   researchDepth: researchDepthSchema.nullable().default(null),
   allowVideos: z.boolean().nullable().default(null),
+  confirmItemCompletion: z.boolean().nullable().default(null),
   preferredSources: z.array(z.string()).nullable().default(null),
   avoidSources: z.array(z.string()).nullable().default(null),
 });
@@ -138,6 +139,7 @@ export const effectivePrefsSchema = z.object({
   timezone: z.string(),
   researchDepth: researchDepthSchema,
   allowVideos: z.boolean(),
+  confirmItemCompletion: z.boolean(),
   preferredSources: z.array(z.string()),
   avoidSources: z.array(z.string()),
 });

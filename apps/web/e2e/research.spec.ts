@@ -37,6 +37,11 @@ import { expect, test } from './fixtures';
 */
 test.describe.configure({ timeout: 90_000 });
 
+async function send(page: Page, message: string) {
+  await page.getByLabel('Message your coach').fill(message);
+  await page.getByRole('button', { name: 'Send' }).click();
+}
+
 async function openWorkspace(
   page: Page,
   projectTitle: string,
@@ -196,4 +201,46 @@ test('a subtask’s checklist is visible and tickable inside the parent', async 
   await card.getByRole('checkbox').last().click();
   await expect(card.getByTestId('checklist-budget')).toContainText('2 of 2 done');
   await expect(card.getByTestId('subtask-state')).toContainText('Completed');
+});
+
+test('the completion gate can be silenced from the dialog it interrupts', async ({
+  signedIn: page,
+}) => {
+  /*
+    Three things in one round trip: the step is ticked, the project preference is written,
+    and the next completion does not ask. Worth an e2e because no unit test spans them —
+    the flag rides in the confirmation's answer payload, is read by the tool, and takes
+    effect through a *dynamic* `require_confirmation` that ADK evaluates per call.
+
+    The second completion is the assertion that matters. A version of this that stopped at
+    "the preference was written" would pass against a gate that only re-read the setting at
+    process start.
+  */
+  await openWorkspace(page, 'Drills', 'Quick practice', 30);
+  await page.getByRole('button', { name: 'Research this task now' }).click();
+  await expect(page.getByTestId('checklist')).toBeVisible();
+
+  await send(page, 'mark the first step done');
+  const prompt = page.getByTestId('confirmation-prompt');
+  await expect(prompt).toBeVisible();
+  await expect(prompt).toContainText('Mark this step done?');
+
+  await prompt
+    .getByRole('button', { name: 'Mark it done and stop asking in this project' })
+    .click();
+  await expect(page.getByTestId('checklist-budget')).toContainText('1 of 2 done');
+
+  // Asked again, the coach ticks without interrupting.
+  await send(page, 'mark the first step done');
+  await expect(page.getByTestId('checklist-budget')).toContainText('2 of 2 done');
+  await expect(page.getByTestId('confirmation-prompt')).toBeHidden();
+
+  // And the setting is visible where it can be turned back on.
+  await page.getByRole('link', { name: '← Back to the board' }).click();
+  await page.getByRole('link', { name: 'Project settings' }).click();
+  // By role: the design system's switch renders a styled button beside a hidden input, and
+  // `getByLabel` resolves to the input rather than to the thing carrying `aria-checked`.
+  await expect(
+    page.getByRole('switch', { name: 'Ask before your coach ticks off a step' }),
+  ).not.toBeChecked();
 });
