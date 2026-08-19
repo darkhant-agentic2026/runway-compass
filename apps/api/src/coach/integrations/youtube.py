@@ -205,10 +205,21 @@ class YouTubeClient:
                 "part": "id",
                 "type": "video",
                 "maxResults": SEARCH_RESULTS,
-                # Excludes the live streams and premieres whose `P0D` duration is not a
-                # length, and the shorts that are never the answer to "teach me this".
-                "videoDuration": "any",
-                "videoEmbeddable": "true",
+                # No `videoDuration` filter. Its buckets are `short` (<4 min), `medium`
+                # (4–20), and `long` (>20), which cannot express "no longer than 13
+                # minutes" — the actual filter is arithmetic on `contentDetails.duration`
+                # in `rank`, and asking the API to pre-filter into a bucket would only
+                # throw away candidates the real check would have accepted.
+                #
+                # An earlier version sent `videoDuration: "any"` under a comment claiming
+                # it excluded live streams and shorts. It does not: `any` is the default
+                # and excludes nothing. Live streams are dropped by `_to_candidate`, which
+                # refuses the `P0D` they report.
+                #
+                # No `videoEmbeddable` either. It was set to `"true"`, which filters the
+                # results down to videos this app is allowed to embed — and it never embeds
+                # one. The learner gets a link to youtube.com. It was narrowing the
+                # candidate pool for a capability that does not exist.
                 "safeSearch": "moderate",
             },
         )

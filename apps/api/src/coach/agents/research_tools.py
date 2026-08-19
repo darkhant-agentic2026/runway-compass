@@ -127,6 +127,16 @@ class ResearchTools:
         try:
             candidates = await self._youtube.find_by_duration(query, max_minutes=max_minutes)
         except YouTubeUnavailable as error:
+            # **Logged, not just returned.** This branch used to answer the model and say
+            # nothing to anyone else, so a deployment whose API key was never seeded
+            # produced research reports with no videos in them, every time, with no line
+            # anywhere explaining why — the tool told the model to recommend reading
+            # instead, and the model did. `warning` rather than `info`: a guard firing is
+            # the system working, but this is a dependency being unreachable.
+            logger.warning(
+                "youtube is unavailable; this report will have no videos",
+                extra={"reason": str(error), "query": query},
+            )
             return {
                 "ok": False,
                 "error": {
@@ -134,6 +144,14 @@ class ResearchTools:
                     "message": (f"{error}. Recommend written material for this task instead."),
                 },
             }
+        if not candidates:
+            # Distinct from the branch above, and worth its own line: "the key is wrong"
+            # and "nothing on YouTube is short enough" produce the same empty report and
+            # want completely different fixes.
+            logger.info(
+                "youtube returned no candidate fitting the budget",
+                extra={"query": query, "max_minutes": max_minutes},
+            )
         return {
             "ok": True,
             "videos": [

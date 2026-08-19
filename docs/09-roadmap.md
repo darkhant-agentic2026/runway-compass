@@ -375,9 +375,14 @@ touching a state control.
 
 ## Status after M4
 
-Complete locally; **not yet deployed** (see the first row of the deferred table). What
-follows is the carry-over a later milestone needs, recorded here because it is not
-derivable from the code.
+Complete and deployed to `coach-dev`. What follows is the carry-over a later milestone
+needs, recorded here because it is not derivable from the code.
+
+**The deploy found two defects, and both were in the half of the system a local run cannot
+reach**: the YouTube API key was the Terraform placeholder rather than a key, and the tool
+that discovered this told only the model. They are the last two rows of the table below.
+Every research report on the first deployed revisions therefore contained no videos, and
+the service looked entirely healthy while it happened.
 
 **Met.** Golden flow #5 passes on all four Playwright projects, alongside every earlier
 spec: 31 specs, 124 runs, three consecutive green suites. Report validation rejects an
@@ -403,7 +408,8 @@ parameterising guards on an undecided number.
 
 | Item | Needed by | Note |
 | --- | --- | --- |
-| **Deploy to `coach-dev` and the hand verification** | **now** | Every prior milestone's first deployed run surfaced something the local gate had not, and M4 adds two of the exact surfaces that table warns about: a composite Firestore index and a second Google API with its own credential. The index is in Terraform and `terraform apply` has not run |
+| **Seed `youtube-api-key`** (RUNBOOK §4) and re-verify videos | **now** | `terraform apply` ran; the secret still holds the placeholder, which is why no report has recommended a video. The service now says so at `ERROR` on startup instead of degrading in silence |
+| Re-run the **hand verification** for videos specifically | **now** | The rest of M4 was verified on `coach-dev`; the YouTube path never succeeded there, so nothing has yet exercised `search.list` → `videos.list` against the real API |
 | Nightly **live** YouTube and search tests | M6 | The recorded-fixture half is done; `--live` is not wired. What no fixture can catch is a quota shape or a response field moving |
 | ADK **evalsets** for research quality | M6 | The tool contract is tested; whether a report is *good* is not, and cannot be by a stub. Still as recorded after M1 |
 | `subscribe` by `runId` | **M5** | Still deferred. A manual run has a `turnId` and the client watches that; a *scheduled* run has no turn, which is when the frame becomes necessary |
@@ -434,16 +440,21 @@ the contract files it under M5 and a manual run is watched by its turn.
 | `TaskRepository.find_current` deleted | It existed so `TaskService` could observe a duplicated `current` in order to repair it. There is no violation left to observe and no caller — the same reasoning that deleted M2's uncalled `turns` queries | `repositories/tasks.py` |
 | `PATCH /api/reports/{rid}/items/{iid}` **refuses** `completed` | The field used to be accepted there. A client that has not caught up must fail loudly rather than write nothing and report success | `api/schemas.py` |
 
-### Two more rows for the table above
+### Four more rows for the table above
 
 M4 recurred one row of [the M3 table](#three-more-rows-for-the-table-above) — a singleton's
 configuration belonging to whoever reached for it first, this time as a *query key* nothing
-invalidated — and added two of its own. Both were found by golden flow #5 and neither was
-visible to a fully green unit run.
+invalidated — and added four of its own. Two were found by golden flow #5 and neither was
+visible to a fully green unit run. **The other two were found by deploying, and are the
+first entries in this project's tables that a local run could not have caught even in
+principle**: one is a value that only exists in a Terraform-provisioned environment, and
+the other is an absence of logging, which no assertion was looking for.
 
 | Trap | How it presents | Where it will recur |
 | --- | --- | --- |
 | **A push reaches the screens that were listening when it was written, not the ones that exist now** | `board_update` invalidated `['tasks', projectId]` and `['project', projectId]`; the task workspace reads `['task', taskId]`, which neither prefix covers. Nothing noticed for a milestone, because every writer until M4 was a tool the user had just talked to and the reply's own refetch hid it. A research run posts its report and says nothing further — so the checklist never appeared, on a screen where every unit test passed | Any new screen keyed differently from the one a push was designed for. M5's run banner and undo are both read from keys that do not exist yet. **When adding a writer, enumerate the readers** — and note that the *frame already carried* `taskIds`, so the information was there and unused |
+| **An unseeded secret is a *value*, not an absence** | `terraform apply` seeds every Secret Manager secret with `REPLACE_ME_VIA_GCLOUD_SEE_RUNBOOK` and leaves the real one to RUNBOOK §4, a human step nothing fails without. The placeholder is a non-empty string, so `YouTubeClient` considered itself configured, sent it to Google, and turned the `400 API key not valid` into "the YouTube API did not answer". Every research report came back with no videos, on a deployment where `terraform apply` had succeeded and the service was otherwise healthy | Every secret this project adds, and the two that already exist beside this one. A reader that does not know the sentinel cannot distinguish "unset" from "set to something wrong" — and the sentinel exists precisely to make that distinction. `Settings` nulls it; `tests/test_config.py` pins the literal against the Terraform that writes it, because neither file can import the other |
+| **A degraded integration that only tells the model is not telling anyone** | `youtube_find_by_duration` answered `{"ok": false, …, "Recommend written material instead"}` and logged nothing. The model complied, the report was well-formed, the turn succeeded, and the *only* evidence was an absence — no videos, ever. Nothing in Cloud Logging, nothing in the UI, nothing on `/readyz` | Any tool that degrades rather than failing. The return value is for the model; a `logger.warning` is for the operator, and a tool needs both. Distinguish the reasons, too: "the key is wrong" and "nothing is short enough" produce the same empty report and want opposite fixes |
 | **A lease outliving its run is a button the server refuses** | `post_research_report` pushes `board_update` — so the report renders — while the turn is still streaming its closing prose and the project's agent lease is still held. A poller closing the ledger half a second later left a window in which "Research again" answered `409 your coach is already working on this project`. It failed on two of four Playwright projects, roughly one run in three, and read as a timing flake | Anything whose *visible* completion precedes its *bookkeeping* completion. M5's scheduled runs have the same shape with a longer tail. Hang the bookkeeping off the work's own completion — `TurnService.start`'s `on_finished` — rather than off a clock |
 
 **A third thing worth recording, which is a test-design trap rather than a defect.** Flow

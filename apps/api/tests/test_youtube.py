@@ -215,3 +215,37 @@ async def test_an_api_error_becomes_youtube_unavailable() -> None:
         client = YouTubeClient("a-key", client=http)
         with pytest.raises(YouTubeUnavailable):
             await client.find_by_duration("anything", max_minutes=15)
+
+
+async def test_the_search_does_not_filter_for_capabilities_the_app_lacks() -> None:
+    """The query is asserted, not just its result.
+
+    Two parameters were narrowing the candidate pool for nothing. `videoEmbeddable=true`
+    restricts to videos this app may embed, and it never embeds one — the learner gets a
+    link to youtube.com. `videoDuration` has three coarse buckets that cannot express "no
+    longer than 13 minutes", so pre-filtering with one could only discard candidates the
+    real check in `rank` would have accepted.
+
+    A test on the returned videos cannot see either of these: the recorded fixture answers
+    whatever it is asked. This is the "assert the call, not the output" case from
+    CLAUDE.md, and the same shape as pinning a signed URL's arguments.
+    """
+    sent: list[httpx.QueryParams] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request.url.params)
+        if request.url.path.endswith("/search"):
+            return httpx.Response(200, json={"items": [{"id": {"videoId": "short"}}]})
+        return httpx.Response(200, json={"items": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await YouTubeClient("a-key", client=http).find_by_duration("q", max_minutes=13)
+
+    search = sent[0]
+    assert "videoEmbeddable" not in search
+    assert "videoDuration" not in search
+    # What the search *must* still carry, so this does not become a test that only
+    # asserts absences.
+    assert search["type"] == "video"
+    assert search["part"] == "id"
+    assert search["key"] == "a-key"

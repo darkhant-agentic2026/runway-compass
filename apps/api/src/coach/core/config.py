@@ -20,6 +20,22 @@ Env = Literal["local", "dev", "prod"]
 #: check, with a named regression test rather than a comment and a hope.
 ModelBackend = Literal["vertex", "gemini_api", "stub"]
 
+#: What Terraform seeds every Secret Manager secret with, so that a secret nobody has
+#: filled in is *visibly* unset rather than empty
+#: (`infra/terraform/envs/*/main.tf`, `local.secret_placeholder`). The real values are a
+#: human step — RUNBOOK §4 — and Terraform never reads them back.
+#:
+#: **Restated here rather than shared, because there is nowhere to share it from**: one
+#: side is HCL and the other is Python. That makes it exactly the kind of cross-boundary
+#: constant this project pins with a test (`tests/test_config.py` reads the Terraform
+#: files), on the same footing as the theme's `localStorage` key.
+#:
+#: Reading it as a *value* is what broke YouTube on the first deployed research runs: the
+#: string is truthy, so the client considered itself configured, sent it to Google, got a
+#: 400 back, and reported "the YouTube API did not answer" — a message about the network
+#: for a problem that was entirely local.
+SECRET_PLACEHOLDER = "REPLACE_ME_VIA_GCLOUD_SEE_RUNBOOK"
+
 #: Fields that only a deployed environment can supply. Required when ENV != "local";
 #: absent locally, where the corresponding surfaces are stubbed or unused.
 _DEPLOYED_REQUIRED = (
@@ -99,6 +115,46 @@ class Settings(BaseSettings):
     @property
     def is_local(self) -> bool:
         return self.env == "local"
+
+    @model_validator(mode="after")
+    def _unset_placeholder_secrets(self) -> Settings:
+        """An unseeded secret is *absent*, not a value.
+
+        Terraform creates each secret with `SECRET_PLACEHOLDER` as its first version so
+        that "nobody ran RUNBOOK §4" is distinguishable from "somebody stored an empty
+        string". That only helps if the reader knows about it: without this, the placeholder
+        travels all the way to Google as an API key, and the failure comes back describing
+        the network.
+
+        Nulling the field is deliberate rather than raising. A deployment with no YouTube
+        key is a legitimate one — every project can run with `allowVideos: false`, and
+        refusing to boot over it would take the whole service down for a feature it can do
+        without. What must not happen is the failure being *quiet*, which is what
+        `main.py`'s startup check and `research_tools.py`'s log line are for.
+
+        `gemini_api_key` is different, and gets the loud treatment for free:
+        `_check_gemini_api_key` below already refuses to start when the backend needs a key
+        and there is none, and after this runs a placeholder counts as none.
+        """
+        cleared = [
+            name
+            for name in ("youtube_api_key", "gemini_api_key")
+            if getattr(self, name) == SECRET_PLACEHOLDER
+        ]
+        for name in cleared:
+            object.__setattr__(self, name, None)
+        if cleared:
+            # Not a `logger` call: `Settings` is built before logging is configured, and a
+            # record emitted here would be swallowed. `main.py` reports it at startup,
+            # where it lands in Cloud Logging as JSON like everything else.
+            self.__dict__["_placeholder_secrets"] = cleared
+        return self
+
+    @property
+    def placeholder_secrets(self) -> list[str]:
+        """Secrets Terraform created and nobody filled in. Reported at startup."""
+        found: list[str] = self.__dict__.get("_placeholder_secrets", [])
+        return found
 
     @model_validator(mode="after")
     def _check_emulator_is_local_only(self) -> Settings:

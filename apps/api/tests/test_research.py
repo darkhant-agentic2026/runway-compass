@@ -443,3 +443,70 @@ async def test_the_conflict_carries_a_problem_document(client: httpx.AsyncClient
     error = Conflict("held", runId="r_1")
     assert error.to_problem()["runId"] == "r_1"
     assert error.status == 409
+
+
+# --- the failure that was silent ----------------------------------------------------------
+
+
+async def test_an_unavailable_youtube_is_logged_rather_than_only_answered(
+    container, alice, client: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The defect that reached the deployed environment at M4.
+
+    `youtube_find_by_duration` answered the model with "recommend written material
+    instead" and told nobody else. A deployment whose API key was never seeded therefore
+    produced report after report with no videos in them, with no line in Cloud Logging
+    naming the cause — the only way to find out was to read the source.
+
+    Asserted on the *log*, because the return value was never the problem: it was correct
+    and the model acted on it correctly. What was missing was anyone else being told.
+    """
+    from coach.agents.context import PROJECT_ID_KEY, TASK_ID_KEY
+
+    fixture = await _task(client)
+
+    class Context:
+        """The two fields `agent_context` reads. A stand-in rather than a mock, because a
+        real `ToolContext` needs an invocation and this tool touches neither."""
+
+        user_id = alice.uid
+        state = {
+            PROJECT_ID_KEY: fixture["project"]["id"],
+            TASK_ID_KEY: fixture["task"]["id"],
+        }
+
+    with caplog.at_level("WARNING", logger="coach.agents.research_tools"):
+        result = await container.research_tools.youtube_find_by_duration(
+            "structured concurrency", 15, Context()
+        )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "youtube_unavailable"
+    assert any(
+        "youtube is unavailable" in record.message for record in caplog.records
+    ), [r.message for r in caplog.records]
+
+
+async def test_a_report_can_be_posted_with_no_videos_available(
+    container, alice, client: httpx.AsyncClient
+) -> None:
+    """Videos degrade; research does not fail.
+
+    A project with videos enabled and no API key must still get a report — the tool
+    refuses, the model recommends reading, and the checklist is written. Pinned because
+    the obvious "fix" for the silent failure above is to make the tool raise, which would
+    turn a missing key into a failed research run.
+    """
+    assert container.youtube.configured is False
+
+    fixture = await _task(client)
+    report, task = await container.reports.post_report(
+        alice,
+        fixture["task"]["id"],
+        summary="Reading only, no videos available.",
+        required=_items(45),
+        optional=[],
+        budget_minutes=45,
+    )
+    assert len(task.items) == 2
+    assert report.total_required_minutes == 45
