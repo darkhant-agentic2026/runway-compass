@@ -221,7 +221,15 @@ YouTube video it cannot see, and from silently skipping the teaching it is actua
 `items[]` in the same transaction ([03-agent-design.md](03-agent-design.md#domain-tools)).
 Completion state survives the replacement where an item's `shortDescription` and `url` are
 unchanged, so a re-run that keeps a reading the learner has already done does not ask them
-to do it again. The learner may also add, edit, reorder, and delete items by hand; a
+to do it again.
+
+**Items move between a task and its subtasks with their ids and their ticks intact**
+(`TaskService.move_items`, reached by the agent as `move_task_items`). That is what makes
+redistributing a checklist after a breakdown a rearrangement rather than a rewrite: a
+re-added item is a *new* item, and loses both what the learner had finished and the id a
+report's `progress.feedback` points at. Both tasks are written in one transaction, because
+the derived state of each moves — a source whose last outstanding step leaves is finished,
+and a `draft` destination that gains its first is no longer plan-less. The learner may also add, edit, reorder, and delete items by hand; a
 hand-added item has `sourceReportId: null` and is never dropped by a re-run.
 
 **A leaf task with every item completed and no research outstanding becomes `completed`.**

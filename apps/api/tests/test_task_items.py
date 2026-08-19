@@ -18,7 +18,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from coach.core.errors import ValidationProblem
+from coach.core.errors import NotFound, ValidationProblem
 from coach.services.models import ResearchStatus, Task, TaskItem, TaskState
 from coach.services.rollups import derive_state
 
@@ -533,3 +533,145 @@ async def test_an_oversized_checklist_reports_the_total_but_does_not_refuse(
     assert reported["plannedMinutes"] == 75
     assert reported["taskBudgetMinutes"] == 45
     assert "add_subtask" in reported["note"]
+
+
+# --- moving items between a task and its subtasks -------------------------------------------
+
+
+async def _broken_down(client: httpx.AsyncClient, *titles: str):
+    """A parent with two subtasks, all the items inherited by the first.
+
+    The exact state a learner is in after asking the coach to break a task down, and the
+    one that had no instrument at all: adding the first subtask hands it the *whole*
+    checklist, so everything belonging to the second starts out on the first.
+    """
+    task_id, items = await _task_with_items(client, *titles)
+    project_id = (await client.get(f"/api/tasks/{task_id}")).json()["task"]["projectId"]
+    first = (
+        await client.post(
+            f"/api/projects/{project_id}/tasks",
+            json={"title": "First half", "parentTaskId": task_id},
+        )
+    ).json()["task"]
+    second = (
+        await client.post(
+            f"/api/projects/{project_id}/tasks",
+            json={"title": "Second half", "parentTaskId": task_id},
+        )
+    ).json()["task"]
+    return {
+        "projectId": project_id,
+        "parentId": task_id,
+        "first": first,
+        "second": second,
+        "items": items,
+    }
+
+
+async def test_moving_items_keeps_their_ids_and_their_ticks(
+    container, alice, client: httpx.AsyncClient
+) -> None:
+    """The reason this exists rather than delete-and-re-add.
+
+    A re-added item is a *new* item: it loses whatever the learner had already finished, and
+    it loses the id a report's `progress.feedback` points at. Both survive a move, which is
+    what makes redistributing a checklist a rearrangement rather than a rewrite.
+    """
+    fixture = await _broken_down(client, "Read §3", "Do the exercise", "Write it up")
+    first_id = fixture["first"]["id"]
+    moving = [fixture["items"][2]["itemId"]]
+
+    await client.patch(
+        f"/api/tasks/{first_id}/items/{fixture['items'][0]['itemId']}",
+        json={"completed": True},
+    )
+
+    source, target = await container.tasks.move_items(
+        alice,
+        from_task_id=first_id,
+        to_task_id=fixture["second"]["id"],
+        item_ids=moving,
+    )
+
+    assert [i.short_description for i in source.items] == ["Read §3", "Do the exercise"]
+    assert [i.item_id for i in target.items] == moving
+    assert target.items[0].short_description == "Write it up"
+    # The tick on the item that stayed is untouched…
+    assert source.items[0].completed is True
+    # …and the destination was `draft`, so gaining its first item promoted it (invariant 1).
+    assert source.state is not TaskState.DRAFT
+    assert target.state is TaskState.NOT_STARTED
+
+
+async def test_a_moved_tick_survives_the_move(
+    container, alice, client: httpx.AsyncClient
+) -> None:
+    fixture = await _broken_down(client, "Read §3", "Do the exercise")
+    first_id = fixture["first"]["id"]
+    done_id = fixture["items"][0]["itemId"]
+    await client.patch(f"/api/tasks/{first_id}/items/{done_id}", json={"completed": True})
+
+    _, target = await container.tasks.move_items(
+        alice,
+        from_task_id=first_id,
+        to_task_id=fixture["second"]["id"],
+        item_ids=[done_id],
+    )
+    assert target.items[0].completed is True
+    assert target.items[0].completed_at is not None
+
+
+async def test_moving_the_last_outstanding_item_completes_the_source(
+    container, alice, client: httpx.AsyncClient
+) -> None:
+    """And that is a true statement rather than a completion nobody asked for.
+
+    This is the one respect in which moving resembles deleting, and the reason it is *not*
+    gated the way deleting is: the work has not vanished, it is on the other task and
+    visible there. A source whose remaining steps are all done genuinely is done.
+    """
+    fixture = await _broken_down(client, "Read §3", "Do the exercise")
+    first_id = fixture["first"]["id"]
+    await client.patch(
+        f"/api/tasks/{first_id}/items/{fixture['items'][0]['itemId']}",
+        json={"completed": True},
+    )
+
+    source, target = await container.tasks.move_items(
+        alice,
+        from_task_id=first_id,
+        to_task_id=fixture["second"]["id"],
+        item_ids=[fixture["items"][1]["itemId"]],
+    )
+    assert source.state is TaskState.COMPLETED
+    assert target.state is TaskState.NOT_STARTED
+
+
+async def test_a_task_with_subtasks_cannot_receive_items(
+    container, alice, client: httpx.AsyncClient
+) -> None:
+    """A parent's plan is its subtasks; `items` and `rollup` stay mutually exclusive."""
+    fixture = await _broken_down(client, "Read §3")
+    with pytest.raises(ValidationProblem, match="subtasks are its plan"):
+        await container.tasks.move_items(
+            alice,
+            from_task_id=fixture["first"]["id"],
+            to_task_id=fixture["parentId"],
+            item_ids=[fixture["items"][0]["itemId"]],
+        )
+
+
+async def test_moving_an_item_that_is_not_there_is_refused(
+    container, alice, client: httpx.AsyncClient
+) -> None:
+    fixture = await _broken_down(client, "Read §3")
+    with pytest.raises(NotFound):
+        await container.tasks.move_items(
+            alice,
+            from_task_id=fixture["first"]["id"],
+            to_task_id=fixture["second"]["id"],
+            item_ids=["i_not_here"],
+        )
+    # And nothing moved.
+    still = (await client.get(f"/api/tasks/{fixture['first']['id']}")).json()["task"]
+    assert len(still["items"]) == 1

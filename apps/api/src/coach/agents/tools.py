@@ -135,13 +135,65 @@ class DomainTools:
         self._projects = projects
         self._hub = hub
 
+    # --- scoping -----------------------------------------------------------------------
+
+    async def _item_task(self, context: AgentContext, task_id: str | None) -> str:
+        """Which task an item tool is acting on: this conversation's, or one of its subtasks.
+
+        Item tools used to take **no** task id at all, on the reasoning that a task-scoped
+        session is the only place they are useful and an argument naming a task would be a
+        way to point them somewhere else. That was right about the risk and wrong about the
+        scope: breaking a task down makes the session's task a *parent*, and a parent holds
+        no checklist — so every item tool silently stopped working the moment the coach did
+        the thing it had just been asked to do. The checklist was on the subtask, and
+        nothing could reach it.
+
+        So the argument is back, bounded rather than free: the session's own task, or one of
+        its children. That keeps the property the original reasoning was protecting — a tool
+        cannot be pointed at another project, or at an unrelated task in this one — while
+        making a broken-down task's actual plan editable.
+
+        One read rather than the whole board: `parentTaskId` on the candidate is enough to
+        decide, and `resolve` has already checked ownership.
+        """
+        session_task = _require_task(context)
+        if not task_id or task_id == session_task:
+            return session_task
+
+        candidate = await self._tasks.resolve(context.principal, task_id)
+        if candidate.parent_task_id != session_task:
+            raise ValidationProblem(
+                "That task is not the one this conversation is about, nor one of its "
+                "subtasks. You can only change the checklist of the task in front of the "
+                "learner and the subtasks under it."
+            )
+        return task_id
+
     # --- fan-out -----------------------------------------------------------------------
 
     async def _announce(self, context: AgentContext, task_ids: list[str]) -> None:
+        """Tell the learner's other tabs which tasks moved.
+
+        **The session's own task is always included.** The client turns each named id into
+        an invalidation of `['task', id]`, and the task workspace is keyed on the task the
+        conversation is about — so a tool that changed a *subtask* would name ids the open
+        screen does not read, and the screen would not refresh. `move_task_items` names two
+        subtasks and nothing else; without this the learner would watch the coach say it had
+        moved their steps and see nothing move.
+
+        This is the third outing for the same shape: a push that reaches the screens the
+        writer had in mind rather than the ones that exist
+        (docs/09-roadmap.md#five-more-rows-for-the-table-above). Adding the id here rather
+        than at each call site is what stops the next tool rediscovering it.
+        """
+        focus = [context.task_id] if context.task_id else []
+        # `dict.fromkeys` rather than a set: the order is what the client iterates, and a
+        # set would make it vary between runs for no reason.
+        named = list(dict.fromkeys([*task_ids, *focus]))
         await self._hub.publish(
             context.principal.uid,
             project_id=context.project_id,
-            task_ids=task_ids,
+            task_ids=named,
             origin="agent",
         )
 
@@ -517,7 +569,10 @@ class DomainTools:
         return {"ok": True, "task": task_view(task)}
 
     async def add_task_items(
-        self, items: list[dict[str, Any]], tool_context: ToolContext
+        self,
+        items: list[dict[str, Any]],
+        tool_context: ToolContext,
+        subtask_id: str = "",
     ) -> dict[str, Any]:
         """Add steps to this task's checklist, in the order they should be worked.
 
@@ -532,13 +587,16 @@ class DomainTools:
                 go and do alone: the instruction itself, with any link), `guided` (true if
                 you will work through it with them in this conversation, false if they go
                 away and do it), and optional `minutes` and `url`.
+            subtask_id: Leave empty for the task in front of the learner. When it has
+                been broken down, name the subtask whose checklist you mean — the steps live
+                on the subtasks then, not on the parent.
         """
-        return await self._guarded(tool_context, self._add_task_items, items)
+        return await self._guarded(tool_context, self._add_task_items, items, subtask_id)
 
     async def _add_task_items(
-        self, context: AgentContext, items: list[dict[str, Any]]
+        self, context: AgentContext, items: list[dict[str, Any]], subtask_id: str
     ) -> dict[str, Any]:
-        task_id = _require_task(context)
+        task_id = await self._item_task(context, subtask_id)
         task = await self._tasks.add_items(context.principal, task_id, items)
         await self._announce(context, [task.id])
         return {
@@ -555,6 +613,7 @@ class DomainTools:
         short_description: str | None = None,
         details: str | None = None,
         guided: bool | None = None,
+        subtask_id: str = "",
     ) -> dict[str, Any]:
         """Reword a step, change its notes, or change who does it. Omitted fields are left.
 
@@ -565,6 +624,9 @@ class DomainTools:
                 one they do alone, the instruction itself.
             guided: True if you will now work through this with them, false if they should
                 go and do it on their own.
+            subtask_id: Leave empty for the task in front of the learner. When it has
+                been broken down, name the subtask whose checklist you mean — the steps live
+                on the subtasks then, not on the parent.
         """
         return await self._guarded(
             tool_context,
@@ -573,6 +635,7 @@ class DomainTools:
             short_description,
             details,
             guided,
+            subtask_id,
         )
 
     async def _update_task_item(
@@ -582,10 +645,11 @@ class DomainTools:
         short_description: str | None,
         details: str | None,
         guided: bool | None,
+        subtask_id: str,
     ) -> dict[str, Any]:
         task = await self._tasks.patch_item(
             context.principal,
-            _require_task(context),
+            await self._item_task(context, subtask_id),
             item_id,
             short_description=short_description,
             details=details,
@@ -600,6 +664,7 @@ class DomainTools:
         tool_context: ToolContext,
         after_item_id: str | None = None,
         before_item_id: str | None = None,
+        subtask_id: str = "",
     ) -> dict[str, Any]:
         """Move a step earlier or later in the checklist.
 
@@ -611,9 +676,17 @@ class DomainTools:
             item_id: The step to move.
             after_item_id: Put it immediately after this step.
             before_item_id: Put it immediately before this step.
+            subtask_id: Leave empty for the task in front of the learner. When it has
+                been broken down, name the subtask whose checklist you mean — the steps live
+                on the subtasks then, not on the parent.
         """
         return await self._guarded(
-            tool_context, self._reorder_task_item, item_id, after_item_id, before_item_id
+            tool_context,
+            self._reorder_task_item,
+            item_id,
+            after_item_id,
+            before_item_id,
+            subtask_id,
         )
 
     async def _reorder_task_item(
@@ -622,10 +695,11 @@ class DomainTools:
         item_id: str,
         after_item_id: str | None,
         before_item_id: str | None,
+        subtask_id: str,
     ) -> dict[str, Any]:
         task = await self._tasks.reorder_item(
             context.principal,
-            _require_task(context),
+            await self._item_task(context, subtask_id),
             item_id,
             after_item_id=after_item_id or None,
             before_item_id=before_item_id or None,
@@ -633,8 +707,74 @@ class DomainTools:
         await self._announce(context, [task.id])
         return {"ok": True, "items": items_view(task)}
 
+    async def move_task_items(
+        self,
+        item_ids: list[str],
+        to_subtask_id: str,
+        tool_context: ToolContext,
+        from_subtask_id: str = "",
+    ) -> dict[str, Any]:
+        """Move steps from one task's checklist onto another's.
+
+        **This is how you redistribute work after breaking a task down.** Adding the first
+        subtask hands it the *whole* checklist, because a task's plan is its items or its
+        subtasks and never both — so the steps that belong to the second subtask start out
+        on the first, and this is what moves them. Do it in one call per destination rather
+        than a step at a time.
+
+        Nothing is lost: a step keeps its identity and stays ticked if the learner had
+        already done it. Use this rather than deleting and re-adding, which throws away
+        what they had finished and asks them to approve every removal.
+
+        Args:
+            item_ids: The steps to move, in the order they should sit in their new home.
+            to_subtask_id: The task to move them onto — a subtask of the one in front of the
+                learner, or that task itself. It must not itself have subtasks.
+            from_subtask_id: Where they are now. Leave empty for the task in front of the
+                learner; after a breakdown that is the parent and holds nothing, so name the
+                subtask that inherited them.
+        """
+        return await self._guarded(
+            tool_context, self._move_task_items, item_ids, to_subtask_id, from_subtask_id
+        )
+
+    async def _move_task_items(
+        self,
+        context: AgentContext,
+        item_ids: list[str],
+        to_subtask_id: str,
+        from_subtask_id: str,
+    ) -> dict[str, Any]:
+        source_id = await self._item_task(context, from_subtask_id)
+        target_id = await self._item_task(context, to_subtask_id)
+        source, target = await self._tasks.move_items(
+            context.principal,
+            from_task_id=source_id,
+            to_task_id=target_id,
+            item_ids=item_ids,
+        )
+        await self._announce(context, [source.id, target.id])
+        return {
+            "ok": True,
+            "moved": len(item_ids),
+            "from": {"taskId": source.id, "items": items_view(source)},
+            "to": {"taskId": target.id, "items": items_view(target)},
+            # Moving the last *outstanding* step off a task finishes it — the work has not
+            # gone anywhere, it is on the other task now, so that is a true statement rather
+            # than a completion nobody asked for. Reported so the coach says it out loud.
+            **(
+                {"sourceCompleted": True}
+                if source.state is TaskState.COMPLETED
+                else {}
+            ),
+        }
+
     async def delete_task_item(
-        self, item_id: str, reason: str, tool_context: ToolContext
+        self,
+        item_id: str,
+        reason: str,
+        tool_context: ToolContext,
+        subtask_id: str = "",
     ) -> dict[str, Any]:
         """Remove a step from the checklist. **The learner must confirm this.**
 
@@ -645,16 +785,19 @@ class DomainTools:
         Args:
             item_id: The step to remove.
             reason: Why this step should not be on the list, in one sentence.
+            subtask_id: Leave empty for the task in front of the learner. When it has
+                been broken down, name the subtask whose checklist you mean — the steps live
+                on the subtasks then, not on the parent.
         """
         return await self._guarded(
-            tool_context, self._delete_task_item, item_id, reason
+            tool_context, self._delete_task_item, item_id, reason, subtask_id
         )
 
     async def _delete_task_item(
-        self, context: AgentContext, item_id: str, reason: str
+        self, context: AgentContext, item_id: str, reason: str, subtask_id: str
     ) -> dict[str, Any]:
         task = await self._tasks.delete_item(
-            context.principal, _require_task(context), item_id
+            context.principal, await self._item_task(context, subtask_id), item_id
         )
         logger.info(
             "agent deleted a checklist item",
@@ -669,7 +812,11 @@ class DomainTools:
         }
 
     async def complete_task_item(
-        self, item_id: str, note: str, tool_context: ToolContext
+        self,
+        item_id: str,
+        note: str,
+        tool_context: ToolContext,
+        subtask_id: str = "",
     ) -> dict[str, Any]:
         """Mark one checklist item done. **The learner must confirm this.**
 
@@ -680,13 +827,18 @@ class DomainTools:
         Args:
             item_id: The item to mark done, from the checklist in your context.
             note: What the learner did that finished this, in a sentence.
+            subtask_id: Leave empty for the task in front of the learner. When it has
+                been broken down, name the subtask whose checklist you mean — the steps live
+                on the subtasks then, not on the parent.
         """
-        return await self._guarded(tool_context, self._complete_task_item, item_id, note)
+        return await self._guarded(
+            tool_context, self._complete_task_item, item_id, note, subtask_id
+        )
 
     async def _complete_task_item(
-        self, context: AgentContext, item_id: str, note: str
+        self, context: AgentContext, item_id: str, note: str, subtask_id: str
     ) -> dict[str, Any]:
-        task_id = _require_task(context)
+        task_id = await self._item_task(context, subtask_id)
         task = await self._tasks.patch_item(context.principal, task_id, item_id, completed=True)
         logger.info(
             "agent completed a checklist item",
@@ -927,6 +1079,13 @@ class DomainTools:
             FunctionTool(self.add_task_items),
             FunctionTool(self.update_task_item),
             FunctionTool(self.reorder_task_item),
+            # Not gated, unlike `delete_task_item`, and the difference is that nothing is
+            # lost. Deleting the last outstanding step completes a task by making work
+            # *vanish*; moving it completes the source because the work is now visibly on
+            # another task, which is a true statement about where it is. Gating it would
+            # also make redistributing a ten-step checklist ten approvals, which is the
+            # cost that sent people back to deleting in the first place.
+            FunctionTool(self.move_task_items),
             # Gated for two reasons, and the second is the one that is easy to miss:
             # removing a step is destructive, *and* removing the last outstanding one
             # completes the task (invariant 6). Left ungated it would be a route around
@@ -1000,13 +1159,7 @@ def _answer_view(answer: Any, options: list[str]) -> dict[str, Any]:
 
 
 def _require_task(context: AgentContext) -> str:
-    """The task this conversation is about.
-
-    Item tools take no task id: a task-scoped session is the only place they are useful, and
-    an argument naming a task would be a way to point them at a different one — the same
-    argument that keeps `add_task` from writing to someone else's project
-    (docs/03-agent-design.md#domain-tools).
-    """
+    """The task this conversation is about."""
     if context.task_id is None:
         raise ValidationProblem(
             "This conversation is about the project as a whole rather than one task, so "

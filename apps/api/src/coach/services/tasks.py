@@ -690,6 +690,86 @@ class TaskService:
 
         return await self._write_items(principal, task_id, rewrite)
 
+    async def move_items(
+        self,
+        principal: Principal,
+        *,
+        from_task_id: str,
+        to_task_id: str,
+        item_ids: list[str],
+    ) -> tuple[Task, Task]:
+        """Move checklist items from one task to another, in one transaction.
+
+        The gap this fills: breaking a task down hands the *whole* checklist to the first
+        subtask (docs/02-data-model.md#task-items), and redistributing it afterwards had no
+        instrument at all. Deleting and re-adding was the only route, which loses the item's
+        id — and with it any feedback recorded against the recommendation it came from — and
+        asks the learner to approve every removal.
+
+        **Ids and completion survive the move**, which is the whole point: an item the
+        learner has already done stays done, and a report's `progress.feedback` keeps
+        pointing at something real.
+
+        Order follows `item_ids` rather than the source's order, so the caller decides where
+        in the sequence the moved work belongs; they are appended to the destination.
+
+        Both tasks are written in one transaction because the derived state of *both* moves:
+        a source whose last outstanding item leaves is finished, and a `draft` destination
+        that gains its first item is no longer plan-less. Two writes would publish a moment
+        where the work existed on neither task or on both.
+        """
+        if not item_ids:
+            raise ValidationProblem("No items given to move.")
+        if from_task_id == to_task_id:
+            raise ValidationProblem("Those are the same task.")
+
+        source = await self.resolve(principal, from_task_id)
+        project_id = source.project_id
+
+        @async_transactional
+        async def txn(transaction: AsyncTransaction) -> tuple[Task, Task]:
+            project, tasks = await self._read_board(transaction, project_id)
+            origin = next((t for t in tasks if t.id == from_task_id), None)
+            target = next((t for t in tasks if t.id == to_task_id), None)
+            if origin is None:
+                raise NotFound(f"No task {from_task_id!r}.")
+            if target is None:
+                raise NotFound(f"No task {to_task_id!r} in this project.")
+            if any(t.parent_task_id == to_task_id for t in tasks):
+                raise ValidationProblem(
+                    "That task has subtasks, and its subtasks are its plan. Move the items "
+                    "onto one of them instead."
+                )
+
+            by_id = {item.item_id: item for item in origin.items}
+            missing = [item_id for item_id in item_ids if item_id not in by_id]
+            if missing:
+                raise NotFound(
+                    f"{missing[0]!r} is not a step on {origin.title!r}."
+                )
+
+            moving = [by_id[item_id] for item_id in item_ids]
+            remaining = [item for item in origin.items if item.item_id not in set(item_ids)]
+
+            for task_id, items in (
+                (from_task_id, remaining),
+                (to_task_id, [*target.items, *moving]),
+            ):
+                document = [item.to_document() for item in items]
+                await self._tasks.patch(
+                    project_id, task_id, {"items": document}, transaction=transaction
+                )
+                _apply(tasks, task_id, {"items": document})
+
+            await self._write_derived(transaction, project, tasks)
+            return (
+                next(t for t in tasks if t.id == from_task_id),
+                next(t for t in tasks if t.id == to_task_id),
+            )
+
+        async with self._project_lock(project_id):
+            return await self._db.run(txn)
+
     async def _write_items(
         self,
         principal: Principal,

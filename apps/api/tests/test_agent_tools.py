@@ -249,6 +249,7 @@ async def test_the_tools_are_the_catalogue_the_design_lists(container) -> None:
         "add_task_items",
         "update_task_item",
         "reorder_task_item",
+        "move_task_items",
         "delete_task_item",
         "complete_task_item",
         "ask_learner",
@@ -459,9 +460,195 @@ class _FakeToolContext:
     reading a third field, this stops compiling rather than silently reading `None`.
     """
 
-    def __init__(self, uid: str, project_id: str | None, default_minutes: int = 45) -> None:
+    def __init__(
+        self,
+        uid: str,
+        project_id: str | None,
+        default_minutes: int = 45,
+        task_id: str | None = None,
+    ) -> None:
         self.user_id = uid
         self.state = _FakeState()
         if project_id is not None:
             self.state["temp:coach_project_id"] = project_id
+        if task_id is not None:
+            self.state["temp:coach_task_id"] = task_id
         self.state["temp:coach_default_minutes"] = default_minutes
+
+
+# --- the checklist of a task that has been broken down --------------------------------------
+
+
+async def _composite(client: httpx.AsyncClient, container) -> dict[str, Any]:
+    """A task with one subtask holding the whole checklist.
+
+    Reached the way a learner reaches it: give a task some steps, then add a subtask, which
+    inherits them (docs/02-data-model.md#task-items).
+    """
+    project = await _project(client, "Compilers")
+    parent = (
+        await client.post(
+            f"/api/projects/{project['id']}/tasks", json={"title": "Write the parser"}
+        )
+    ).json()["task"]
+    items = (
+        await client.post(
+            f"/api/tasks/{parent['id']}/items",
+            json={
+                "items": [
+                    {"shortDescription": "Read the grammar"},
+                    {"shortDescription": "Write the tokenizer"},
+                ]
+            },
+        )
+    ).json()["task"]["items"]
+    first = (
+        await client.post(
+            f"/api/projects/{project['id']}/tasks",
+            json={"title": "Tokenizing", "parentTaskId": parent["id"]},
+        )
+    ).json()["task"]
+    second = (
+        await client.post(
+            f"/api/projects/{project['id']}/tasks",
+            json={"title": "Parsing", "parentTaskId": parent["id"]},
+        )
+    ).json()["task"]
+    return {
+        "project": project,
+        "parent": parent,
+        "first": first,
+        "second": second,
+        "items": items,
+        "context": _FakeToolContext("u_alice", project["id"], task_id=parent["id"]),
+    }
+
+
+async def test_an_item_tool_can_reach_a_subtasks_checklist(
+    client: httpx.AsyncClient, container
+) -> None:
+    """The defect this fixes, and it made the coach useless on any broken-down task.
+
+    Item tools took no task id, on the reasoning that a task-scoped session is the only
+    place they are useful. But breaking a task down makes the session's task a *parent*, and
+    a parent holds no checklist — so `_write_items` refused every call with "this task has
+    subtasks", and the steps sitting on the subtask were unreachable. The coach could see
+    them (from M4's prompt change) and could not touch them.
+    """
+    fixture = await _composite(client, container)
+
+    result = await container.domain_tools.complete_task_item(
+        fixture["items"][0]["itemId"],
+        "you talked me through it",
+        fixture["context"],
+        subtask_id=fixture["first"]["id"],
+    )
+    assert result["ok"], result
+    assert [item["completed"] for item in result["items"]] == [True, False]
+
+
+async def test_an_item_tool_refuses_a_task_outside_the_conversation(
+    client: httpx.AsyncClient, container
+) -> None:
+    """The property the no-argument design was protecting, kept.
+
+    The id is bounded rather than free: this conversation's task, or one of its children.
+    An unrelated task in the same project is refused — which is what stops the argument
+    becoming a way to point a tool at whatever the model names.
+    """
+    fixture = await _composite(client, container)
+    elsewhere = (
+        await client.post(
+            f"/api/projects/{fixture['project']['id']}/tasks",
+            json={"title": "Someone else's task"},
+        )
+    ).json()["task"]
+
+    result = await container.domain_tools.add_task_items(
+        [{"shortDescription": "sneak one in"}],
+        fixture["context"],
+        subtask_id=elsewhere["id"],
+    )
+    assert not result["ok"]
+    assert "not the one this conversation is about" in result["error"]["message"]
+
+
+async def test_moving_items_between_subtasks_takes_one_call(
+    client: httpx.AsyncClient, container
+) -> None:
+    """What the learner asked for.
+
+    Redistributing a checklist used to mean deleting from one subtask and re-adding to the
+    other — which loses the ticks and the ids, and asks for approval on every removal. One
+    call, several items, nothing lost.
+    """
+    fixture = await _composite(client, container)
+
+    result = await container.domain_tools.move_task_items(
+        [fixture["items"][1]["itemId"]],
+        fixture["second"]["id"],
+        fixture["context"],
+        from_subtask_id=fixture["first"]["id"],
+    )
+
+    assert result["ok"], result
+    assert result["moved"] == 1
+    assert [i["shortDescription"] for i in result["from"]["items"]] == ["Read the grammar"]
+    assert [i["shortDescription"] for i in result["to"]["items"]] == ["Write the tokenizer"]
+
+
+async def test_moving_items_is_not_gated_on_the_learners_approval(container) -> None:
+    """Unlike `delete_task_item`, and the difference is that nothing is lost.
+
+    Deleting the last outstanding step completes a task by making work *vanish*; moving it
+    completes the source because the work is now visibly on another task. Gating it would
+    also make redistributing a ten-step checklist ten approvals — the cost that sent people
+    back to deleting in the first place.
+    """
+    gated = {
+        tool.name
+        for tool in container.domain_tools.as_tools()
+        if getattr(tool, "_require_confirmation", False)
+    }
+    assert "move_task_items" not in gated
+    assert "delete_task_item" in gated
+
+
+async def test_a_subtask_change_also_names_the_task_the_learner_has_open(
+    client: httpx.AsyncClient, container
+) -> None:
+    """The push has to reach the screen that is actually open.
+
+    The client turns each named id into an invalidation of `['task', id]`, and the task
+    workspace is keyed on the task the *conversation* is about. `move_task_items` touches
+    two subtasks and nothing else, so a frame naming only those would refresh a key nothing
+    on screen reads — the learner would watch the coach say it had moved their steps and see
+    nothing move.
+
+    Asserted on the frame rather than on the UI, because the frame is the decision: both
+    spellings look identical from a test that only checks the items ended up in the right
+    place (CLAUDE.md — pin the decision, not the result).
+    """
+    frames: list[dict[str, Any]] = []
+
+    async def sink(frame: dict[str, Any]) -> None:
+        frames.append(frame)
+
+    fixture = await _composite(client, container)
+    container.board_updates.attach("u_alice", sink)
+    try:
+        result = await container.domain_tools.move_task_items(
+            [fixture["items"][1]["itemId"]],
+            fixture["second"]["id"],
+            fixture["context"],
+            from_subtask_id=fixture["first"]["id"],
+        )
+        assert result["ok"], result
+    finally:
+        container.board_updates.detach("u_alice", sink)
+
+    named = frames[0]["taskIds"]
+    assert fixture["first"]["id"] in named
+    assert fixture["second"]["id"] in named
+    # The one the workspace is keyed on.
+    assert fixture["parent"]["id"] in named

@@ -119,8 +119,8 @@ def render_task(task: Task, *, indent: str = "") -> str:
     return "".join(parts)
 
 
-def render_items(task: Task) -> str:
-    """The focus task's checklist — the plan the coach is working through.
+def render_items(task: Task, *, indent: str = "") -> str:
+    """A task's checklist — the plan the coach is working through.
 
     Every item carries its `itemId`, because `complete_task_item` takes one and the model
     has nowhere else to read it from. `details` is included in full: for a guided item they
@@ -134,26 +134,31 @@ def render_items(task: Task) -> str:
     """
     if not task.items:
         return (
-            "This task has no checklist yet. If it needs prepared material, research will "
-            "write one; otherwise work from the description and add steps as they come up."
+            f"{indent}This task has no checklist yet. If it needs prepared material, "
+            "research will write one; otherwise work from the description and add steps "
+            "as they come up."
         )
-    lines = ["The steps for this task, in order:"]
+    lines = [f"{indent}The steps, in order:"]
     for item in task.items:
         mark = "x" if item.completed else " "
         budget = f", {format_minutes(item.minutes)}" if item.minutes else ""
-        lines.append(f"  [{mark}] {item.short_description} (id={item.item_id}{budget})")
+        lines.append(
+            f"{indent}  [{mark}] {item.short_description} (id={item.item_id}{budget})"
+        )
         if item.guided:
-            lines.append("      You walk the learner through this one. Your notes:")
+            lines.append(
+                f"{indent}      You walk the learner through this one. Your notes:"
+            )
         else:
             lines.append(
-                "      The learner does this on their own, away from this conversation "
-                "— hand it over and wait for them to report back. Do not describe "
-                "material you have not read. What they should do:"
+                f"{indent}      The learner does this on their own, away from this "
+                "conversation — hand it over and wait for them to report back. Do not "
+                "describe material you have not read. What they should do:"
             )
         if item.details:
-            lines.append(f"      {item.details}")
+            lines.append(f"{indent}      {item.details}")
         if item.url:
-            lines.append(f"      Link: {item.url}")
+            lines.append(f"{indent}      Link: {item.url}")
     return "\n".join(lines)
 
 
@@ -180,8 +185,19 @@ def render_focus(task: TaskWithSubtasks | None) -> str:
     if task.description:
         lines.append(f"Description: {task.description}")
     if task.subtasks:
-        lines.append("Its subtasks:")
-        lines.extend(render_task(child, indent="  ") for child in task.subtasks)
+        # **With their checklists.** A parent holds no items of its own, so a focus section
+        # that listed subtasks by title alone left the coach unable to see the plan it had
+        # just made — no step descriptions, and no item ids, which every item tool needs as
+        # an argument. Breaking a task down effectively blinded the coach to it.
+        lines.append("Its subtasks, each with its own checklist:")
+        for child in task.subtasks:
+            lines.append(render_task(child, indent="  "))
+            lines.append(render_items(child, indent="    "))
+        lines.append(
+            "To change a subtask's checklist, pass its id as `subtask_id`. The steps live "
+            "on the subtasks now, not on the parent — and `move_task_items` is how work "
+            "gets redistributed between them."
+        )
     else:
         # A parent's plan is its subtasks and a leaf's is its checklist — never both
         # (docs/02-data-model.md#task-items), so this is an `else` rather than a second

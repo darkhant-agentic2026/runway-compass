@@ -333,12 +333,13 @@ tool cannot be pointed at someone else's project by an argument the model chose.
 | `reorder_task` | `(task_id, after_task_id \| before_task_id)` | fractional index |
 | `discard_task` | `(task_id, reason)` | **requires user confirmation** in interactive mode; forbidden in autonomous mode |
 | `add_subtask` | `(task_id, title, description, estimated_minutes, needs_research)` | one level deep; ≤ default minutes, a stricter bound than `add_task`'s because a piece that still does not fit has not done the thing breaking up is for. **The first subtask inherits the parent's checklist**, because a composite task cannot hold one ([02-data-model.md](02-data-model.md#task-items)) and dropping the items would lose work the learner may have half-finished |
-| `update_task_item` | `(item_id, short_description?, details?, guided?)` | leaf tasks only; scoped to the session's task |
-| `reorder_task_item` | `(item_id, after_item_id \| before_item_id)` | array positions, rewritten whole |
-| `delete_task_item` | `(item_id, reason)` | **requires user confirmation** — destructive, *and* removing the last outstanding step completes the task, which would otherwise be a route around `complete_task_item`'s gate |
+| `update_task_item` | `(item_id, short_description?, details?, guided?, subtask_id?)` | leaf tasks only |
+| `reorder_task_item` | `(item_id, after_item_id \| before_item_id, subtask_id?)` | array positions, rewritten whole |
+| `move_task_items` | `(item_ids[], to_subtask_id, from_subtask_id?)` | moves several steps between a task and its subtasks in one transaction, keeping their ids and their ticks. **Not** confirmation-gated — see below |
+| `delete_task_item` | `(item_id, reason, subtask_id?)` | **requires user confirmation** — destructive, *and* removing the last outstanding step completes the task, which would otherwise be a route around `complete_task_item`'s gate |
 | `ask_learner` | `(question, options[], allow_multiple, allow_none, note_prompt)` | 2–6 options. Asks a question rather than for approval, so it posts its own confirmation carrying the question as the payload; the answer comes back as a selection. The selection is filtered against the options that were offered |
 | `complete_task_item` | `(item_id, note)` | **requires user confirmation**, on the same ADK handshake as `discard_task` — an item completing can complete the whole task ([02-data-model.md](02-data-model.md#task-items)), so the last word before that stays the learner's. Scoped to the session's own task; the tool takes no task id |
-| `add_task_items` | `(items[])` | appends items to the session's task. Leaf tasks only; refused on a task with subtasks. Used when the conversation turns up work the report did not anticipate |
+| `add_task_items` | `(items[], subtask_id?)` | appends items. Leaf tasks only; refused on a task with subtasks. Used when the conversation turns up work the report did not anticipate |
 | `update_project_prefs` | `(default_task_minutes?, research_depth?, allow_videos?)` | one named argument per writable key — spelling them out *is* the whitelist, where a patch object would let the model invent fields |
 | `post_research_report` | `(task_id, summary, required[], optional[])` | validates `Σ required.minutes ≤ budget`, assigns `itemId`s, writes the report, and promotes `required[]` into `tasks/{id}.items[]` in one transaction |
 
@@ -373,12 +374,39 @@ item, and `TaskService` evaluates invariant 6 in that same transaction — so a 
 completing is always downstream of a click. `set_task_state` still refuses `completed`
 outright, which keeps the direct route closed while the indirect one is gated.
 
-The tool takes an `item_id` and no task id, and reads the task from the invocation's
-`temp:` state like every other tool reads the project
-([09-roadmap.md](09-roadmap.md#status-after-m3)). A task-scoped session is the only place
-this tool is available, so an argument naming a task would be a way to point it at a
-different one — the same argument that keeps `add_task` from writing to someone else's
-project.
+### Which task an item tool acts on
+
+Every item tool takes an optional `subtask_id`, defaulting to the task the conversation is
+about. That argument is **bounded, not free**: the session's own task, or one of its
+children, and anything else is refused.
+
+The original design took no task id at all, on the reasoning that a task-scoped session is
+the only place these tools are useful and an argument naming a task would be a way to point
+them somewhere else. That was right about the risk and wrong about the scope. Breaking a
+task down makes the session's task a *parent*, and a parent holds no checklist — so every
+item tool stopped working the moment the coach did the thing it had just been asked to do,
+answering "this task has subtasks, and its subtasks are its plan" to calls about steps that
+were sitting on a subtask, unreachable. The bounded argument keeps the property the
+original reasoning protected while making a broken-down task's actual plan editable.
+
+`render_focus` renders each subtask **with its checklist** for the same reason: the ids
+these tools take have to be visible somewhere, and a focus section listing subtasks by
+title left the coach unable to see the plan it had just made.
+
+### Moving steps rather than deleting and re-adding
+
+`move_task_items` exists because adding the first subtask hands it the *whole* checklist —
+a task's plan is its items or its subtasks and never both — so the steps belonging to the
+second subtask start out on the first. Redistributing them had no instrument: delete and
+re-add was the only route, and it loses the item's id (and with it any feedback recorded
+against the recommendation it came from) and asks the learner to approve every removal.
+
+**It is not gated, and `delete_task_item` is.** Both can complete a task by removing its
+last outstanding step, which is the reason deletion is gated at all. The difference is
+that deletion makes work *vanish*, where a move leaves it visibly on another task — so a
+source that completes has made a true statement about where the work is. Gating it would
+also turn redistributing a ten-step checklist into ten approvals, which is the cost that
+sent the coach back to deleting in the first place.
 
 ### Memory tools
 
