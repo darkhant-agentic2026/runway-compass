@@ -240,7 +240,14 @@ Behaviour encoded in the instruction:
 - Ask Socratic questions to elicit the project goal and constraints before proposing
   tasks; do not produce a task list from a one-line prompt.
 - Respect `EffectivePrefs.defaultTaskMinutes` when sizing tasks; if a proposed task
-  exceeds it by >50 %, split it.
+  exceeds it by >50 %, break it into subtasks.
+- **Treat that number as guidance when planning a checklist, too.** It is how long the
+  learner wants one sitting to be, so a checklist that outgrows it is usually two pieces of
+  work rather than one long one. `add_task_items` and `delete_task_item` return the running
+  total against it once it is exceeded — a *fact*, not a refusal. There is deliberately no
+  guard: a 50-minute plan on a 45-minute task is a rounding difference, and the coach with
+  the learner in front of it is better placed to judge than a rule. Task-level overrides
+  arrive with the learner model at M6.
 - When the user uploads work, analyse it against the task's success criteria and respond
   in the learner's `guidanceStyle`.
 - Never claim material was read that was not fetched; cite the tool result.
@@ -295,7 +302,7 @@ Steps are individually checkpointed by the run ledger, so each is separately res
 | 1 | `select_next_task` | code | Deterministic: lowest `order` among `draft`/`not_started`/`in_progress`, skipping `completed`, `discarded`, `postponed`, and unexpired `postponed_until`. No LLM. |
 | 2 | `research` | `research_agent` | Skipped if `task.needsResearch == false`. |
 | 3 | `post_report` | code | Writes `research_reports/*`, promotes `required[]` into the task's `items[]`, appends a `research_report_ref` event to the task's session, sets `researchStatus = done` — and promotes the task out of `draft` if the items are its first plan. |
-| 4 | `propose_tasks` | LlmAgent | May emit `add_task` / `split_task` calls if research revealed missing prerequisites. Bounded: ≤ 5 new tasks per run. |
+| 4 | `propose_tasks` | LlmAgent | May emit `add_task` / `add_subtask` calls if research revealed missing prerequisites. Bounded: ≤ 5 new tasks per run. |
 | 5 | `reprioritize` | code | Applies the agent's requested `set_next_up` / ordering via fractional index writes. |
 
 Step 1 and 5 are deliberately not LLM steps — ordering and selection are rules, and
@@ -320,13 +327,12 @@ tool cannot be pointed at someone else's project by an argument the model chose.
 | --- | --- | --- |
 | `list_tasks` | `(project_id, include_completed=False)` | owner |
 | `add_task` | `(project_id, title, description, estimated_minutes, needs_research, after_task_id=None)` | ≤ 5/run; minutes ≤ 3× default |
-| `split_task` | `(task_id, subtasks: list[SubtaskDraft])` | parent must be leaf; 2–8 subtasks; each ≤ default minutes |
 | `update_task` | `(task_id, title?, description?, estimated_minutes?)` | owner |
 | `set_task_state` | `(task_id, state, postponed_until?)` | state machine validated server-side; **`completed`, `discarded`, and `draft` are refused** — the first is the learner's click ([10-risks.md](10-risks.md#open-questions) Q1), the second would bypass `discard_task`'s gate, and the third is a state a task *leaves*, never one it is put into |
 | `set_next_up` | `(task_id)` | moves the task to the front of the board's top-level order. It no longer writes a state: `project.nextUpTaskId` became derived when `in_progress` replaced `current` ([02-data-model.md](02-data-model.md#task-state-machine)), so pinning something is a reorder, and "next up" and "started" stopped being the same claim |
 | `reorder_task` | `(task_id, after_task_id \| before_task_id)` | fractional index |
 | `discard_task` | `(task_id, reason)` | **requires user confirmation** in interactive mode; forbidden in autonomous mode |
-| `add_subtask` | `(task_id, title, description, estimated_minutes, needs_research)` | one level deep; ≤ default minutes, the same stricter bound `split_task` uses. **The first subtask inherits the parent's checklist**, because a composite task cannot hold one ([02-data-model.md](02-data-model.md#task-items)) and dropping the items would lose work the learner may have half-finished |
+| `add_subtask` | `(task_id, title, description, estimated_minutes, needs_research)` | one level deep; ≤ default minutes, a stricter bound than `add_task`'s because a piece that still does not fit has not done the thing breaking up is for. **The first subtask inherits the parent's checklist**, because a composite task cannot hold one ([02-data-model.md](02-data-model.md#task-items)) and dropping the items would lose work the learner may have half-finished |
 | `update_task_item` | `(item_id, short_description?, details?, guided?)` | leaf tasks only; scoped to the session's task |
 | `reorder_task_item` | `(item_id, after_item_id \| before_item_id)` | array positions, rewritten whole |
 | `delete_task_item` | `(item_id, reason)` | **requires user confirmation** — destructive, *and* removing the last outstanding step completes the task, which would otherwise be a route around `complete_task_item`'s gate |

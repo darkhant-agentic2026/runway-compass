@@ -377,15 +377,15 @@ async def test_a_parent_task_cannot_be_researched(
     """Its subtasks are its plan, and each is researched on its own — the same exclusion
     that keeps `items` and `rollup` apart (docs/02-data-model.md#task-items)."""
     fixture = await _task(client)
-    await client.post(
-        f"/api/tasks/{fixture['task']['id']}/split",
-        json={
-            "subtasks": [
-                {"title": "a", "estimatedMinutes": 20},
-                {"title": "b", "estimatedMinutes": 20},
-            ]
-        },
-    )
+    for title in ("a", "b"):
+        await client.post(
+            f"/api/projects/{fixture['project']['id']}/tasks",
+            json={
+                "title": title,
+                "estimatedMinutes": 20,
+                "parentTaskId": fixture["task"]["id"],
+            },
+        )
     refused = await client.post(f"/api/sessions/{fixture['sessionId']}/research", json={})
     assert refused.status_code == 422
 

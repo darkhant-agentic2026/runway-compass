@@ -139,12 +139,12 @@ emits a known delta sequence at controlled intervals:
 Two tiers:
 
 1. **Deterministic tool-contract tests** with a stubbed model that emits scripted function
-   calls. Asserts that a `split_task` call produces valid subtasks respecting the duration
-   budget, that autonomous mode's forbidden tools are actually unavailable, and that
+   calls. Asserts that an `add_subtask` call produces a valid subtask respecting the
+   duration budget, that autonomous mode's forbidden tools are actually unavailable, and that
    `post_research_report` writes the right documents and session event.
 2. **ADK evalsets** (`adk eval`) run nightly, not per-PR, against the real model with
    recorded fixtures for search/YouTube. Scored on: does research output fit the budget;
-   are required/optional correctly separated; is a 4-hour task split; does the coach ask
+   are required/optional correctly separated; is a 4-hour task broken up; does the coach ask
    before proposing a plan. Treated as a quality signal with a threshold, not a
    pass/fail gate on every commit — model nondeterminism in CI is a false-failure factory.
 
@@ -289,8 +289,10 @@ ADK bump.
 Golden flows:
 
 1. **Create project → Socratic intake → first task list exists.**
-2. **Big task gets split** — user asks for a 4-hour task; the coach splits it; the parent
-   card shows subtask count and summed duration.
+2. **Big task gets broken up** — user asks for a 4-hour task; the coach adds subtasks for
+   it, one at a time; the parent card shows subtask count and summed duration. It used to
+   do this in a single `split_task` call, which was removed after M4 for making the model
+   commit to every subtask before discussing any of them.
 3. **Work a task end to end** — open workspace, upload a screenshot, get feedback, mark
    complete; board updates; completed task hidden by the default filter.
 4. **Disconnect and resume** — start a turn, kill the WebSocket mid-stream with

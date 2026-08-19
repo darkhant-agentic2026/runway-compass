@@ -250,15 +250,11 @@ async def test_a_task_with_subtasks_refuses_items(client: httpx.AsyncClient) -> 
     parent = (
         await client.post(f"/api/projects/{project_id}/tasks", json={"title": "Big"})
     ).json()["task"]
-    await client.post(
-        f"/api/tasks/{parent['id']}/split",
-        json={
-            "subtasks": [
-                {"title": "a", "estimatedMinutes": 30},
-                {"title": "b", "estimatedMinutes": 30},
-            ]
-        },
-    )
+    for title in ("a", "b"):
+        await client.post(
+            f"/api/projects/{project_id}/tasks",
+            json={"title": title, "estimatedMinutes": 30, "parentTaskId": parent["id"]},
+        )
 
     refused = await client.post(
         f"/api/tasks/{parent['id']}/items",
@@ -267,23 +263,28 @@ async def test_a_task_with_subtasks_refuses_items(client: httpx.AsyncClient) -> 
     assert refused.status_code == 422
 
 
-async def test_a_task_with_items_refuses_a_split(client: httpx.AsyncClient) -> None:
+async def test_a_task_with_items_hands_them_to_its_first_subtask(
+    client: httpx.AsyncClient,
+) -> None:
     """The same exclusion from the other side, and the more damaging direction.
 
-    Splitting silently would drop a checklist the learner may already have worked through.
+    `split_task` used to *refuse* here, with a 409, because it had nowhere to put the
+    items. Creating one child at a time does: they move onto it. Losing them was never an
+    option — the learner may have worked through half the list — so the choice was between
+    refusing and inheriting, and inheriting is the one that lets the coach act.
     """
-    task_id, _ = await _task_with_items(client, "Read §3")
+    task_id, items = await _task_with_items(client, "Read §3")
+    project_id = (await client.get(f"/api/tasks/{task_id}")).json()["task"]["projectId"]
 
-    refused = await client.post(
-        f"/api/tasks/{task_id}/split",
-        json={
-            "subtasks": [
-                {"title": "a", "estimatedMinutes": 30},
-                {"title": "b", "estimatedMinutes": 30},
-            ]
-        },
-    )
-    assert refused.status_code == 409
+    child = (
+        await client.post(
+            f"/api/projects/{project_id}/tasks",
+            json={"title": "The first half", "parentTaskId": task_id},
+        )
+    ).json()["task"]
+
+    assert [i["itemId"] for i in child["items"]] == [i["itemId"] for i in items]
+    assert (await client.get(f"/api/tasks/{task_id}")).json()["task"]["items"] == []
 
 
 async def test_items_are_isolated_per_user(
@@ -467,3 +468,68 @@ async def test_a_subtask_that_inherits_a_finished_checklist_completes_itself(
     parent = (await client.get(f"/api/tasks/{task_id}")).json()["task"]
     assert parent["state"] == "completed"
     assert parent["items"] == []
+
+
+# --- the checklist against the task's budget ------------------------------------------------
+
+
+async def test_a_checklist_inside_its_budget_says_nothing(container, alice, client) -> None:
+    """Silence is the signal. A field that is always present is one the model learns to
+    skip, so the total is reported only when there is something to report."""
+    from coach.agents.context import AgentContext
+    from coach.agents.tools import _checklist_budget
+    from coach.core.principal import Principal
+
+    task_id, _ = await _task_with_items(client, "Read §3")
+    task = await container.tasks.resolve(alice, task_id)
+    context = AgentContext(
+        principal=Principal(uid=alice.uid, source="agent"),
+        project_id=task.project_id,
+        task_id=task_id,
+        default_task_minutes=45,
+    )
+    assert _checklist_budget(task, context) == {}
+
+
+async def test_an_oversized_checklist_reports_the_total_but_does_not_refuse(
+    container, alice, client
+) -> None:
+    """**Guidance, not a guard**, and the distinction is the whole design.
+
+    docs/02-data-model.md has no rule about a checklist's total and should not: a 50-minute
+    plan on a 45-minute task is a rounding difference, and refusing it would be the tool
+    overruling a judgement the coach is better placed to make with the learner in front of
+    it. What the tool owes the model is the *fact* — a running total it would otherwise have
+    to carry in its head across several calls.
+    """
+    from coach.agents.context import AgentContext
+    from coach.agents.tools import _checklist_budget
+    from coach.core.principal import Principal
+
+    project_id = await _project(client)
+    task = (
+        await client.post(f"/api/projects/{project_id}/tasks", json={"title": "Big"})
+    ).json()["task"]
+    # Accepted, not refused — this is the point.
+    added = await client.post(
+        f"/api/tasks/{task['id']}/items",
+        json={
+            "items": [
+                {"shortDescription": "Read the long thing", "minutes": 40},
+                {"shortDescription": "Do the long exercise", "minutes": 35},
+            ]
+        },
+    )
+    assert added.status_code == 201
+
+    stored = await container.tasks.resolve(alice, task["id"])
+    context = AgentContext(
+        principal=Principal(uid=alice.uid, source="agent"),
+        project_id=project_id,
+        task_id=task["id"],
+        default_task_minutes=45,
+    )
+    reported = _checklist_budget(stored, context)
+    assert reported["plannedMinutes"] == 75
+    assert reported["taskBudgetMinutes"] == 45
+    assert "add_subtask" in reported["note"]

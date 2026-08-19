@@ -56,7 +56,9 @@ describe('describeTool', () => {
     expect(describeTool('discard_task', { reason: 'covered by the next task' })).toBe(
       'covered by the next task',
     );
-    expect(describeTool('split_task', { subtasks: [{}, {}, {}] })).toBe('into 3 subtasks');
+    expect(
+      describeTool('add_subtask', { title: 'The parser', estimated_minutes: 45 }),
+    ).toBe('The parser (45 min)');
   });
 
   it('records the learner’s answer to a question, not the question alone', () => {
@@ -126,7 +128,7 @@ describe('describeTool', () => {
     // These come from a model. Nothing on this path validates them, and a transcript must
     // not fail to render because a tool call had a number where a string was expected.
     expect(describeTool('add_task', { title: 42, estimated_minutes: 'soon' })).toBe('');
-    expect(describeTool('split_task', { subtasks: 'three' })).toBe('');
+    expect(describeTool('add_subtask', { title: 42 })).toBe('');
     expect(describeTool('ask_learner', { question: null }, { selected: 'one' })).toBe('');
   });
 });

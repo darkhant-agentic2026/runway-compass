@@ -19,7 +19,7 @@ const LABELS: Record<string, string> = {
   youtube_find_by_duration: 'Checking video lengths',
   post_research_report: 'Writing up what it found',
   add_task: 'Adding a task',
-  split_task: 'Splitting a task',
+  add_subtask: 'Adding a subtask',
   set_task_state: 'Updating the board',
   set_next_up: 'Choosing what is next',
   reorder_task: 'Reordering the board',
@@ -95,10 +95,6 @@ const DETAILS: Record<string, Summariser> = {
         ? ` · took over ${inherited} ${inherited === 1 ? 'step' : 'steps'}`
         : '';
     return text(args.title) + minutes(args.estimated_minutes ?? args.estimatedMinutes) + moved;
-  },
-  split_task: (args) => {
-    const count = Array.isArray(args.subtasks) ? args.subtasks.length : 0;
-    return count ? `into ${count} subtasks` : '';
   },
   update_task: (args) =>
     [text(args.title), minutes(args.estimated_minutes ?? args.estimatedMinutes).trim()]

@@ -4,8 +4,8 @@
  * docs/08-testing.md:
  *
  * > 1. **Create project → Socratic intake → first task list exists.**
- * > 2. **Big task gets split** — user asks for a 4-hour task; the coach splits it; the
- * >    parent card shows subtask count and summed duration.
+ * > 2. **Big task gets broken up** — user asks for a 4-hour task; the coach adds subtasks
+ * >    for it, one at a time; the parent card shows subtask count and summed duration.
  * > 7. **Preference adaptation** — set project task duration to 2 h; new agent-created
  * >    tasks respect it while another project still uses the 45-minute global default.
  *
@@ -75,20 +75,21 @@ test('flow #1: intake asks before it proposes, then the first tasks appear', asy
   await expect(cards(page).first()).toContainText('From your coach');
 });
 
-test('flow #2: a four-hour ask is split into pieces that fit', async ({ signedIn: page }) => {
+test('flow #2: a four-hour ask becomes subtasks that fit', async ({ signedIn: page }) => {
   await createProject(page, 'Build a compiler');
 
   await say(page, 'The parser is about 4 hours of work');
   await expect(cards(page)).toHaveCount(1);
 
-  // 45 minutes is the global default, so the task is capped at three times that and split
-  // into three 45-minute pieces. The card is the requirement: "number of sub-tasks and
-  // total estimated duration" (docs/06-frontend.md#task-board).
+  // 45 minutes is the global default, so the task is capped at three times that and
+  // broken into three 45-minute pieces — three separate `add_subtask` calls in one turn,
+  // where this used to be a single `split_task`. The card is the requirement: "number of
+  // sub-tasks and total estimated duration" (docs/06-frontend.md#task-board).
   const parent = cards(page).first();
   await expect(parent).toContainText('3 subtasks');
   await expect(parent).toContainText(duration(135));
 
-  // And the split is real on the server, not a rendering of the chat.
+  // And the breakdown is real on the server, not a rendering of the chat.
   await page.reload();
   await expect(cards(page).first()).toContainText('3 subtasks');
 });
@@ -105,7 +106,7 @@ test('flow #7: a project override changes how work is sized', async ({ signedIn:
   await page.goBack();
   await say(page, 'This chunk is about 4 hours of work');
   await expect(cards(page)).toHaveCount(1);
-  // 240 minutes fits inside 3 x 120, so nothing is clamped and the split is two halves.
+  // 240 minutes fits inside 3 x 120, so nothing is clamped and it comes out as two halves.
   await expect(cards(page).first()).toContainText('2 subtasks');
   await expect(cards(page).first()).toContainText(duration(240));
 
@@ -129,7 +130,10 @@ test('what the coach did stays in the conversation', async ({ signedIn: page }) 
 
   const chips = page.getByTestId('transcript').getByTestId('tool-chips');
   await expect(chips.locator('[data-tool="add_task"]')).toBeVisible();
-  await expect(chips.locator('[data-tool="split_task"]')).toBeVisible();
+  await expect(chips.locator('[data-tool="add_subtask"]').first()).toBeVisible();
+  // The detail, which is the point of a chip carrying one: *which* task, not merely that
+  // a task was added.
+  await expect(chips.locator('[data-tool="add_task"]')).toContainText('The parser');
 
   // Still there once the turn has settled into the transcript — the live buffer is gone
   // by now, so anything visible is coming from the stored events.
@@ -139,7 +143,8 @@ test('what the coach did stays in the conversation', async ({ signedIn: page }) 
   // And after a full reload, which is the state a user comes back to tomorrow.
   await page.reload();
   await expect(chips.locator('[data-tool="add_task"]')).toBeVisible();
-  await expect(chips.locator('[data-tool="split_task"]')).toBeVisible();
+  await expect(chips.locator('[data-tool="add_subtask"]').first()).toBeVisible();
+  await expect(chips.locator('[data-tool="add_task"]')).toContainText('The parser');
 });
 
 test('the board refreshes after a tool call, even on a tab that opened elsewhere', async ({
@@ -235,4 +240,34 @@ test('the coach asks a question with controls, and the answer is in the record',
   // And it survives a reload, because it is in the transcript rather than in a buffer.
   await page.reload();
   await expect(page.getByTestId('tool-chips').last()).toContainText('The parser');
+});
+
+test('a question can ask for several answers at once', async ({ signedIn: page }) => {
+  /*
+    The mode that existed and was never used. `allow_multiple` has been wired since
+    `ask_learner` landed, and the coach asked single-choice every time — the docstring
+    described the flag neutrally and a model with no steer takes the simpler branch.
+
+    Worth an e2e rather than only a unit test because the two modes render *different
+    controls*: radios and checkboxes have different keyboard semantics, and a component
+    that quietly rendered radios for a multi-select would pass every assertion about the
+    payload while making the second answer unselectable.
+  */
+  await createProject(page, 'Async Python');
+
+  await say(page, 'ask me about several things');
+
+  const prompt = page.getByTestId('question-prompt');
+  await expect(prompt).toBeVisible();
+  await expect(prompt.getByRole('checkbox')).toHaveCount(3);
+  await expect(prompt.getByRole('radio')).toHaveCount(0);
+
+  // By role, not by label: the design system's checkbox renders a visually-hidden native
+  // input beside the styled control, and `getByLabel` resolves to the hidden one.
+  await prompt.getByRole('checkbox', { name: 'Generators' }).click();
+  await prompt.getByRole('checkbox', { name: 'Async iterators' }).click();
+  await prompt.getByRole('button', { name: 'Send' }).click();
+
+  const chip = page.getByTestId('tool-chips').last();
+  await expect(chip).toContainText('Generators, Async iterators');
 });

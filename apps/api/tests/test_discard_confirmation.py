@@ -264,3 +264,41 @@ def test_an_answer_naming_an_option_that_was_not_offered_is_dropped() -> None:
 
     view = _answer_view(Answer(), ["The parser", "The lexer"])
     assert view["selected"] == ["The parser"]
+
+
+async def test_a_question_can_ask_for_several_answers(
+    client: httpx.AsyncClient, stub_model: StubModel, project_with_a_task: dict[str, Any]
+) -> None:
+    """The mode the model was never choosing.
+
+    `allow_multiple` has been wired end to end since `ask_learner` landed, and in practice
+    the coach asked single-choice every time — the tool's docstring described the flag
+    neutrally, and a model with no steer takes the simpler branch. The instruction and the
+    docstring now say *when* to reach for it; this pins that the path underneath works, so a
+    future report of "it never asks with checkboxes" is a prompting question rather than a
+    plumbing one.
+    """
+    session_id = project_with_a_task["session_id"]
+    await _turn(client, session_id, text="ask me about several things")
+
+    request = next(
+        call
+        for call in await _function_calls(client, session_id)
+        if call["name"] == CONFIRMATION_FUNCTION_NAME
+    )
+    payload = request["args"]["toolConfirmation"]["payload"]
+    assert payload["allowMultiple"] is True
+    assert len(payload["options"]) == 3
+
+    await _turn(
+        client,
+        session_id,
+        confirmation={
+            "functionCallId": request["id"],
+            "confirmed": True,
+            "payload": {"selected": ["Generators", "Async iterators"], "note": ""},
+        },
+    )
+
+    answer = (await _tool_results(client, session_id, "ask_learner"))[-1]
+    assert answer["selected"] == ["Generators", "Async iterators"]

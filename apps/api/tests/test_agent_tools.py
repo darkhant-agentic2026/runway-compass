@@ -7,6 +7,10 @@ docs/08-testing.md#agent-level-tests:
 > budget, that autonomous mode's forbidden tools are actually unavailable, and that
 > `post_research_report` writes the right documents and session event.
 
+`split_task` was removed after M4 — it made the model commit to a whole breakdown before
+discussing any of it — so the first of those is now about `add_subtask`, one child at a
+time, and the budget it has to respect is the same one.
+
 The third is M4. The first two are here, plus the guards from
 docs/03-agent-design.md#domain-tools and the `board_update` push.
 
@@ -19,7 +23,7 @@ decision to call a tool — which is the only part that would otherwise be nonde
 That is also what makes these tests about the *prompt* as much as about the tools: the
 stub reads its task budget out of the rendered instruction
 (`integrations/stub_model.py`), so a subtask sized to a project's override is evidence
-that the override reached the model, not just that `split_task` divides.
+that the override reached the model, not just that the arithmetic divides.
 """
 
 from __future__ import annotations
@@ -237,7 +241,6 @@ async def test_the_tools_are_the_catalogue_the_design_lists(container) -> None:
         "list_tasks",
         "add_task",
         "add_subtask",
-        "split_task",
         "update_task",
         "set_task_state",
         "set_next_up",
@@ -303,12 +306,14 @@ async def test_an_oversized_task_is_refused_rather_than_created(
 async def test_a_subtask_over_the_budget_is_refused(
     client: httpx.AsyncClient, container
 ) -> None:
-    """`split_task`'s stricter guard: each subtask must fit the budget, not 3x it.
+    """`add_subtask`'s stricter guard: a subtask must fit the budget, not 3x it.
 
-    A split whose pieces are still oversized has not done the thing splitting is for, so
-    this bound is tighter than `add_task`'s on purpose (docs/03-agent-design.md).
+    A breakdown whose pieces are still oversized has not done the thing breaking up is
+    for, so this bound is tighter than `add_task`'s on purpose (docs/03-agent-design.md).
+    It carried over from `split_task`, which applied it per subtask; one child at a time
+    means it now applies per call, which is the same rule and a better error message.
     """
-    project = await _project(client, "Splitting")
+    project = await _project(client, "Breaking up")
     task = (
         await client.post(
             f"/api/projects/{project['id']}/tasks",
@@ -316,12 +321,12 @@ async def test_a_subtask_over_the_budget_is_refused(
         )
     ).json()["task"]
 
-    result = await container.domain_tools.split_task(
+    result = await container.domain_tools.add_subtask(
         task["id"],
-        [
-            {"title": "First half", "estimatedMinutes": 60},
-            {"title": "Second half", "estimatedMinutes": 60},
-        ],
+        "First half",
+        "",
+        60,
+        True,
         _FakeToolContext("u_alice", project["id"]),
     )
     assert not result["ok"]

@@ -47,8 +47,12 @@ describe('QuestionPrompt', () => {
       />,
     );
 
-    await userEvent.click(screen.getByLabelText('The parser'));
-    await userEvent.click(screen.getByLabelText('The evaluator'));
+    // By role rather than by label. The design system's checkbox is a styled button beside
+    // a visually-hidden native input, and both carry the option's text — the button through
+    // `aria-label`, the input through `<Label htmlFor>` — so a label lookup is ambiguous.
+    // The role names the control the learner actually clicks.
+    await userEvent.click(screen.getByRole('checkbox', { name: 'The parser' }));
+    await userEvent.click(screen.getByRole('checkbox', { name: 'The evaluator' }));
     await userEvent.click(screen.getByRole('button', { name: 'Send' }));
 
     expect(onAnswer).toHaveBeenCalledWith({

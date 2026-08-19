@@ -328,6 +328,91 @@ export function useTaskItemMutation(taskId: string, projectId: string) {
 }
 
 /**
+ * Create one subtask, from the parent's workspace.
+ *
+ * The hand path, and since `POST /api/tasks/{id}/split` was removed the only one. It
+ * invalidates the parent's detail as well as the board because the write changes *both*
+ * ends: the child appears under `subtasks[]`, and if the parent had a checklist it has just
+ * moved onto that child (docs/02-data-model.md#task-items).
+ */
+export function useCreateSubtask(parentTaskId: string, projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      title: string;
+      estimatedMinutes: number;
+      parentTaskId: string;
+    }) => api.createTask(projectId, body, newIdempotencyKey()),
+    onSettled() {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.task(parentTaskId),
+        exact: true,
+      });
+      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
+    },
+  });
+}
+
+/**
+ * Ticking an item on a **subtask**, from inside the parent's workspace.
+ *
+ * Separate from `useTaskItemMutation` for the same reason `useSetSubtaskState` is separate
+ * from `useSetTaskState`: the write is against a different task from the one this screen is
+ * keyed on. The response is the *subtask*, so it is patched into the parent's `subtasks[]`
+ * rather than over `task` — writing it to the wrong place would replace the parent with its
+ * child, which renders as the workspace suddenly being about something else.
+ *
+ * A subtask completing is also the parent's business: its `rollup` moves on the same write,
+ * and the ring above the cards reads that. Hence the invalidation as well as the patch.
+ */
+export function useSubtaskItemMutation(parentTaskId: string, projectId: string) {
+  const queryClient = useQueryClient();
+  const key = queryKeys.task(parentTaskId);
+
+  return useMutation<
+    TaskMutation,
+    Error,
+    { taskId: string; itemId: string; completed: boolean },
+    { previous: TaskDetail | undefined }
+  >({
+    mutationFn: ({ taskId, itemId, completed }) =>
+      api.patchTaskItem(taskId, itemId, { completed }),
+    async onMutate({ taskId, itemId, completed }) {
+      await queryClient.cancelQueries({ queryKey: key, exact: true });
+      const previous = queryClient.getQueryData<TaskDetail>(key);
+      if (previous) {
+        queryClient.setQueryData<TaskDetail>(key, {
+          ...previous,
+          task: {
+            ...previous.task,
+            subtasks: previous.task.subtasks.map((child) =>
+              child.id === taskId
+                ? {
+                    ...child,
+                    items: child.items.map((item) =>
+                      item.itemId === itemId ? { ...item, completed } : item,
+                    ),
+                  }
+                : child,
+            ),
+          },
+        });
+      }
+      return { previous };
+    },
+    onError(_error, _variables, context) {
+      if (context?.previous) queryClient.setQueryData(key, context.previous);
+    },
+    onSettled() {
+      void queryClient.invalidateQueries({ queryKey: key, exact: true });
+      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
+    },
+  });
+}
+
+/**
  * "Research this task now".
  *
  * Answers 202 with a `turnId`, which the caller subscribes to — a research run is an
@@ -417,23 +502,6 @@ export function useCreateTask(projectId: string) {
   return useMutation({
     mutationFn: (body: { title: string; estimatedMinutes: number; afterTaskId?: string }) =>
       api.createTask(projectId, body, newIdempotencyKey()),
-    onSuccess() {
-      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
-    },
-  });
-}
-
-export function useSplitTask(projectId: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      taskId,
-      subtasks,
-    }: {
-      taskId: string;
-      subtasks: { title: string; estimatedMinutes: number }[];
-    }) => api.splitTask(taskId, subtasks),
     onSuccess() {
       void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] });
       void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });

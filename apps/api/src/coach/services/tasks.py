@@ -28,7 +28,7 @@ from typing import Any
 from google.cloud.firestore import AsyncTransaction, async_transactional
 
 from coach.core.clock import now
-from coach.core.errors import Conflict, NotFound, ValidationProblem
+from coach.core.errors import NotFound, ValidationProblem
 from coach.core.ids import item_id as new_item_id
 from coach.core.ids import task_id as new_task_id
 from coach.core.principal import Principal
@@ -55,10 +55,12 @@ from coach.services.rollups import (
 )
 from coach.services.state_machine import validate_transition
 
-#: docs/03-agent-design.md guards `split_task` to 2-8 subtasks. The same bound applies to
-#: the manual endpoint, so a hand split and an agent split cannot produce different shapes.
-MIN_SPLIT_SUBTASKS = 2
-MAX_SPLIT_SUBTASKS = 8
+# `split_task` and its 2-8 bound lived here until M4's follow-up. It created a whole
+# breakdown in one call, which is the shape that made it unusable: the model had to commit
+# to every subtask before it had discussed any of them, and a single bad estimate failed
+# the lot. `create_task(parent_task_id=...)` — one child at a time, reachable from the tool
+# as `add_subtask` and from `POST /api/projects/{id}/tasks` — replaces it, and the
+# checklist inheritance it does is a thing `split_task` never did at all.
 
 #: Placeholder key used by `plan_insert` for the not-yet-created task.
 NEW_TASK_SLOT = ""
@@ -506,78 +508,6 @@ class TaskService:
         async with self._project_lock(project_id):
             return await self._db.run(txn)
 
-    async def split_task(
-        self,
-        principal: Principal,
-        task_id: str,
-        subtasks: list[dict[str, Any]],
-        *,
-        origin: Origin = Origin.USER,
-    ) -> TaskWithSubtasks:
-        """`POST /api/tasks/{id}/split` — turn a leaf task into a parent with subtasks."""
-        if not MIN_SPLIT_SUBTASKS <= len(subtasks) <= MAX_SPLIT_SUBTASKS:
-            raise ValidationProblem(
-                f"A split produces between {MIN_SPLIT_SUBTASKS} and "
-                f"{MAX_SPLIT_SUBTASKS} subtasks; got {len(subtasks)}."
-            )
-        parent = await self.resolve(principal, task_id)
-        if parent.parent_task_id is not None:
-            raise ValidationProblem(
-                "Task nesting is one level deep: split a subtask into siblings instead."
-            )
-        project_id = parent.project_id
-        new_ids = [new_task_id() for _ in subtasks]
-
-        @async_transactional
-        async def txn(transaction: AsyncTransaction) -> TaskWithSubtasks:
-            project, tasks = await self._read_board(transaction, project_id)
-            if not any(t.id == task_id for t in tasks):
-                raise NotFound(f"No task {task_id!r}.")
-            if any(t.parent_task_id == task_id for t in tasks):
-                raise Conflict(
-                    "This task has already been split. Add subtasks individually instead."
-                )
-            # `items` and `rollup` are mutually exclusive by construction
-            # (docs/02-data-model.md#task-items), and this is the construction: splitting is
-            # the only way a leaf becomes a parent. Refusing here rather than silently
-            # dropping the checklist, because the learner would lose a plan — and possibly
-            # work they have already ticked off — to a reshape they did not ask for.
-            parent_now = next(t for t in tasks if t.id == task_id)
-            if parent_now.items:
-                raise Conflict(
-                    "This task already has a checklist, and a task's plan is either its "
-                    "items or its subtasks. Clear the items first, or add the subtasks to "
-                    "a different task."
-                )
-
-            orders = rebalance(len(subtasks))
-            created: list[Task] = []
-            for child_id, order, draft in zip(new_ids, orders, subtasks, strict=True):
-                child = Task(
-                    id=child_id,
-                    project_id=project_id,
-                    owner_uid=principal.uid,
-                    parent_task_id=task_id,
-                    title=draft["title"],
-                    description=draft.get("description", ""),
-                    estimated_minutes=draft["estimatedMinutes"],
-                    order=order,
-                    needs_research=draft.get("needsResearch", True),
-                    origin=origin,
-                )
-                created.append(await self._tasks.create(child, transaction=transaction))
-
-            tasks.extend(created)
-            await self._write_derived(transaction, project, tasks)
-            updated_parent = next(t for t in tasks if t.id == task_id)
-            return TaskWithSubtasks(
-                **updated_parent.model_dump(),
-                subtasks=sorted(created, key=lambda t: t.order),
-            )
-
-        async with self._project_lock(project_id):
-            return await self._db.run(txn)
-
     async def set_research(
         self,
         principal: Principal,
@@ -915,8 +845,6 @@ def _task_item(draft: dict[str, Any], *, source_report_id: str | None) -> TaskIt
 
 
 __all__ = [
-    "MAX_SPLIT_SUBTASKS",
-    "MIN_SPLIT_SUBTASKS",
     "TaskService",
     "plan_insert",
     "plan_move",

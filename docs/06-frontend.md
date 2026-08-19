@@ -139,7 +139,10 @@ A single module owns the socket:
 - Drag-and-drop reordering (dnd-kit), optimistic, disabled while an autonomous run holds
   the project lease (the UI shows "Your coach is working on this project…" from
   `run_status`).
-- Row actions: start, complete, postpone, postpone until… (date picker), discard, split.
+- Row actions: start, complete, postpone, postpone until… (date picker), discard. **Not
+  split** — `POST /api/tasks/{id}/split` and its "Split into subtasks…" action were removed
+  after M4. A subtask is created one at a time now, by the coach through `add_subtask` or by
+  hand through `POST /api/projects/{id}/tasks` with a `parentTaskId`.
 
 ### Task workspace (`/projects/:projectId/tasks/:taskId`)
 
@@ -160,6 +163,15 @@ Left — **task detail**:
   Above them sits the same `rollup` pair the board's parent card shows — a progress ring
   over `completedSubtasks` and "4 subtasks · 2 h 30 m" — read from the same field, so the
   board and the workspace cannot disagree about how far along a task is.
+
+  **And each card carries the subtask's own checklist, tickable in place.** "No route of
+  its own" has to mean *reachable from here* rather than unreachable: a subtask holds items
+  exactly as a leaf task does — the first one inherits the parent's when the parent becomes
+  composite ([02-data-model.md](02-data-model.md#task-items)) — so without this the coach
+  could plan work the learner had no way to see. `GET /api/tasks/{id}` already returns
+  `subtasks[]` with their items, so it still costs no extra request. No budget meter on
+  these: the meter compares a checklist against the report that produced it, and the report
+  fetched here is the *parent's*.
 - **The checklist and the report, as two clearly separated blocks:**
 
 ```

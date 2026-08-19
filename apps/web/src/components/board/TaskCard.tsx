@@ -32,7 +32,6 @@ interface TaskCardProps {
   onToggleCollapsed: () => void;
   onSetState: (taskId: string, state: TaskState, postponedUntil?: string) => void;
   onMove: (taskId: string, direction: -1 | 1) => void;
-  onSplit: (taskId: string) => void;
 }
 
 export function TaskCard({
@@ -45,7 +44,6 @@ export function TaskCard({
   onToggleCollapsed,
   onSetState,
   onMove,
-  onSplit,
 }: TaskCardProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: task.id,
@@ -169,7 +167,6 @@ export function TaskCard({
           canMoveDown={canMoveDown}
           onSetState={(state, postponedUntil) => onSetState(task.id, state, postponedUntil)}
           onMove={(direction) => onMove(task.id, direction)}
-          onSplit={() => onSplit(task.id)}
         />
       </div>
 

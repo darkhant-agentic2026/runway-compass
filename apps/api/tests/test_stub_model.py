@@ -26,7 +26,7 @@ from coach.integrations.stub_model import (
     _prose_reply,
     budget_minutes,
     requested_minutes,
-    split_plan,
+    split_sizes,
     stub_reply,
 )
 from coach.services.models import EffectivePrefs
@@ -79,23 +79,25 @@ def test_a_named_duration_is_what_makes_the_stub_plan(text: str, expected: int |
     ("minutes", "budget"), [(135, 45), (240, 120), (90, 45), (100, 45), (600, 45)]
 )
 def test_a_split_plan_fits_the_budget_and_sums_to_the_parent(minutes: int, budget: int) -> None:
-    plan = split_plan("Parent", minutes, budget)
-    sizes = [item["estimatedMinutes"] for item in plan]
+    sizes = split_sizes(minutes, budget)
 
-    assert 2 <= len(plan) <= 8
+    assert 2 <= len(sizes) <= 8
     assert sum(sizes) == minutes
     if minutes <= 8 * budget:
-        # Beyond eight subtasks the split cap binds and pieces are necessarily larger;
-        # `add_task`'s own guard is what keeps a parent from getting there.
+        # Beyond eight subtasks the stub's own cap binds and pieces are necessarily
+        # larger; `add_task`'s guard is what keeps a parent from getting there.
         assert all(size <= budget for size in sizes)
 
 
-async def test_the_tool_loop_ends_after_the_split(container, client: Any) -> None:
-    """One `add_task`, one `split_task`, then prose — asserted by counting the calls.
+async def test_the_tool_loop_ends_after_the_subtasks(container, client: Any) -> None:
+    """One `add_task`, then one `add_subtask` per pass, then prose.
 
-    Driven through the real runner, because the thing that could hang is the interaction
-    between the stub's planning and ADK's function-response contents, not the planner in
-    isolation.
+    The termination argument is the interesting part and it changed when `split_task` was
+    removed: the stub used to stop because it saw a `split_task` response, and now it stops
+    because it *counts* the `add_subtask` responses in this turn against the sizes it
+    planned. A miscount is an infinite tool loop, which is why this is driven through the
+    real runner — what could hang is the interaction between the stub's planning and ADK's
+    function-response contents, not the planner in isolation.
     """
     import asyncio
 
@@ -120,7 +122,8 @@ async def test_the_tool_loop_ends_after_the_split(container, client: Any) -> Non
         for part in (stored["event"].get("content") or {}).get("parts", [])
         if "function_call" in part
     ]
-    assert calls == ["add_task", "split_task"]
+    # 180 minutes clamped to 135 by `add_task`'s 3x guard, then three 45-minute subtasks.
+    assert calls == ["add_task", "add_subtask", "add_subtask", "add_subtask"]
 
 
 def _request(text: str) -> Any:

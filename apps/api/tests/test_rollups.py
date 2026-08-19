@@ -257,23 +257,27 @@ async def test_project_counts_track_the_board(container, alice, project) -> None
     assert refreshed.counts.open_minutes == 90
 
 
-async def test_splitting_a_task_produces_a_rollup_in_one_transaction(
-    container, alice, project
-) -> None:
+async def test_adding_subtasks_produces_a_rollup(container, alice, project) -> None:
     """Golden-flow #2's data shape: "the parent card shows subtask count and summed
-    duration"."""
+    duration".
+
+    Three separate creates rather than one `split_task`, which was removed after M4. The
+    rollup is recomputed on every one of them (invariant 5), so the assertion is about the
+    state after the last write rather than about a single transaction doing it all.
+    """
     parent = await container.tasks.create_task(
         alice, project.id, title="Four hours of work", estimated_minutes=240
     )
-    result = await container.tasks.split_task(
-        alice,
-        parent.id,
-        [
-            {"title": "a", "estimatedMinutes": 60},
-            {"title": "b", "estimatedMinutes": 45},
-            {"title": "c", "estimatedMinutes": 45},
-        ],
-    )
+    for title, minutes in (("a", 60), ("b", 45), ("c", 45)):
+        await container.tasks.create_task(
+            alice,
+            project.id,
+            title=title,
+            estimated_minutes=minutes,
+            parent_task_id=parent.id,
+        )
+
+    result = await container.tasks.get_with_subtasks(alice, parent.id)
     assert result.rollup == Rollup(
         subtask_count=3, completed_subtasks=0, total_estimated_minutes=150
     )

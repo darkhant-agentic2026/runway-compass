@@ -223,15 +223,6 @@ export const api = {
       body: anchor,
     }),
 
-  splitTask: (
-    taskId: string,
-    subtasks: { title: string; description?: string; estimatedMinutes: number }[],
-  ) =>
-    request(`/api/tasks/${taskId}/split`, taskDetailSchema, {
-      method: 'POST',
-      body: { subtasks },
-    }).then((response) => response.task),
-
   // --- checklist items ------------------------------------------------------------------
   // Every one of these answers with the *whole task*, because a checklist write can move
   // the task's state (invariant 6) and the project's counts. The caller reconciles both.

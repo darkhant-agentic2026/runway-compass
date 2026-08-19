@@ -159,7 +159,7 @@ collide" true rather than hopeful.
 
 Autonomous mode uses the reduced tool set from [03-agent-design.md](03-agent-design.md):
 
-Allowed: `add_task` (≤ 5), `split_task`, `reorder_task`, `set_next_up`,
+Allowed: `add_task` (≤ 5), `add_subtask`, `reorder_task`, `set_next_up`,
 `post_research_report`, read-only tools.
 Forbidden: `discard_task`, `set_task_state` to `completed`, `update_learner_profile`,
 `update_project_prefs`, anything touching another project.

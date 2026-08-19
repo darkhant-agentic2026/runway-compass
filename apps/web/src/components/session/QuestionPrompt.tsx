@@ -72,6 +72,11 @@ export function QuestionPrompt({
                 checked={selected.includes(option)}
                 disabled={disabled}
                 onCheckedChange={() => toggle(option)}
+                // The design system's checkbox is a styled button beside a visually-hidden
+                // native input, and `<Label htmlFor>` names the *input*. Without this the
+                // control the learner actually clicks has no accessible name at all — which
+                // is a screen-reader defect first and an untestable control second.
+                aria-label={option}
               />
               <Label htmlFor={`${name}-${option}`} className="text-sm font-normal">
                 {option}

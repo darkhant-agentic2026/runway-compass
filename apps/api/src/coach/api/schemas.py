@@ -144,15 +144,9 @@ class TaskReorder(RequestModel):
     before_task_id: str | None = None
 
 
-class SubtaskDraft(RequestModel):
-    title: str = Field(min_length=1, max_length=300)
-    description: str = ""
-    estimated_minutes: Minutes
-    needs_research: bool = True
-
-
-class TaskSplit(RequestModel):
-    subtasks: list[SubtaskDraft] = Field(min_length=2, max_length=8)
+# `SubtaskDraft`/`TaskSplit` and `POST /api/tasks/{id}/split` were removed after M4. A
+# subtask is now created by `POST /api/projects/{id}/tasks` with a `parentTaskId`, one at a
+# time — see the note in `services/tasks.py` for why the all-at-once shape had to go.
 
 
 class TaskItemDraft(RequestModel):

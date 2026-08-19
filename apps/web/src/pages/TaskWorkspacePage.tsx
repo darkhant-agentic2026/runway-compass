@@ -27,11 +27,13 @@ import { SubtaskList } from '@/components/task/SubtaskList';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
+  useCreateSubtask,
   useReportFeedback,
   useReportHistory,
   useSetSubtaskState,
   useStartResearch,
   useTask,
+  useSubtaskItemMutation,
   useTaskItemMutation,
   useTaskSession,
 } from '@/features/queries';
@@ -50,6 +52,8 @@ export default function TaskWorkspacePage() {
   const sessionId = session.data?.id ?? '';
   const setSubtaskState = useSetSubtaskState(taskId, projectId);
   const itemMutation = useTaskItemMutation(taskId, projectId);
+  const subtaskItem = useSubtaskItemMutation(taskId, projectId);
+  const addSubtask = useCreateSubtask(taskId, projectId);
   const startResearch = useStartResearch(taskId, projectId);
   const feedback = useReportFeedback(taskId);
   const history = useReportHistory(taskId);
@@ -144,6 +148,15 @@ export default function TaskWorkspacePage() {
                 state,
                 ...(postponedUntil ? { postponedUntil } : {}),
               })
+            }
+            itemsDisabled={subtaskItem.isPending}
+            onToggleItem={(subtaskId, itemId, completed) =>
+              subtaskItem.mutate({ taskId: subtaskId, itemId, completed })
+            }
+            hasItems={task.items.length > 0}
+            addDisabled={addSubtask.isPending}
+            onAdd={(title, estimatedMinutes) =>
+              addSubtask.mutate({ title, estimatedMinutes, parentTaskId: taskId })
             }
           />
         ) : null}

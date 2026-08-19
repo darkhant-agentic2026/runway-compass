@@ -157,3 +157,43 @@ test('flow #5: the board shows a leaf task’s checklist progress', async ({
   await expect(card.getByTestId('item-progress')).toContainText('1 of 2 done');
   await expect(card.getByTestId('materials-ready')).toBeVisible();
 });
+
+test('a subtask’s checklist is visible and tickable inside the parent', async ({
+  signedIn: page,
+}) => {
+  /*
+    A subtask has no route of its own (docs/06-frontend.md), which has to mean *reachable
+    from the parent* rather than unreachable. It holds items exactly as a leaf does — the
+    first subtask inherits the parent's when the parent becomes composite — so without this
+    the coach could plan work the learner had no way to see, let alone tick off.
+
+    The inheritance is the interesting half: the checklist is built by a research run on the
+    parent, and then a subtask takes it over.
+  */
+  await openWorkspace(page, 'Compilers', 'Write the parser', 30);
+
+  await page.getByRole('button', { name: 'Research this task now' }).click();
+  await expect(page.getByTestId('checklist')).toBeVisible();
+  await page.getByTestId('checklist').getByRole('checkbox').first().click();
+  await expect(page.getByTestId('checklist-budget')).toContainText('1 of 2 done');
+
+  // Making it composite moves those steps — ticks and all — onto the new subtask.
+  await page.getByLabel('New subtask').fill('Tokenizing');
+  await page.getByLabel('Minutes').fill('20');
+  await page.getByRole('button', { name: 'Add subtask' }).click();
+
+  const card = page.getByTestId('subtask-card').filter({ hasText: 'Tokenizing' });
+  await expect(card).toBeVisible();
+  await expect(card.getByTestId('checklist')).toContainText('Steps for this subtask');
+  await expect(card.getByTestId('checklist-budget')).toContainText('1 of 2 done');
+
+  // And the parent's own checklist is gone, because a task's plan is its items or its
+  // subtasks and never both.
+  await expect(page.getByTestId('checklist')).toHaveCount(1);
+
+  // Tickable in place, against the *subtask* — the write goes to a different task from the
+  // one this screen is keyed on, which is the whole reason it needs its own mutation.
+  await card.getByRole('checkbox').last().click();
+  await expect(card.getByTestId('checklist-budget')).toContainText('2 of 2 done');
+  await expect(card.getByTestId('subtask-state')).toContainText('Completed');
+});

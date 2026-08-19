@@ -80,12 +80,11 @@ or a row of user data.
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `POST` | `/api/projects/{id}/tasks` | `{ title, description?, estimatedMinutes, parentTaskId?, afterTaskId? }` |
+| `POST` | `/api/projects/{id}/tasks` | `{ title, description?, estimatedMinutes, parentTaskId?, afterTaskId? }` — with a `parentTaskId` this creates a **subtask**, and the first one inherits the parent's checklist ([02-data-model.md](02-data-model.md#task-items)) |
 | `GET` | `/api/tasks/{id}` | Task + `items[]` + subtasks + `latestReport` |
 | `PATCH` | `/api/tasks/{id}` | Fields; `estimatedMinutes` triggers parent rollup recompute |
 | `POST` | `/api/tasks/{id}/state` | `{ state, postponedUntil? }` — validated against state machine |
 | `POST` | `/api/tasks/{id}/reorder` | `{ afterTaskId } \| { beforeTaskId }` |
-| `POST` | `/api/tasks/{id}/split` | Manual split; agent uses the tool equivalent |
 | `GET` | `/api/tasks/{id}/reports` | Research reports for the task, newest first |
 | `POST` | `/api/tasks/{id}/items` | Append items by hand — `{ items: [{ shortDescription, details?, guided? }] }` |
 | `PATCH` | `/api/tasks/{id}/items/{itemId}` | `{ completed?, shortDescription?, details?, guided? }` — the checkbox and the inline edit |

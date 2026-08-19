@@ -181,9 +181,14 @@ authority, and it repairs the pointer when it runs.
 
 `items` and `rollup` are the same field in two moods and are mutually exclusive by
 construction: a leaf task's plan is its item list, a parent's plan is its subtasks. Nothing
-enforces the exclusion with a validator, because `split_task` is the only way a leaf becomes
-a parent and it refuses a task that already has items — the learner would otherwise lose a
-checklist to a reshape they did not ask for.
+enforces the exclusion with a validator, because creating a subtask is the only way a leaf
+becomes a parent, and that write *moves* the items onto the first child rather than dropping
+them — the learner would otherwise lose a checklist, possibly a half-finished one, to a
+reshape they did not ask for.
+
+`POST /api/tasks/{id}/split` and the `split_task` tool did this differently and were removed
+after M4: they created a whole breakdown in one call and simply refused a task that had
+items, because there was nowhere to put them. One child at a time has somewhere.
 
 ### Task items
 
@@ -330,7 +335,7 @@ rests entirely on the transaction, plus jittered backoff around it in
 deterministic, the cross-instance path by driving two service instances at once.
 
 Task nesting is **one level deep**. A subtask cannot have subtasks; if the agent thinks a
-subtask is still too big, it splits it into siblings. This keeps rollups, ordering, and UI
+subtask is still too big, the coach adds more, smaller siblings instead. This keeps rollups, ordering, and UI
 simple, and matches how bite-sized work actually decomposes.
 
 ### Ordering

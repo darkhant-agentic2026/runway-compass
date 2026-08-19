@@ -45,7 +45,7 @@ from coach.agents.context import (
 from coach.core.errors import CoachError, ValidationProblem
 from coach.services.models import Origin, Task, TaskState, TaskWithSubtasks
 from coach.services.projects import ProjectService
-from coach.services.tasks import MAX_SPLIT_SUBTASKS, MIN_SPLIT_SUBTASKS, TaskService
+from coach.services.tasks import TaskService
 from coach.ws.hub import BoardUpdateHub
 
 logger = logging.getLogger(__name__)
@@ -232,45 +232,6 @@ class DomainTools:
         )
         await self._announce(context, [task.id])
         return {"ok": True, "task": task_view(task)}
-
-    async def split_task(
-        self,
-        task_id: str,
-        subtasks: list[dict[str, Any]],
-        tool_context: ToolContext,
-    ) -> dict[str, Any]:
-        """Break one task into between 2 and 8 subtasks that each fit the time budget.
-
-        This is how an oversized piece of work becomes workable: the parent stays on the
-        board and shows the count and the summed duration, and the learner works the
-        subtasks. A subtask cannot itself be split — if one is still too big, give the
-        parent more, smaller subtasks instead.
-
-        Args:
-            task_id: The task to split. It must not already have subtasks.
-            subtasks: The subtasks to create, in order. Each is an object with `title`, an
-                optional `description`, `estimatedMinutes`, and optional `needsResearch`.
-        """
-        return await self._guarded(tool_context, self._split_task, task_id, subtasks)
-
-    async def _split_task(
-        self, context: AgentContext, task_id: str, subtasks: list[dict[str, Any]]
-    ) -> dict[str, Any]:
-        if not MIN_SPLIT_SUBTASKS <= len(subtasks) <= MAX_SPLIT_SUBTASKS:
-            raise ValidationProblem(
-                f"A split produces between {MIN_SPLIT_SUBTASKS} and "
-                f"{MAX_SPLIT_SUBTASKS} subtasks; you asked for {len(subtasks)}."
-            )
-        drafts = [_subtask_draft(draft, context) for draft in subtasks]
-        parent = await self._tasks.split_task(
-            context.principal, task_id, drafts, origin=Origin.AGENT
-        )
-        await self._announce(context, [parent.id, *(child.id for child in parent.subtasks)])
-        return {
-            "ok": True,
-            "task": task_view(parent),
-            "subtasks": [task_view(child) for child in parent.subtasks],
-        }
 
     async def add_subtask(
         self,
@@ -580,7 +541,12 @@ class DomainTools:
         task_id = _require_task(context)
         task = await self._tasks.add_items(context.principal, task_id, items)
         await self._announce(context, [task.id])
-        return {"ok": True, "task": task_view(task), "items": items_view(task)}
+        return {
+            "ok": True,
+            "task": task_view(task),
+            "items": items_view(task),
+            **_checklist_budget(task, context),
+        }
 
     async def update_task_item(
         self,
@@ -699,6 +665,7 @@ class DomainTools:
             "ok": True,
             "items": items_view(task),
             "taskCompleted": task.state is TaskState.COMPLETED,
+            **_checklist_budget(task, context),
         }
 
     async def complete_task_item(
@@ -753,6 +720,11 @@ class DomainTools:
         rather than asking them to type a number back, and their answer is recorded in the
         conversation where you can both see it later.
 
+        Ask for **several answers** (`allow_multiple`) whenever more than one could be
+        true at once — what they already know, which parts they want covered, which of
+        these they have tried. Single choice is for questions whose answers exclude each
+        other, like what to do first.
+
         Do **not** use it for open questions, for anything with more than about six
         options, or to ask permission for something you have a tool for. Asking whether to
         discard a task, delete a step, or mark one done is what those tools' own
@@ -765,7 +737,13 @@ class DomainTools:
             question: What you are asking, in one sentence, addressed to the learner.
             options: The choices, in the order they should be shown. Two to six of them,
                 each a short phrase rather than a sentence.
-            allow_multiple: True if they may pick several, false if exactly one.
+            allow_multiple: **Use this whenever more than one answer could be true at
+                once.** "Which of these have you used before", "which parts feel shaky",
+                "which of these would you like covered" are all several-answer questions,
+                and forcing them into one choice makes the learner pick the least wrong
+                option and lose the rest. Reserve false for questions where the answers
+                genuinely exclude each other — what to do *first*, which single article to
+                read.
             allow_none: True if "none of these" is a real answer to your question.
             note_prompt: If they should be able to add a comment, the label for that box —
                 for example "Anything else I should know?". Leave empty for no comment box.
@@ -937,7 +915,6 @@ class DomainTools:
         return [
             FunctionTool(self.list_tasks),
             FunctionTool(self.add_task),
-            FunctionTool(self.split_task),
             FunctionTool(self.update_task),
             FunctionTool(self.set_task_state),
             FunctionTool(self.set_next_up),
@@ -969,34 +946,31 @@ class DomainTools:
         ]
 
 
-def _subtask_draft(draft: dict[str, Any], context: AgentContext) -> dict[str, Any]:
-    """One subtask, validated against the budget before the transaction opens.
+def _checklist_budget(task: Task, context: AgentContext) -> dict[str, Any]:
+    """How long the checklist has grown, against what the learner asked a task to be.
 
-    docs/03-agent-design.md guards `split_task` with "each ≤ default minutes" — a stricter
-    bound than `add_task`'s, and the point of splitting: subtasks that individually exceed
-    the budget have not solved the problem the split existed for.
+    **Guidance, not a guard.** docs/02-data-model.md#task-items has no rule about a
+    checklist's total, and there should not be one: a 50-minute plan on a 45-minute task is
+    a rounding difference, and refusing it would be the tool overruling a judgement the
+    coach is better placed to make with the learner in front of it. What the tool owes the
+    model is the *fact* — a running total it would otherwise have to keep in its head across
+    several calls, which is exactly the kind of arithmetic a model quietly gets wrong.
+
+    Reported only when there is something to report. A checklist inside its budget needs no
+    comment, and a field that is always present is one the model learns to skip.
     """
-    title = str(draft.get("title") or "").strip()
-    if not title:
-        raise ValidationProblem("Every subtask needs a title.")
-    raw_minutes = draft.get("estimatedMinutes", draft.get("estimated_minutes"))
-    try:
-        minutes = int(raw_minutes)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        raise ValidationProblem(
-            f"Subtask {title!r} needs estimatedMinutes as a whole number of minutes."
-        ) from None
-    if minutes > context.default_task_minutes:
-        raise ValidationProblem(
-            f"Subtask {title!r} is {minutes} minutes, over the "
-            f"{context.default_task_minutes}-minute budget a subtask has to fit. "
-            "Use more, smaller subtasks."
-        )
+    planned = sum(item.minutes or 0 for item in task.items)
+    budget = context.default_task_minutes
+    if planned <= budget:
+        return {}
     return {
-        "title": title,
-        "description": str(draft.get("description") or ""),
-        "estimatedMinutes": minutes,
-        "needsResearch": bool(draft.get("needsResearch", draft.get("needs_research", True))),
+        "plannedMinutes": planned,
+        "taskBudgetMinutes": budget,
+        "note": (
+            f"This checklist now runs to {planned} minutes against a {budget}-minute task. "
+            "Consider whether it is really two pieces of work — `add_subtask` moves the "
+            "steps onto the first subtask."
+        ),
     }
 
 

@@ -24,9 +24,24 @@ interface ChecklistProps {
   budgetMinutes: number | null;
   onToggle: (itemId: string, completed: boolean) => void;
   disabled?: boolean;
+  /**
+   * Unique per rendered checklist. The workspace shows the task's own list *and* one per
+   * subtask, so a hard-coded heading id would repeat — and `aria-labelledby` pointing at a
+   * duplicated id names whichever came first, which is the wrong section for every
+   * checklist but one.
+   */
+  headingId?: string;
+  heading?: string;
 }
 
-export function Checklist({ items, budgetMinutes, onToggle, disabled }: ChecklistProps) {
+export function Checklist({
+  items,
+  budgetMinutes,
+  onToggle,
+  disabled,
+  headingId = 'checklist-heading',
+  heading = 'To complete this task',
+}: ChecklistProps) {
   if (items.length === 0) return null;
 
   const done = items.filter((item) => item.completed).length;
@@ -35,12 +50,12 @@ export function Checklist({ items, budgetMinutes, onToggle, disabled }: Checklis
   return (
     <section
       className="rounded-lg border bg-card p-4"
-      aria-labelledby="checklist-heading"
+      aria-labelledby={headingId}
       data-testid="checklist"
     >
       <header className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-        <h2 id="checklist-heading" className="text-sm font-semibold">
-          To complete this task
+        <h2 id={headingId} className="text-sm font-semibold">
+          {heading}
         </h2>
         {/*
           The budget meter sums the *checklist*, never the optional block — that separation
@@ -60,7 +75,7 @@ export function Checklist({ items, budgetMinutes, onToggle, disabled }: Checklis
         {items.map((item) => (
           <li key={item.itemId} className="flex gap-3">
             <Checkbox
-              id={`item-${item.itemId}`}
+              id={`${headingId}-${item.itemId}`}
               checked={item.completed}
               disabled={disabled}
               onCheckedChange={(checked) => onToggle(item.itemId, checked === true)}
@@ -69,7 +84,7 @@ export function Checklist({ items, budgetMinutes, onToggle, disabled }: Checklis
             />
             <div className="min-w-0 flex-1 space-y-1">
               <label
-                htmlFor={`item-${item.itemId}`}
+                htmlFor={`${headingId}-${item.itemId}`}
                 className={
                   item.completed
                     ? 'block text-sm text-muted-foreground line-through'

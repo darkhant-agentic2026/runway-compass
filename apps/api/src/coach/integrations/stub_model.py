@@ -31,9 +31,11 @@ writes as `Default task length: 120 minutes` — and:
 1. calls `add_task` for work of `min(named duration, 3 * budget)` minutes, that clamp
    being the same one `add_task`'s guard applies, so the call is accepted rather than
    refused;
-2. on the next turn, seeing the created task in the function response, calls `split_task`
-   if it does not fit the budget, into `ceil(minutes / budget)` equal subtasks;
-3. on the turn after that, answers in prose.
+2. seeing the created task in the function response, calls `add_subtask` — **one at a
+   time**, once per pass, until the subtasks cover the parent's estimate. `split_task` did
+   this in a single call and was removed: it made the model commit to every subtask before
+   discussing any of them, and one bad estimate failed the lot;
+3. once they cover it, answers in prose.
 
 ## Research (M4)
 
@@ -91,9 +93,17 @@ _FORMATTING_PATTERN = re.compile(r"\bshow me the formatting\b", re.IGNORECASE)
 #: dialog, the structured answer, and the chip that records it — is reachable end to end.
 _ASK_PATTERN = re.compile(r"\bask me something\b", re.IGNORECASE)
 
+#: The prompt that makes it ask a *multi-select* question. A separate phrase rather than a
+#: flag on the first, so a test can reach either mode — and because the two modes are the
+#: thing worth being able to tell apart: the model reaches for single-choice by default, and
+#: an e2e that could only exercise that would never notice checkboxes breaking.
+_ASK_MANY_PATTERN = re.compile(r"\bask me about several\b", re.IGNORECASE)
+
 #: What it asks. Fixed, so an e2e can click a named option.
 STUB_QUESTION = "Which should we do first?"
 STUB_OPTIONS = ["The parser", "The lexer"]
+STUB_MULTI_QUESTION = "Which of these have you used before?"
+STUB_MULTI_OPTIONS = ["Generators", "Context managers", "Async iterators"]
 
 #: And the one that makes it fail, so the `turn_error` path is reachable from a test.
 #:
@@ -155,7 +165,9 @@ _HOUR_UNITS = frozenset({"h", "hr", "hrs", "hour", "hours"})
 #: `add_task`'s guard: "minutes <= 3x default" (docs/03-agent-design.md).
 _MAX_TASK_FACTOR = 3
 
-#: `split_task`'s: "2-8 subtasks" (docs/03-agent-design.md, `services/tasks.py`).
+#: How many subtasks the stub will add before giving up and answering. Not a product rule —
+#: `add_subtask` has no such cap — but a stub that plans from its own function responses
+#: needs a termination argument that does not depend on arithmetic working out.
 _MAX_SUBTASKS = 8
 
 #: "drop that", "discard the first one". The one instruction the stub takes that is not a
@@ -248,26 +260,18 @@ def requested_minutes(text: str) -> int | None:
     return amount * 60 if unit in _HOUR_UNITS else amount
 
 
-def split_plan(title: str, minutes: int, budget: int) -> list[dict[str, Any]]:
-    """`minutes` of work as subtasks that each fit `budget`.
+def split_sizes(minutes: int, budget: int) -> list[int]:
+    """`minutes` of work as subtask estimates that each fit `budget`.
 
-    The last one absorbs the remainder rather than every one being rounded, so the
-    subtask minutes sum to exactly the parent's — which is what makes the parent card's
+    The last one absorbs the remainder rather than every one being rounded, so the subtask
+    minutes sum to exactly the parent's — which is what makes the parent card's
     "N subtasks · X" assertion in golden flow #2 an equality rather than an approximation.
     """
     count = min(_MAX_SUBTASKS, max(2, math.ceil(minutes / budget)))
     each = minutes // count
     sizes = [each] * count
     sizes[-1] += minutes - each * count
-    return [
-        {
-            "title": f"{title} — part {index + 1}",
-            "description": "",
-            "estimatedMinutes": size,
-            "needsResearch": True,
-        }
-        for index, size in enumerate(sizes)
-    ]
+    return sizes
 
 
 class StubModel(BaseLlm):
@@ -353,18 +357,28 @@ def _plan_tool_call(llm_request: Any) -> types.FunctionCall | None:
 
     budget = budget_minutes(_instruction(llm_request))
 
-    if any(name == "split_task" for name, _ in responses):
-        return None
-
     created = _created_task(responses)
     if created is not None:
         task_id, minutes, title = created
-        if minutes > budget:
-            return types.FunctionCall(
-                name="split_task",
-                args={"task_id": task_id, "subtasks": split_plan(title, minutes, budget)},
-            )
-        return None
+        if minutes <= budget:
+            return None
+        sizes = split_sizes(minutes, budget)
+        # One subtask per pass, counted from *this turn's* responses rather than from
+        # anything remembered — the stub is stateless by construction, and two turns of one
+        # conversation may be served by two processes.
+        added = sum(1 for name, _ in responses if name == "add_subtask")
+        if added >= len(sizes):
+            return None
+        return types.FunctionCall(
+            name="add_subtask",
+            args={
+                "task_id": task_id,
+                "title": f"{title} — part {added + 1}",
+                "description": "",
+                "estimated_minutes": sizes[added],
+                "needs_research": True,
+            },
+        )
 
     if responses:
         # Something came back and it was not a task worth splitting — a refusal, or a
@@ -372,6 +386,18 @@ def _plan_tool_call(llm_request: Any) -> types.FunctionCall | None:
         return None
 
     text = _last_user_text(llm_request)
+
+    if _ASK_MANY_PATTERN.search(text) and "ask_learner" in tools:
+        return types.FunctionCall(
+            name="ask_learner",
+            args={
+                "question": STUB_MULTI_QUESTION,
+                "options": list(STUB_MULTI_OPTIONS),
+                "allow_multiple": True,
+                "allow_none": True,
+                "note_prompt": "",
+            },
+        )
 
     if _ASK_PATTERN.search(text) and "ask_learner" in tools:
         return types.FunctionCall(
@@ -496,6 +522,8 @@ __all__ = [
     "DELAY_ENV_VAR",
     "DONE_REPLY",
     "STUB_FAILURE_MESSAGE",
+    "STUB_MULTI_OPTIONS",
+    "STUB_MULTI_QUESTION",
     "STUB_OPTIONS",
     "STUB_QUESTION",
     "StubModel",
@@ -504,6 +532,6 @@ __all__ = [
     "requested_minutes",
     "research_budget_minutes",
     "research_plan",
-    "split_plan",
+    "split_sizes",
     "stub_reply",
 ]

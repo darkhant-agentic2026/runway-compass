@@ -16,7 +16,6 @@ from coach.api.schemas import (
     TaskMutationResponse,
     TaskPatch,
     TaskReorder,
-    TaskSplit,
     TaskStateChange,
 )
 from coach.services.models import Task
@@ -205,21 +204,3 @@ async def delete_task_item(
 ) -> TaskMutationResponse:
     task = await tasks.delete_item(principal, task_id, item_id)
     return await _mutation_response(tasks, task)
-
-
-@router.post(
-    "/tasks/{task_id}/split",
-    response_model=TaskDetailResponse,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(idempotency_guard)],
-)
-async def split_task(
-    task_id: str, body: TaskSplit, principal: CurrentUser, tasks: Tasks
-) -> TaskDetailResponse:
-    """Manual split. The agent's `split_task` tool calls the same service method (M3)."""
-    result = await tasks.split_task(
-        principal,
-        task_id,
-        [draft.model_dump(by_alias=True) for draft in body.subtasks],
-    )
-    return TaskDetailResponse(task=result)
