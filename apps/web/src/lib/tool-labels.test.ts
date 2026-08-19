@@ -30,9 +30,9 @@ describe('labelForTool', () => {
 
 describe('describeTool', () => {
   it('says which task, not merely that a task was added', () => {
-    expect(describeTool('add_task', { title: 'Read the asyncio guide', estimated_minutes: 45 })).toBe(
-      'Read the asyncio guide (45 min)',
-    );
+    expect(
+      describeTool('add_task', { title: 'Read the asyncio guide', estimated_minutes: 45 }),
+    ).toBe('Read the asyncio guide (45 min)');
   });
 
   it('reports a subtask taking over its parent’s checklist', () => {
@@ -56,9 +56,9 @@ describe('describeTool', () => {
     expect(describeTool('discard_task', { reason: 'covered by the next task' })).toBe(
       'covered by the next task',
     );
-    expect(
-      describeTool('add_subtask', { title: 'The parser', estimated_minutes: 45 }),
-    ).toBe('The parser (45 min)');
+    expect(describeTool('add_subtask', { title: 'The parser', estimated_minutes: 45 })).toBe(
+      'The parser (45 min)',
+    );
   });
 
   it('records the learner’s answer to a question, not the question alone', () => {

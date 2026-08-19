@@ -45,9 +45,7 @@ async function addSubtasks(page: Page, taskTitle: string, subtasks: [string, num
     await page.getByLabel('New subtask').fill(title);
     await page.getByLabel('Minutes').fill(String(minutes));
     await page.getByRole('button', { name: 'Add subtask' }).click();
-    await expect(
-      page.getByTestId('subtask-card').filter({ hasText: title }),
-    ).toBeVisible();
+    await expect(page.getByTestId('subtask-card').filter({ hasText: title })).toBeVisible();
   }
 }
 

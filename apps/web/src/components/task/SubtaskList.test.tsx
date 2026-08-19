@@ -144,7 +144,11 @@ describe('a subtask’s own checklist', () => {
       state: 'not_started',
       items: [
         makeTaskItem({ itemId: 'i_a', shortDescription: 'Read the grammar' }),
-        makeTaskItem({ itemId: 'i_b', shortDescription: 'Write the tokenizer', completed: true }),
+        makeTaskItem({
+          itemId: 'i_b',
+          shortDescription: 'Write the tokenizer',
+          completed: true,
+        }),
       ],
     }),
   ];

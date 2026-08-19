@@ -66,7 +66,6 @@ export function TaskRowActions({
             </DropdownMenuItem>
           ))}
 
-
           <DropdownMenuSeparator />
           {/* Keyboard fallback for drag-and-drop. */}
           <DropdownMenuItem disabled={!canMoveUp} onClick={() => onMove(-1)}>

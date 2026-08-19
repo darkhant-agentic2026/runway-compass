@@ -213,7 +213,9 @@ function outcomesByCallId(events: SessionEvent[]): Map<string, ToolOutcome> {
       const payload = response.response;
       const isObject = Boolean(payload) && typeof payload === 'object';
       const ok =
-        isObject && typeof (payload as Ok).ok === 'boolean' ? ((payload as Ok).ok as boolean) : null;
+        isObject && typeof (payload as Ok).ok === 'boolean'
+          ? ((payload as Ok).ok as boolean)
+          : null;
       // The whole result is kept, not just `ok`: a chip's detail line is written from it
       // — `ask_learner` records the learner's own answer there, and a chip that dropped it
       // would leave the conversation with no record of what they chose.
@@ -250,7 +252,11 @@ function toolsOf(parts: EventPart[], outcomes: Map<string, ToolOutcome>): Transc
       callId,
       name,
       ok: outcome?.ok ?? null,
-      detail: describeTool(name, (call?.args ?? {}) as Record<string, unknown>, outcome?.result),
+      detail: describeTool(
+        name,
+        (call?.args ?? {}) as Record<string, unknown>,
+        outcome?.result,
+      ),
     });
   }
   return tools;
@@ -318,8 +324,7 @@ export interface PendingConfirmation {
 
 function questionOf(args: Record<string, unknown>): ConfirmationQuestion | null {
   const confirmation = (args.toolConfirmation ?? args.tool_confirmation) as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
   const payload = confirmation?.payload as Record<string, unknown> | undefined;
   if (!payload || payload.kind !== QUESTION_PAYLOAD_KIND) return null;
 

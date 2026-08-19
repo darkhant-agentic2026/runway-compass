@@ -143,13 +143,9 @@ def render_items(task: Task, *, indent: str = "") -> str:
     for item in task.items:
         mark = "x" if item.completed else " "
         budget = f", {format_minutes(item.minutes)}" if item.minutes else ""
-        lines.append(
-            f"{indent}  [{mark}] {item.short_description} (id={item.item_id}{budget})"
-        )
+        lines.append(f"{indent}  [{mark}] {item.short_description} (id={item.item_id}{budget})")
         if item.guided:
-            lines.append(
-                f"{indent}      You walk the learner through this one. Your notes:"
-            )
+            lines.append(f"{indent}      You walk the learner through this one. Your notes:")
         else:
             lines.append(
                 f"{indent}      The learner does this on their own, away from this "

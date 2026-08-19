@@ -135,10 +135,7 @@ export function Transcript({
           */}
           {message.text ? (
             <div
-              className={cn(
-                'flex',
-                message.role === 'user' ? 'justify-end' : 'justify-start',
-              )}
+              className={cn('flex', message.role === 'user' ? 'justify-end' : 'justify-start')}
             >
               <CopyMessage text={message.text} />
             </div>

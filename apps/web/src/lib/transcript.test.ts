@@ -75,9 +75,9 @@ describe('parity with events as the server stores them', () => {
       // `scripts/gen_event_vectors.py`, which is Python and cannot know what
       // `describeTool` would render. `detail` is a client-side derivation and is asserted
       // where it is written, in `tool-labels.test.ts`.
-      expect(
-        message!.tools.map(({ callId, name, ok }) => ({ callId, name, ok })),
-      ).toEqual(expected.tools ?? []);
+      expect(message!.tools.map(({ callId, name, ok }) => ({ callId, name, ok }))).toEqual(
+        expected.tools ?? [],
+      );
     });
   }
 });

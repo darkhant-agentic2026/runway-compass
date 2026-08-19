@@ -413,7 +413,7 @@ async def test_the_first_subtask_inherits_the_parents_checklist(
 
 
 async def test_a_second_subtask_inherits_nothing(client: httpx.AsyncClient) -> None:
-    """"Parent has items" implies "parent has no children", because the first child took
+    """ "Parent has items" implies "parent has no children", because the first child took
     them. The second must not take the *second* child's."""
     task_id, _ = await _task_with_items(client, "Read §3")
     project_id = (await client.get(f"/api/tasks/{task_id}")).json()["task"]["projectId"]

@@ -469,11 +469,12 @@ async def test_an_unavailable_youtube_is_logged_rather_than_only_answered(
         """The two fields `agent_context` reads. A stand-in rather than a mock, because a
         real `ToolContext` needs an invocation and this tool touches neither."""
 
-        user_id = alice.uid
-        state = {
-            PROJECT_ID_KEY: fixture["project"]["id"],
-            TASK_ID_KEY: fixture["task"]["id"],
-        }
+        def __init__(self) -> None:
+            self.user_id = alice.uid
+            self.state: dict[str, object] = {
+                PROJECT_ID_KEY: fixture["project"]["id"],
+                TASK_ID_KEY: fixture["task"]["id"],
+            }
 
     with caplog.at_level("WARNING", logger="coach.agents.research_tools"):
         result = await container.research_tools.youtube_find_by_duration(
@@ -482,9 +483,9 @@ async def test_an_unavailable_youtube_is_logged_rather_than_only_answered(
 
     assert result["ok"] is False
     assert result["error"]["code"] == "youtube_unavailable"
-    assert any(
-        "youtube is unavailable" in record.message for record in caplog.records
-    ), [r.message for r in caplog.records]
+    assert any("youtube is unavailable" in record.message for record in caplog.records), [
+        r.message for r in caplog.records
+    ]
 
 
 async def test_a_report_can_be_posted_with_no_videos_available(

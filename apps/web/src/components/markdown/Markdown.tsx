@@ -170,7 +170,9 @@ export function Markdown({
   return (
     <div className={cn('break-words', className)} data-testid="markdown">
       <ReactMarkdown
-        remarkPlugins={softBreaks ? [remarkGfm, remarkMath, remarkBreaks] : [remarkGfm, remarkMath]}
+        remarkPlugins={
+          softBreaks ? [remarkGfm, remarkMath, remarkBreaks] : [remarkGfm, remarkMath]
+        }
         rehypePlugins={[rehypeKatex]}
         components={components}
       >

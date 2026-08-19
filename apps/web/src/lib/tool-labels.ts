@@ -83,11 +83,14 @@ function minutes(value: unknown): string {
 }
 
 function list(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === 'string')
+    : [];
 }
 
 const DETAILS: Record<string, Summariser> = {
-  add_task: (args) => text(args.title) + minutes(args.estimated_minutes ?? args.estimatedMinutes),
+  add_task: (args) =>
+    text(args.title) + minutes(args.estimated_minutes ?? args.estimatedMinutes),
   add_subtask: (args, result) => {
     const inherited = result.inheritedItems;
     const moved =

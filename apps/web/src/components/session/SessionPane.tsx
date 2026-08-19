@@ -41,8 +41,8 @@ import { useEffect, useRef, useState, type DragEvent } from 'react';
 
 import { Composer } from '@/components/session/Composer';
 import { ConfirmationPrompt } from '@/components/session/ConfirmationPrompt';
-import { QuestionPrompt } from '@/components/session/QuestionPrompt';
 import { ConnectionBanner } from '@/components/session/ConnectionBanner';
+import { QuestionPrompt } from '@/components/session/QuestionPrompt';
 import { Transcript } from '@/components/session/Transcript';
 import { useCancelTurn, useSessionEvents, useStartTurn } from '@/features/queries';
 import { useAttachmentUploads } from '@/features/use-uploads';
@@ -184,7 +184,9 @@ export function SessionPane({
                 // Declining is `confirmed: false`, which is what ADK's own model means by
                 // it, and `ask_learner` reads as "they answered none of these".
                 confirmed: answer !== null,
-                ...(answer ? { payload: { selected: answer.selected, note: answer.note } } : {}),
+                ...(answer
+                  ? { payload: { selected: answer.selected, note: answer.note } }
+                  : {}),
               },
             })
           }

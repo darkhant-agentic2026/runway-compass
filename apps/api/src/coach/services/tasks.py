@@ -744,9 +744,7 @@ class TaskService:
             by_id = {item.item_id: item for item in origin.items}
             missing = [item_id for item_id in item_ids if item_id not in by_id]
             if missing:
-                raise NotFound(
-                    f"{missing[0]!r} is not a step on {origin.title!r}."
-                )
+                raise NotFound(f"{missing[0]!r} is not a step on {origin.title!r}.")
 
             moving = [by_id[item_id] for item_id in item_ids]
             remaining = [item for item in origin.items if item.item_id not in set(item_ids)]

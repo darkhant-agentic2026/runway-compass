@@ -763,11 +763,7 @@ class DomainTools:
             # Moving the last *outstanding* step off a task finishes it — the work has not
             # gone anywhere, it is on the other task now, so that is a true statement rather
             # than a completion nobody asked for. Reported so the coach says it out loud.
-            **(
-                {"sourceCompleted": True}
-                if source.state is TaskState.COMPLETED
-                else {}
-            ),
+            **({"sourceCompleted": True} if source.state is TaskState.COMPLETED else {}),
         }
 
     async def delete_task_item(
@@ -1140,9 +1136,7 @@ class DomainTools:
             # rather than at the next process restart. It reads `temp:` state rather than
             # the project document because this runs while the tool call is being assembled,
             # and a Firestore read on that path would be one per gated call.
-            FunctionTool(
-                self.complete_task_item, require_confirmation=_confirm_completions
-            ),
+            FunctionTool(self.complete_task_item, require_confirmation=_confirm_completions),
             FunctionTool(self.update_project_prefs),
         ]
 

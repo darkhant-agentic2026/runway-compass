@@ -82,6 +82,7 @@ class Confirmation:
     confirmed: bool
     payload: dict[str, Any] | None = None
 
+
 #: ADK's own name for the synthetic call a `require_confirmation` tool produces
 #: (`google.adk.flows.llm_flows.functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME`).
 #: Restated rather than imported, deliberately: it is a private module, and the constant

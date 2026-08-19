@@ -338,11 +338,8 @@ export function useTaskItemMutation(taskId: string, projectId: string) {
 export function useCreateSubtask(parentTaskId: string, projectId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (body: {
-      title: string;
-      estimatedMinutes: number;
-      parentTaskId: string;
-    }) => api.createTask(projectId, body, newIdempotencyKey()),
+    mutationFn: (body: { title: string; estimatedMinutes: number; parentTaskId: string }) =>
+      api.createTask(projectId, body, newIdempotencyKey()),
     onSettled() {
       void queryClient.invalidateQueries({
         queryKey: queryKeys.task(parentTaskId),

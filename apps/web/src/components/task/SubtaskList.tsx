@@ -25,9 +25,9 @@
 import { useState } from 'react';
 
 import { ProgressRing } from '@/components/board/ProgressRing';
-import { Checklist } from '@/components/task/Checklist';
 import { STATE_LABELS, transitionsFor } from '@/components/board/task-state';
 import { TaskRowActions } from '@/components/board/TaskRowActions';
+import { Checklist } from '@/components/task/Checklist';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -114,9 +114,7 @@ export function SubtaskList({
             onSetState={(state, postponedUntil) =>
               onSetState(subtask.id, state, postponedUntil)
             }
-            onToggleItem={(itemId, completed) =>
-              onToggleItem(subtask.id, itemId, completed)
-            }
+            onToggleItem={(itemId, completed) => onToggleItem(subtask.id, itemId, completed)}
             itemsDisabled={itemsDisabled ?? false}
           />
         ))}

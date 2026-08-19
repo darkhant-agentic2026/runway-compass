@@ -24,6 +24,20 @@ import type { Page } from '@playwright/test';
 
 import { expect, test } from './fixtures';
 
+/*
+  Raised from Playwright's 30 s default because several assertions here wait 20 s on their
+  own, and an assertion given two thirds of the test budget only ever gets whatever the
+  setup left it. Those waits are deliberate: reopening the workspace has to refetch the
+  transcript and then fetch each attachment's bytes with the ID token before an `<img>` can
+  exist, which is the slowest chain in the suite and the one most sensitive to the API
+  serving four browser projects at once.
+
+  This spec used ~4 s of its 30 s in isolation and failed once in a full run, so the squeeze
+  is plausible rather than proven — but a per-assertion timeout that large inside the
+  default budget is wrong either way, and it is the same shape `research.spec.ts` documents.
+*/
+test.describe.configure({ timeout: 90_000 });
+
 /** A one-pixel PNG, so the bytes are a real image the server will accept. */
 const PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==';

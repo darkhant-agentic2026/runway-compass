@@ -229,9 +229,7 @@ async def test_a_subtask_nests_under_its_parent(client: httpx.AsyncClient) -> No
     project_id = await _project(client)
     parent = await _add(client, project_id, "big", estimatedMinutes=240)
 
-    first = await _add(
-        client, project_id, "a", parentTaskId=parent["id"], estimatedMinutes=60
-    )
+    first = await _add(client, project_id, "a", parentTaskId=parent["id"], estimatedMinutes=60)
     assert first["parentTaskId"] == parent["id"]
     await _add(client, project_id, "b", parentTaskId=parent["id"], estimatedMinutes=60)
 
@@ -311,9 +309,7 @@ async def test_a_mutation_returns_the_parent_and_project_for_optimistic_reconcil
     """docs/04-api-contract.md: enough to reconcile without a refetch."""
     project_id = await _project(client)
     parent = await _add(client, project_id, "parent")
-    child = await _add(
-        client, project_id, "a", parentTaskId=parent["id"], estimatedMinutes=30
-    )
+    child = await _add(client, project_id, "a", parentTaskId=parent["id"], estimatedMinutes=30)
     await _add(client, project_id, "b", parentTaskId=parent["id"], estimatedMinutes=60)
 
     response = await client.patch(f"/api/tasks/{child['id']}", json={"estimatedMinutes": 120})
