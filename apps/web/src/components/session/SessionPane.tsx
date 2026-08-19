@@ -41,6 +41,7 @@ import { useEffect, useRef, useState, type DragEvent } from 'react';
 
 import { Composer } from '@/components/session/Composer';
 import { ConfirmationPrompt } from '@/components/session/ConfirmationPrompt';
+import { QuestionPrompt } from '@/components/session/QuestionPrompt';
 import { ConnectionBanner } from '@/components/session/ConnectionBanner';
 import { Transcript } from '@/components/session/Transcript';
 import { useCancelTurn, useSessionEvents, useStartTurn } from '@/features/queries';
@@ -165,7 +166,30 @@ export function SessionPane({
         sessionId={sessionId}
       />
 
-      {pending ? (
+      {/*
+        One pending confirmation, two shapes. `ask_learner` asks a *question* through the
+        same handshake that gates `discard_task`, so what distinguishes them is the
+        payload, not the mechanism — and a payload that fails to parse falls back to the
+        buttons rather than rendering nothing.
+      */}
+      {pending?.question ? (
+        <QuestionPrompt
+          question={pending.question}
+          disabled={startTurn.isPending}
+          onAnswer={(answer) =>
+            startTurn.mutate({
+              text: '',
+              confirmation: {
+                functionCallId: pending.functionCallId,
+                // Declining is `confirmed: false`, which is what ADK's own model means by
+                // it, and `ask_learner` reads as "they answered none of these".
+                confirmed: answer !== null,
+                ...(answer ? { payload: { selected: answer.selected, note: answer.note } } : {}),
+              },
+            })
+          }
+        />
+      ) : pending ? (
         <ConfirmationPrompt
           pending={pending}
           disabled={startTurn.isPending}

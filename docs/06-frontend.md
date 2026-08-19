@@ -199,6 +199,22 @@ Right — **session chat**:
 - Streamed markdown, rendered ([below](#markdown-in-the-transcript)); tool activity as inline status chips
   ("Searching the web…", "Checking video lengths…") built from `tool_call`/`tool_result`.
 
+  **A chip carries a detail, not only a label.** "Adding a task" says an action happened;
+  "Adding a task · Read the asyncio guide (45 min)" says which, and is the difference
+  between a record the learner can audit and one that merely proves the coach was busy.
+  The detail is written from the call's arguments first and its result second
+  (`lib/tool-labels.ts`), because a call still running or refused has no result — and for
+  `ask_learner` it is written from the result, since the interesting half of that call is
+  **the learner's own answer**, which appears nowhere else in the conversation.
+
+  **A question from the coach renders as controls.** `ask_learner` posts single- or
+  multi-select options with an optional note through the same confirmation handshake that
+  gates `discard_task` ([03-agent-design.md](03-agent-design.md#asking-the-learner-something)),
+  and `QuestionPrompt` renders them beside the transcript rather than in a modal — the
+  answer becomes part of the conversation, and a dialog that covers the conversation hides
+  the context the question is about. "None of these" appears only when the tool said it was
+  a real answer.
+
   **The chips are part of the transcript, not only of the stream.** A turn's live buffer
   is cleared on `turn_complete`, so chips rendered only from `useStreamStore` exist for
   the few seconds a turn is generating and then vanish — leaving a conversation in which

@@ -535,7 +535,11 @@ export interface StartTurnBody {
   /** `filename` is used only by the optimistic echo; it is not sent to the server. */
   attachments?: { uploadId: string; mimeType: string; filename?: string }[];
   /** The answer to a tool that asked first. A turn may carry this and nothing else. */
-  confirmation?: { functionCallId: string; confirmed: boolean };
+  confirmation?: {
+    functionCallId: string;
+    confirmed: boolean;
+    payload?: Record<string, unknown>;
+  };
 }
 
 /**

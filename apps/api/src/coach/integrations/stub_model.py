@@ -87,6 +87,14 @@ DEFAULT_BUDGET_MINUTES = 45
 #: The one prompt that makes the stub answer in markdown rather than in prose.
 _FORMATTING_PATTERN = re.compile(r"\bshow me the formatting\b", re.IGNORECASE)
 
+#: The prompt that makes the stub ask a question, so `ask_learner`'s whole handshake — the
+#: dialog, the structured answer, and the chip that records it — is reachable end to end.
+_ASK_PATTERN = re.compile(r"\bask me something\b", re.IGNORECASE)
+
+#: What it asks. Fixed, so an e2e can click a named option.
+STUB_QUESTION = "Which should we do first?"
+STUB_OPTIONS = ["The parser", "The lexer"]
+
 #: And the one that makes it fail, so the `turn_error` path is reachable from a test.
 #:
 #: It exists because that path had a defect no unit test could see: a turn ending in
@@ -365,6 +373,18 @@ def _plan_tool_call(llm_request: Any) -> types.FunctionCall | None:
 
     text = _last_user_text(llm_request)
 
+    if _ASK_PATTERN.search(text) and "ask_learner" in tools:
+        return types.FunctionCall(
+            name="ask_learner",
+            args={
+                "question": STUB_QUESTION,
+                "options": list(STUB_OPTIONS),
+                "allow_multiple": False,
+                "allow_none": True,
+                "note_prompt": "Anything else I should know?",
+            },
+        )
+
     if _DISCARD_PATTERN.search(text):
         target = first_task_id(_instruction(llm_request))
         if target is not None:
@@ -476,6 +496,8 @@ __all__ = [
     "DELAY_ENV_VAR",
     "DONE_REPLY",
     "STUB_FAILURE_MESSAGE",
+    "STUB_OPTIONS",
+    "STUB_QUESTION",
     "StubModel",
     "budget_minutes",
     "first_task_id",

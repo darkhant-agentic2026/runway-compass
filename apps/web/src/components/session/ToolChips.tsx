@@ -26,6 +26,8 @@ export interface ChipView {
   name: string;
   done: boolean;
   ok: boolean | null;
+  /** A one-line summary of what the call did; `''` when the tool has no summariser. */
+  detail: string;
 }
 
 export function ToolChips({ tools }: { tools: ChipView[] }) {
@@ -52,6 +54,22 @@ export function ToolChips({ tools }: { tools: ChipView[] }) {
             {labelForTool(chip.name)}
             {chip.done ? '' : '…'}
           </span>
+          {/*
+            The detail, when there is one. Separated by a middot and dimmed rather than put
+            on its own line: a chip is a status, and a two-line chip in a stream of them
+            reads as a list of paragraphs. `title` carries the untruncated text, because
+            `max-w` will clip a long one and the whole value of the detail is being able to
+            read it.
+          */}
+          {chip.detail ? (
+            <span
+              className="max-w-[22rem] truncate text-muted-foreground/80"
+              title={chip.detail}
+              data-testid="chip-detail"
+            >
+              · {chip.detail}
+            </span>
+          ) : null}
         </li>
       ))}
     </ul>

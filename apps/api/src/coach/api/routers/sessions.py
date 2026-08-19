@@ -28,6 +28,7 @@ from coach.api.schemas import (
     TurnStatusResponse,
 )
 from coach.services.models import SessionSummary
+from coach.services.turns import Confirmation
 
 router = APIRouter(prefix="/api", tags=["sessions"])
 
@@ -133,7 +134,11 @@ async def start_turn(
         text=body.text,
         attachments=[attachment.model_dump(by_alias=True) for attachment in body.attachments],
         confirmation=(
-            (body.confirmation.function_call_id, body.confirmation.confirmed)
+            Confirmation(
+                function_call_id=body.confirmation.function_call_id,
+                confirmed=body.confirmation.confirmed,
+                payload=body.confirmation.payload,
+            )
             if body.confirmation is not None
             else None
         ),

@@ -373,3 +373,97 @@ async def test_an_item_needs_a_short_description(container, alice, client) -> No
     ]
     with pytest.raises(ValidationProblem):
         await container.tasks.add_items(alice, task["id"], [{"details": "no title"}])
+
+
+# --- a subtask inherits the checklist ------------------------------------------------------
+
+
+async def test_the_first_subtask_inherits_the_parents_checklist(
+    client: httpx.AsyncClient,
+) -> None:
+    """docs/02-data-model.md#task-items: a task's plan is its items or its subtasks.
+
+    So the moment a leaf gains a child it has to give the items away, and the child is the
+    only place they can go — dropping them would take a checklist the learner may have
+    half-finished off the screen, on a write they asked for for an unrelated reason.
+    """
+    task_id, items = await _task_with_items(client, "Read §3", "Do the exercise")
+    await client.patch(
+        f"/api/tasks/{task_id}/items/{items[0]['itemId']}", json={"completed": True}
+    )
+
+    project_id = (await client.get(f"/api/tasks/{task_id}")).json()["task"]["projectId"]
+    child = (
+        await client.post(
+            f"/api/projects/{project_id}/tasks",
+            json={"title": "The first half", "parentTaskId": task_id},
+        )
+    ).json()["task"]
+
+    assert [i["shortDescription"] for i in child["items"]] == ["Read §3", "Do the exercise"]
+    # Including what the learner had already done. Same ids, so nothing that referenced an
+    # item — a report's feedback, a chip in the transcript — is left pointing at nothing.
+    assert [i["itemId"] for i in child["items"]] == [i["itemId"] for i in items]
+    assert child["items"][0]["completed"] is True
+
+    parent = (await client.get(f"/api/tasks/{task_id}")).json()["task"]
+    assert parent["items"] == []
+    assert parent["rollup"]["subtaskCount"] == 1
+
+
+async def test_a_second_subtask_inherits_nothing(client: httpx.AsyncClient) -> None:
+    """"Parent has items" implies "parent has no children", because the first child took
+    them. The second must not take the *second* child's."""
+    task_id, _ = await _task_with_items(client, "Read §3")
+    project_id = (await client.get(f"/api/tasks/{task_id}")).json()["task"]["projectId"]
+
+    first = (
+        await client.post(
+            f"/api/projects/{project_id}/tasks",
+            json={"title": "First", "parentTaskId": task_id},
+        )
+    ).json()["task"]
+    second = (
+        await client.post(
+            f"/api/projects/{project_id}/tasks",
+            json={"title": "Second", "parentTaskId": task_id},
+        )
+    ).json()["task"]
+
+    assert len(first["items"]) == 1
+    assert second["items"] == []
+
+
+async def test_a_subtask_that_inherits_a_finished_checklist_completes_itself(
+    client: httpx.AsyncClient,
+) -> None:
+    """Invariant 6 applies to the child on the write that creates it.
+
+    Worth pinning because the derivation runs over the *post-change* board: the child is
+    created with items already ticked, so it must arrive `completed` in the create's own
+    response rather than waiting for something else to touch it. That response used to be
+    the pre-derivation object, which is how this test found a real bug.
+
+    The parent is `completed` throughout — a one-item checklist, ticked, completes it
+    before the child exists — and stays that way. Gaining a subtask is not a reason to
+    reopen work the learner already finished, and a parent never auto-completes *or*
+    auto-reopens: its plan is its subtasks now, and invariant 4 makes that the learner's
+    call.
+    """
+    task_id, items = await _task_with_items(client, "Read §3")
+    await client.patch(
+        f"/api/tasks/{task_id}/items/{items[0]['itemId']}", json={"completed": True}
+    )
+    project_id = (await client.get(f"/api/tasks/{task_id}")).json()["task"]["projectId"]
+
+    child = (
+        await client.post(
+            f"/api/projects/{project_id}/tasks",
+            json={"title": "Already done", "parentTaskId": task_id},
+        )
+    ).json()["task"]
+
+    assert child["state"] == "completed"
+    parent = (await client.get(f"/api/tasks/{task_id}")).json()["task"]
+    assert parent["state"] == "completed"
+    assert parent["items"] == []

@@ -28,6 +28,15 @@ export interface ToolChip {
   /** `false` until the matching `tool_result` arrives; drives the spinner on the chip. */
   done: boolean;
   ok: boolean;
+  /**
+   * The call's arguments, from the `tool_call` frame's `argsPreview`.
+   *
+   * Kept so a live chip can say the same thing a stored one does. The *result* is not
+   * here — `tool_result` carries only `ok` — so a live chip's detail is written from
+   * arguments alone, and the fuller version appears when the turn settles and the
+   * transcript takes over. That asymmetry is why `describeTool` reads arguments first.
+   */
+  args: Record<string, unknown>;
 }
 
 export interface StreamState {
@@ -98,7 +107,12 @@ interface StreamStore {
   /** Register a turn started by `POST /turns`, before any frame has arrived. */
   begin: (turnId: string, sessionId: string) => void;
   appendDelta: (turnId: string, seq: number, text: string) => void;
-  noteToolCall: (turnId: string, seq: number, name: string) => void;
+  noteToolCall: (
+    turnId: string,
+    seq: number,
+    name: string,
+    args?: Record<string, unknown>,
+  ) => void;
   noteToolResult: (turnId: string, seq: number, name: string, ok: boolean) => void;
   complete: (turnId: string, seq: number) => void;
   fail: (
@@ -156,7 +170,7 @@ export const useStreamStore = create<StreamStore>((set, get) => ({
     });
   },
 
-  noteToolCall(turnId, seq, name) {
+  noteToolCall(turnId, seq, name, args) {
     set((state) => {
       const current = state.turns[turnId] ?? blank(turnId);
       if (seq <= current.lastSeq) return state;
@@ -166,7 +180,7 @@ export const useStreamStore = create<StreamStore>((set, get) => ({
           [turnId]: {
             ...current,
             lastSeq: seq,
-            tools: [...current.tools, { seq, name, done: false, ok: true }],
+            tools: [...current.tools, { seq, name, done: false, ok: true, args: args ?? {} }],
           },
         },
       };

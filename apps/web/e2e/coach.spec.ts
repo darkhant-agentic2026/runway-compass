@@ -196,3 +196,43 @@ test('discarding a task waits for the learner to say so', async ({ signedIn: pag
   // Hidden by the default `Hide discarded` filter, which is the visible consequence.
   await expect(cards(page)).toHaveCount(0);
 });
+
+test('the coach asks a question with controls, and the answer is in the record', async ({
+  signedIn: page,
+}) => {
+  /*
+    `ask_learner` end to end. The mechanism is ADK's confirmation handshake carrying a
+    payload rather than a yes/no, so what is being checked is that a structured answer
+    survives the whole round trip: dialog → `POST /turns` → tool → stored transcript.
+
+    The chip is the second half and the reason this is a flow rather than a unit test.
+    docs/06-frontend.md makes the transcript the record of what the coach did; a chip that
+    said only "Asking you something" would leave the learner's own answer nowhere at all.
+  */
+  await createProject(page, 'Build a compiler');
+
+  await say(page, 'ask me something');
+
+  const prompt = page.getByTestId('question-prompt');
+  await expect(prompt).toBeVisible();
+  await expect(prompt).toContainText('Which should we do first?');
+  // Single-select, because that is what the tool asked for.
+  await expect(prompt.getByRole('radio')).toHaveCount(2);
+  await expect(prompt.getByRole('checkbox')).toHaveCount(0);
+
+  await prompt.getByLabel('The parser').check();
+  await prompt.getByLabel('Anything else I should know?').fill('I have done lexing before');
+  await prompt.getByRole('button', { name: 'Send' }).click();
+
+  // The dialog goes once answered — the pending state is derived from stored events, so
+  // this also proves the answer was actually persisted rather than only sent.
+  await expect(prompt).toBeHidden();
+
+  const chip = page.getByTestId('tool-chips').last();
+  await expect(chip).toContainText('The parser');
+  await expect(chip).toContainText('I have done lexing before');
+
+  // And it survives a reload, because it is in the transcript rather than in a buffer.
+  await page.reload();
+  await expect(page.getByTestId('tool-chips').last()).toContainText('The parser');
+});

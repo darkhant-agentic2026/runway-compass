@@ -50,6 +50,17 @@ from coach.ws.hub import BoardUpdateHub
 
 logger = logging.getLogger(__name__)
 
+#: How many options a question may offer. Below two it is not a choice; above six it is a
+#: list to read rather than a control to use, and prose is the better instrument.
+MIN_CHOICES = 2
+MAX_CHOICES = 6
+
+#: Marks a confirmation payload as a question rather than a yes/no gate. The client
+#: switches on it (`apps/web/src/lib/transcript.ts`), which cannot import this module —
+#: the same restated-constant arrangement as `adk_request_confirmation` itself, and it is
+#: on the bump checklist for the same reason.
+QUESTION_PAYLOAD_KIND = "coach_question"
+
 
 def task_view(task: Task) -> dict[str, Any]:
     """What the model sees of a task.
@@ -259,6 +270,82 @@ class DomainTools:
             "ok": True,
             "task": task_view(parent),
             "subtasks": [task_view(child) for child in parent.subtasks],
+        }
+
+    async def add_subtask(
+        self,
+        task_id: str,
+        title: str,
+        description: str,
+        estimated_minutes: int,
+        needs_research: bool,
+        tool_context: ToolContext,
+    ) -> dict[str, Any]:
+        """Add one subtask under an existing task, making it a composite task.
+
+        Use this when a single piece of work turns out to have a distinct part worth
+        tracking on its own — not to restructure a task the learner is happy with. If you
+        already know the whole breakdown, `split_task` does it in one call.
+
+        **The first subtask inherits the parent's checklist.** A task's plan is either its
+        items or its subtasks, never both, so the steps that were on the parent move onto
+        this subtask along with anything the learner had already ticked off. Say so when
+        you do it, and put the subtask where those steps belong.
+
+        Args:
+            task_id: The task to add a subtask to. It must be a top-level task.
+            title: A short, concrete description of what the learner will do.
+            description: What "done" looks like, in a sentence or two.
+            estimated_minutes: How long this subtask should take.
+            needs_research: True if this subtask will need its own prepared material.
+        """
+        return await self._guarded(
+            tool_context,
+            self._add_subtask,
+            task_id,
+            title,
+            description,
+            estimated_minutes,
+            needs_research,
+            claim_slot=tool_context,
+        )
+
+    async def _add_subtask(
+        self,
+        context: AgentContext,
+        task_id: str,
+        title: str,
+        description: str,
+        estimated_minutes: int,
+        needs_research: bool,
+    ) -> dict[str, Any]:
+        if estimated_minutes > context.default_task_minutes:
+            # The stricter of the two bounds, matching `split_task`'s: a subtask exists to
+            # make a piece of work fit, and one that does not fit has not done that.
+            raise ValidationProblem(
+                f"{estimated_minutes} minutes is over the "
+                f"{context.default_task_minutes}-minute budget a subtask has to fit. "
+                "Use more, smaller subtasks."
+            )
+        child = await self._tasks.create_task(
+            context.principal,
+            context.project_id,
+            title=title,
+            description=description,
+            estimated_minutes=estimated_minutes,
+            parent_task_id=task_id,
+            needs_research=needs_research,
+            origin=Origin.AGENT,
+        )
+        await self._announce(context, [task_id, child.id])
+        return {
+            "ok": True,
+            "task": task_view(child),
+            "parentTaskId": task_id,
+            # Spelled out because it is a consequence the model has to tell the learner
+            # about, and one it cannot see from the child's view alone.
+            "inheritedItems": len(child.items),
+            "items": items_view(child),
         }
 
     async def update_task(
@@ -495,6 +582,125 @@ class DomainTools:
         await self._announce(context, [task.id])
         return {"ok": True, "task": task_view(task), "items": items_view(task)}
 
+    async def update_task_item(
+        self,
+        item_id: str,
+        tool_context: ToolContext,
+        short_description: str | None = None,
+        details: str | None = None,
+        guided: bool | None = None,
+    ) -> dict[str, Any]:
+        """Reword a step, change its notes, or change who does it. Omitted fields are left.
+
+        Args:
+            item_id: The step to change, from the checklist in your context.
+            short_description: A new one-line description of what the learner will do.
+            details: New notes. For a step you guide, your material for teaching it; for
+                one they do alone, the instruction itself.
+            guided: True if you will now work through this with them, false if they should
+                go and do it on their own.
+        """
+        return await self._guarded(
+            tool_context,
+            self._update_task_item,
+            item_id,
+            short_description,
+            details,
+            guided,
+        )
+
+    async def _update_task_item(
+        self,
+        context: AgentContext,
+        item_id: str,
+        short_description: str | None,
+        details: str | None,
+        guided: bool | None,
+    ) -> dict[str, Any]:
+        task = await self._tasks.patch_item(
+            context.principal,
+            _require_task(context),
+            item_id,
+            short_description=short_description,
+            details=details,
+            guided=guided,
+        )
+        await self._announce(context, [task.id])
+        return {"ok": True, "items": items_view(task)}
+
+    async def reorder_task_item(
+        self,
+        item_id: str,
+        tool_context: ToolContext,
+        after_item_id: str | None = None,
+        before_item_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Move a step earlier or later in the checklist.
+
+        The order is the order the work happens in — reading before the exercise that uses
+        it, setup before the thing being set up — so move a step when the conversation
+        shows the sequence was wrong. Give exactly one of the two anchors.
+
+        Args:
+            item_id: The step to move.
+            after_item_id: Put it immediately after this step.
+            before_item_id: Put it immediately before this step.
+        """
+        return await self._guarded(
+            tool_context, self._reorder_task_item, item_id, after_item_id, before_item_id
+        )
+
+    async def _reorder_task_item(
+        self,
+        context: AgentContext,
+        item_id: str,
+        after_item_id: str | None,
+        before_item_id: str | None,
+    ) -> dict[str, Any]:
+        task = await self._tasks.reorder_item(
+            context.principal,
+            _require_task(context),
+            item_id,
+            after_item_id=after_item_id or None,
+            before_item_id=before_item_id or None,
+        )
+        await self._announce(context, [task.id])
+        return {"ok": True, "items": items_view(task)}
+
+    async def delete_task_item(
+        self, item_id: str, reason: str, tool_context: ToolContext
+    ) -> dict[str, Any]:
+        """Remove a step from the checklist. **The learner must confirm this.**
+
+        Only for a step that should not have been there — one that turned out to be
+        irrelevant, or that duplicates another. A step the learner has decided not to
+        bother with is theirs to leave unticked, not yours to delete.
+
+        Args:
+            item_id: The step to remove.
+            reason: Why this step should not be on the list, in one sentence.
+        """
+        return await self._guarded(
+            tool_context, self._delete_task_item, item_id, reason
+        )
+
+    async def _delete_task_item(
+        self, context: AgentContext, item_id: str, reason: str
+    ) -> dict[str, Any]:
+        task = await self._tasks.delete_item(
+            context.principal, _require_task(context), item_id
+        )
+        logger.info(
+            "agent deleted a checklist item",
+            extra={"task_id": task.id, "item_id": item_id, "reason": reason},
+        )
+        await self._announce(context, [task.id])
+        return {
+            "ok": True,
+            "items": items_view(task),
+            "taskCompleted": task.state is TaskState.COMPLETED,
+        }
+
     async def complete_task_item(
         self, item_id: str, note: str, tool_context: ToolContext
     ) -> dict[str, Any]:
@@ -529,6 +735,109 @@ class DomainTools:
             # happened will congratulate the learner on one item and miss the task.
             "taskCompleted": task.state is TaskState.COMPLETED,
         }
+
+    async def ask_learner(
+        self,
+        question: str,
+        options: list[str],
+        allow_multiple: bool,
+        allow_none: bool,
+        tool_context: ToolContext,
+        note_prompt: str = "",
+    ) -> dict[str, Any]:
+        """Ask the learner to pick from a short list, and wait for their answer.
+
+        Use this instead of asking in prose whenever the answer is a choice you can
+        enumerate — which of these should come first, which of these do you already know,
+        do you want the video or the article. It puts real controls in front of them
+        rather than asking them to type a number back, and their answer is recorded in the
+        conversation where you can both see it later.
+
+        Do **not** use it for open questions, for anything with more than about six
+        options, or to ask permission for something you have a tool for. Asking whether to
+        discard a task, delete a step, or mark one done is what those tools' own
+        confirmations are for.
+
+        This tool waits. You will get the answer as its result; do not guess at it, and do
+        not ask the same question twice.
+
+        Args:
+            question: What you are asking, in one sentence, addressed to the learner.
+            options: The choices, in the order they should be shown. Two to six of them,
+                each a short phrase rather than a sentence.
+            allow_multiple: True if they may pick several, false if exactly one.
+            allow_none: True if "none of these" is a real answer to your question.
+            note_prompt: If they should be able to add a comment, the label for that box —
+                for example "Anything else I should know?". Leave empty for no comment box.
+        """
+        return await self._guarded(
+            tool_context,
+            self._ask_learner,
+            question,
+            options,
+            allow_multiple,
+            allow_none,
+            note_prompt,
+            tool_context,
+        )
+
+    async def _ask_learner(
+        self,
+        _context: AgentContext,
+        question: str,
+        options: list[str],
+        allow_multiple: bool,
+        allow_none: bool,
+        note_prompt: str,
+        tool_context: ToolContext,
+    ) -> dict[str, Any]:
+        """Post the question, or read the answer.
+
+        **Two invocations, one tool.** ADK's confirmation handshake is what makes a tool
+        able to wait for a human (`google/adk/flows/llm_flows/request_confirmation.py`):
+        the first call asks, the invocation ends, and the *same* call is re-executed once
+        the learner answers, with `tool_context.tool_confirmation` populated. So the body
+        below is "have I been answered yet?" rather than two tools with a state machine
+        between them.
+
+        `request_confirmation` is called **here rather than through
+        `FunctionTool(require_confirmation=True)`**, and that is the whole reason this
+        works: the static flag posts ADK's own generic hint and no payload, where this
+        needs to carry the question and its options to the client. A dynamically requested
+        confirmation is a first-class case in the processor — it checks
+        `requires_confirmation or requested_in_history`.
+        """
+        answer = getattr(tool_context, "tool_confirmation", None)
+        if answer is not None:
+            return _answer_view(answer, options)
+
+        cleaned = [option.strip() for option in options if option.strip()]
+        if not MIN_CHOICES <= len(cleaned) <= MAX_CHOICES:
+            raise ValidationProblem(
+                f"A question needs between {MIN_CHOICES} and {MAX_CHOICES} options; you "
+                f"gave {len(cleaned)}. Ask in prose if the answer is not a short list."
+            )
+        if len(set(cleaned)) != len(cleaned):
+            raise ValidationProblem("Two of those options are the same. Make them distinct.")
+
+        tool_context.request_confirmation(
+            hint=question.strip(),
+            # The client renders the dialog from this. It rides on the
+            # `adk_request_confirmation` function call's args, which the transcript
+            # already reads for the yes/no prompt.
+            payload={
+                "kind": QUESTION_PAYLOAD_KIND,
+                "question": question.strip(),
+                "options": cleaned,
+                "allowMultiple": bool(allow_multiple),
+                "allowNone": bool(allow_none),
+                "notePrompt": note_prompt.strip(),
+            },
+        )
+        # ADK would otherwise summarise this holding answer into prose and say it out
+        # loud; the dialog is already on screen and the coach has nothing to add yet.
+        tool_context.actions.skip_summarization = True
+        return {"ok": True, "status": "waiting_for_the_learner", "question": question.strip()}
 
     async def update_project_prefs(
         self,
@@ -637,7 +946,20 @@ class DomainTools:
             # `adk_request_confirmation` call and runs the body only after the learner
             # answers, so the gate does not depend on the model respecting it.
             FunctionTool(self.discard_task, require_confirmation=True),
+            FunctionTool(self.add_subtask),
             FunctionTool(self.add_task_items),
+            FunctionTool(self.update_task_item),
+            FunctionTool(self.reorder_task_item),
+            # Gated for two reasons, and the second is the one that is easy to miss:
+            # removing a step is destructive, *and* removing the last outstanding one
+            # completes the task (invariant 6). Left ungated it would be a route around
+            # `complete_task_item`'s confirmation — the same hole `set_task_state` closes
+            # by refusing `completed` and `discarded`.
+            FunctionTool(self.delete_task_item, require_confirmation=True),
+            # Not `require_confirmation=True`: this tool asks for a *choice*, not for
+            # approval, so it posts its own confirmation carrying the question. See
+            # `_ask_learner`.
+            FunctionTool(self.ask_learner),
             # The second gated tool, and the more consequential of the two: completing the
             # last item completes the task (docs/02-data-model.md#task-items), so this is
             # what keeps "completion is the learner's click" true now that a task can
@@ -675,6 +997,31 @@ def _subtask_draft(draft: dict[str, Any], context: AgentContext) -> dict[str, An
         "description": str(draft.get("description") or ""),
         "estimatedMinutes": minutes,
         "needsResearch": bool(draft.get("needsResearch", draft.get("needs_research", True))),
+    }
+
+
+def _answer_view(answer: Any, options: list[str]) -> dict[str, Any]:
+    """The learner's reply, as the model sees it.
+
+    A declined question is a *result*, not a failure: "none of these" is frequently the
+    honest answer and the coach needs to be able to act on it rather than retry.
+
+    The selection is filtered against the options that were offered. The payload comes
+    back through the client, so treating it as authoritative would let a hand-made request
+    put arbitrary text into the model's context — a small surface, and free to close.
+    """
+    payload = getattr(answer, "payload", None) or {}
+    if not getattr(answer, "confirmed", False):
+        return {"ok": True, "answered": False, "selected": [], "note": ""}
+    raw = payload.get("selected") if isinstance(payload, dict) else None
+    offered = set(options)
+    selected = [str(choice) for choice in (raw or []) if str(choice) in offered]
+    note = str(payload.get("note") or "") if isinstance(payload, dict) else ""
+    return {
+        "ok": True,
+        "answered": True,
+        "selected": selected,
+        "note": note[:2000],
     }
 
 

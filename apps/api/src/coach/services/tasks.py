@@ -304,6 +304,7 @@ class TaskService:
         async def txn(transaction: AsyncTransaction) -> Task:
             project, tasks = await self._read_board(transaction, project_id)
 
+            parent: Task | None = None
             if parent_task_id is not None:
                 parent = next((t for t in tasks if t.id == parent_task_id), None)
                 if parent is None:
@@ -315,6 +316,15 @@ class TaskService:
                     )
 
             planned = plan_insert(_sorted_siblings(tasks, parent_task_id), after_task_id)
+            # A composite task cannot hold a checklist (docs/02-data-model.md#task-items),
+            # so the first subtask *inherits* the parent's. Anything else loses work: the
+            # items are the plan for exactly the piece of the task the subtask now
+            # represents, and silently dropping them would take a checklist the learner
+            # may have half-finished off the screen.
+            #
+            # "Parent has items" already implies "parent has no other children", because a
+            # task that gained a child gave its items away on that write.
+            inherited = list(parent.items) if parent is not None else []
             task = Task(
                 id=created_id,
                 project_id=project_id,
@@ -325,10 +335,17 @@ class TaskService:
                 estimated_minutes=estimated_minutes,
                 order=planned.pop(NEW_TASK_SLOT),
                 needs_research=needs_research,
+                items=inherited,
                 origin=origin,
             )
             created = await self._tasks.create(task, transaction=transaction)
             tasks.append(created)
+
+            if inherited and parent is not None:
+                await self._tasks.patch(
+                    project_id, parent.id, {"items": []}, transaction=transaction
+                )
+                _apply(tasks, parent.id, {"items": []})
 
             for sibling_id, order in planned.items():  # only set on the rebalance path
                 await self._tasks.patch(
@@ -337,7 +354,12 @@ class TaskService:
                 _apply(tasks, sibling_id, {"order": order})
 
             await self._write_derived(transaction, project, tasks)
-            return created
+            # The *derived* task, not the one built above. `_write_derived` can rewrite the
+            # new task's state in this same transaction — a child that inherited a finished
+            # checklist arrives `completed`, one that inherited any checklist arrives
+            # `not_started` — and returning the pre-derivation object would answer the
+            # create with a state the database does not have.
+            return next(t for t in tasks if t.id == created.id)
 
         async with self._project_lock(project_id):
             return await self._db.run(txn)

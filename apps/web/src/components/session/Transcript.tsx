@@ -17,6 +17,7 @@ import { useEffect, useRef } from 'react';
 import { Markdown } from '@/components/markdown/Markdown';
 import { AttachmentPreview } from '@/components/session/AttachmentPreview';
 import { ToolChips, type ChipView } from '@/components/session/ToolChips';
+import { describeTool } from '@/lib/tool-labels';
 import type { TranscriptMessage } from '@/lib/transcript';
 import { cn } from '@/lib/utils';
 import type { StreamState, ToolChip } from '@/stores/stream';
@@ -28,6 +29,7 @@ function settledChips(message: TranscriptMessage): ChipView[] {
     name: tool.name,
     done: true,
     ok: tool.ok,
+    detail: tool.detail,
   }));
 }
 
@@ -38,6 +40,9 @@ function liveChips(tools: ToolChip[]): ChipView[] {
     name: chip.name,
     done: chip.done,
     ok: chip.ok,
+    // Arguments only: `tool_result` carries no payload, so a live chip says what the coach
+    // set out to do and the settled one says what came of it.
+    detail: describeTool(chip.name, chip.args),
   }));
 }
 

@@ -26,6 +26,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from google.adk.agents._streaming_mode import StreamingMode
@@ -66,6 +67,20 @@ MAX_TURN_TEXT = 32_000
 #: client chooses: `TurnService.start`'s callers are the turns router (always `coach`) and
 #: `ResearchService` (always `research`).
 AgentChoice = Literal["coach", "research"]
+
+
+@dataclass(frozen=True, slots=True)
+class Confirmation:
+    """The learner's answer to a tool that asked first.
+
+    A dataclass rather than the `(call_id, confirmed)` tuple this used to be: `ask_learner`
+    answers with a *selection*, not a yes or no, and threading a third element through a
+    tuple is how the wrong one gets read.
+    """
+
+    function_call_id: str
+    confirmed: bool
+    payload: dict[str, Any] | None = None
 
 #: ADK's own name for the synthetic call a `require_confirmation` tool produces
 #: (`google.adk.flows.llm_flows.functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME`).
@@ -123,7 +138,7 @@ class TurnService:
         *,
         text: str = "",
         attachments: list[dict[str, str]] | None = None,
-        confirmation: tuple[str, bool] | None = None,
+        confirmation: Confirmation | None = None,
         agent: AgentChoice = "coach",
         on_finished: Callable[[], Awaitable[None]] | None = None,
     ) -> Turn:
@@ -272,7 +287,7 @@ class TurnService:
         principal: Principal,
         text: str,
         attachments: list[dict[str, str]],
-        confirmation: tuple[str, bool] | None = None,
+        confirmation: Confirmation | None = None,
     ) -> types.Content | None:
         parts: list[types.Part] = []
         if confirmation is not None:
@@ -280,13 +295,19 @@ class TurnService:
             # looks for a function *response* to `adk_request_confirmation` on the last
             # user-authored event and resumes the original call from it, so this part has
             # to carry the call id it is answering — which is why the client sends one.
-            call_id, confirmed = confirmation
+            # `ToolConfirmation`'s own field names, because ADK validates this dict
+            # straight into that model (`from_response_dict`) and it is `extra="forbid"`.
+            # `payload` is omitted rather than sent as `None` for the yes/no gates, so
+            # their response stays byte-identical to what M3 sent.
+            response: dict[str, Any] = {"confirmed": confirmation.confirmed}
+            if confirmation.payload is not None:
+                response["payload"] = confirmation.payload
             parts.append(
                 types.Part(
                     function_response=types.FunctionResponse(
-                        id=call_id,
+                        id=confirmation.function_call_id,
                         name=CONFIRMATION_FUNCTION_NAME,
-                        response={"confirmed": confirmed},
+                        response=response,
                     )
                 )
             )

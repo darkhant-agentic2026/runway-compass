@@ -309,12 +309,22 @@ class TurnConfirmation(RequestModel):
     `discard_task` is gated by ADK's `require_confirmation` (docs/03-agent-design.md), so
     the turn that proposes it ends with an `adk_request_confirmation` function call and
     resumes only when a matching function *response* arrives. This is that response,
-    shaped as two fields rather than as a raw ADK part: the client should not be building
-    ADK payloads, and the call id is the only thing it has to carry back.
+    shaped as fields rather than as a raw ADK part: the client should not be building ADK
+    payloads, and the call id is the only thing it has to carry back.
+
+    `payload` carries a *structured* answer, which is what makes `ask_learner` possible:
+    ADK's `ToolConfirmation` has a free-form `payload` beside `confirmed`, so a tool can
+    ask a question rather than only for approval and get the selection back through the
+    same handshake. It is `None` for the yes/no gates, whose whole answer is `confirmed`.
+
+    Untyped here on purpose. The shape belongs to the tool that asked — `ask_learner`
+    validates the selection against the options it offered, which is where the check has
+    to be anyway, since the payload has been through the client.
     """
 
     function_call_id: str
     confirmed: bool
+    payload: dict[str, Any] | None = None
 
 
 class TurnRequest(RequestModel):

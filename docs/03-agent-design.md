@@ -326,10 +326,39 @@ tool cannot be pointed at someone else's project by an argument the model chose.
 | `set_next_up` | `(task_id)` | moves the task to the front of the board's top-level order. It no longer writes a state: `project.nextUpTaskId` became derived when `in_progress` replaced `current` ([02-data-model.md](02-data-model.md#task-state-machine)), so pinning something is a reorder, and "next up" and "started" stopped being the same claim |
 | `reorder_task` | `(task_id, after_task_id \| before_task_id)` | fractional index |
 | `discard_task` | `(task_id, reason)` | **requires user confirmation** in interactive mode; forbidden in autonomous mode |
+| `add_subtask` | `(task_id, title, description, estimated_minutes, needs_research)` | one level deep; ≤ default minutes, the same stricter bound `split_task` uses. **The first subtask inherits the parent's checklist**, because a composite task cannot hold one ([02-data-model.md](02-data-model.md#task-items)) and dropping the items would lose work the learner may have half-finished |
+| `update_task_item` | `(item_id, short_description?, details?, guided?)` | leaf tasks only; scoped to the session's task |
+| `reorder_task_item` | `(item_id, after_item_id \| before_item_id)` | array positions, rewritten whole |
+| `delete_task_item` | `(item_id, reason)` | **requires user confirmation** — destructive, *and* removing the last outstanding step completes the task, which would otherwise be a route around `complete_task_item`'s gate |
+| `ask_learner` | `(question, options[], allow_multiple, allow_none, note_prompt)` | 2–6 options. Asks a question rather than for approval, so it posts its own confirmation carrying the question as the payload; the answer comes back as a selection. The selection is filtered against the options that were offered |
 | `complete_task_item` | `(item_id, note)` | **requires user confirmation**, on the same ADK handshake as `discard_task` — an item completing can complete the whole task ([02-data-model.md](02-data-model.md#task-items)), so the last word before that stays the learner's. Scoped to the session's own task; the tool takes no task id |
 | `add_task_items` | `(items[])` | appends items to the session's task. Leaf tasks only; refused on a task with subtasks. Used when the conversation turns up work the report did not anticipate |
 | `update_project_prefs` | `(default_task_minutes?, research_depth?, allow_videos?)` | one named argument per writable key — spelling them out *is* the whitelist, where a patch object would let the model invent fields |
 | `post_research_report` | `(task_id, summary, required[], optional[])` | validates `Σ required.minutes ≤ budget`, assigns `itemId`s, writes the report, and promotes `required[]` into `tasks/{id}.items[]` in one transaction |
+
+### Asking the learner something
+
+`ask_learner` is the odd one in the catalogue: it uses ADK's confirmation handshake for
+something that is not a confirmation. `ToolConfirmation` carries a free-form `payload`
+beside `confirmed`, and a tool that calls `tool_context.request_confirmation(hint, payload)`
+**from inside its own body** — rather than being declared `require_confirmation=True` —
+chooses what goes in it. So the question and its options ride out in the payload, the
+client renders controls from them, and the selection rides back in the answer's payload.
+
+The tool is therefore invoked **twice for one call**: once to ask, and once — the same call
+id, re-executed by `_RequestConfirmationLlmRequestProcessor` — to read the answer. That is
+why its body reads "have I been answered yet?" rather than being two tools with a state
+machine between them.
+
+Three consequences worth stating, because each is a thing to get wrong:
+
+- **The static flag would not do.** `FunctionTool(require_confirmation=True)` posts ADK's
+  own generic hint and no payload, which is right for a yes/no gate and carries nothing for
+  a question.
+- **A declined question is a result, not a failure.** "None of these" is frequently the
+  honest answer; the tool returns `answered: false` so the coach can act on it.
+- **The answer is not authoritative.** It has been through the client, so the selection is
+  filtered against the options the tool itself offered — a small surface, and free to close.
 
 **`complete_task_item` is the only tool that can finish a task, and it can only do so by
 asking.** The chain is deliberate and worth stating in one place: the tool call becomes an

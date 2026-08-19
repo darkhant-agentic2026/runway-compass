@@ -236,6 +236,7 @@ async def test_the_tools_are_the_catalogue_the_design_lists(container) -> None:
     assert names == {
         "list_tasks",
         "add_task",
+        "add_subtask",
         "split_task",
         "update_task",
         "set_task_state",
@@ -243,31 +244,42 @@ async def test_the_tools_are_the_catalogue_the_design_lists(container) -> None:
         "reorder_task",
         "discard_task",
         "add_task_items",
+        "update_task_item",
+        "reorder_task_item",
+        "delete_task_item",
         "complete_task_item",
+        "ask_learner",
         "update_project_prefs",
     }
 
 
-async def test_exactly_two_tools_are_gated_on_the_learners_confirmation(container) -> None:
-    """docs/03-agent-design.md: `discard_task` and `complete_task_item` "require user
-    confirmation".
+async def test_exactly_three_tools_are_gated_on_the_learners_confirmation(container) -> None:
+    """docs/03-agent-design.md: `discard_task`, `complete_task_item`, and
+    `delete_task_item` "require user confirmation".
 
     The gate is ADK's `require_confirmation`, so it holds whether or not the model
     cooperates — which is the difference between a gate and an instruction. Asserted
     against the built tool rather than the constructor argument, because the flag is only
     load-bearing once `FunctionTool` is holding it.
 
-    Both directions matter, which is why this is an equality and not two `in` checks. An
+    Both directions matter, which is why this is an equality and not three `in` checks. An
     extra gated tool makes the coach ask permission for something routine; a missing one is
-    silent — and from M4 the missing one would be *task completion*, since the last item
-    finishing a checklist finishes the task (docs/02-data-model.md#task-items).
+    silent — and two of these three are missing *task completion*, since the last item
+    finishing a checklist finishes the task (docs/02-data-model.md#task-items). Deleting an
+    item does it just as effectively as ticking one: remove the only outstanding step and
+    the task completes. That is why `delete_task_item` is here and `update_task_item` and
+    `reorder_task_item`, which cannot change what is outstanding, are not.
+
+    `ask_learner` is deliberately *absent*. It asks the learner a question rather than for
+    approval, so it requests its own confirmation from inside the tool body with a payload
+    carrying the question — the static flag would post ADK's generic hint and no payload.
     """
     gated = {
         tool.name
         for tool in container.domain_tools.as_tools()
         if getattr(tool, "_require_confirmation", False)
     }
-    assert gated == {"discard_task", "complete_task_item"}
+    assert gated == {"discard_task", "complete_task_item", "delete_task_item"}
 
 
 async def test_an_oversized_task_is_refused_rather_than_created(

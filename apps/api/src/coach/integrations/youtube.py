@@ -206,7 +206,7 @@ class YouTubeClient:
                 "type": "video",
                 "maxResults": SEARCH_RESULTS,
                 # No `videoDuration` filter. Its buckets are `short` (<4 min), `medium`
-                # (4–20), and `long` (>20), which cannot express "no longer than 13
+                # (4 to 20), and `long` (>20), which cannot express "no longer than 13
                 # minutes" — the actual filter is arithmetic on `contentDetails.duration`
                 # in `rank`, and asking the API to pre-filter into a bucket would only
                 # throw away candidates the real check would have accepted.

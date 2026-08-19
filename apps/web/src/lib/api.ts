@@ -334,8 +334,15 @@ export const api = {
     body: {
       text: string;
       attachments?: { uploadId: string; mimeType: string; filename?: string }[];
-      /** The answer to a gated tool; see `ConfirmationPrompt`. */
-      confirmation?: { functionCallId: string; confirmed: boolean };
+      /**
+       * The answer to a tool that asked first. `payload` carries a *structured* answer —
+       * `ask_learner`'s selection — through the same handshake the yes/no gates use.
+       */
+      confirmation?: {
+        functionCallId: string;
+        confirmed: boolean;
+        payload?: Record<string, unknown>;
+      };
     },
     idempotencyKey?: string,
   ) =>
