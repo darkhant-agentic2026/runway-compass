@@ -87,6 +87,19 @@ DEFAULT_BUDGET_MINUTES = 45
 #: The one prompt that makes the stub answer in markdown rather than in prose.
 _FORMATTING_PATTERN = re.compile(r"\bshow me the formatting\b", re.IGNORECASE)
 
+#: And the one that makes it fail, so the `turn_error` path is reachable from a test.
+#:
+#: It exists because that path had a defect no unit test could see: a turn ending in
+#: `turn_error` is never cleared from `useStreamStore`, and the pane read the *first*
+#: buffered turn for the session rather than the newest — so the error stayed on screen
+#: and every later reply streamed into a buffer nothing rendered. It took a real 429 from
+#: Vertex to find, and a stub that cannot fail is a stub that could never have found it.
+_FAILURE_PATTERN = re.compile(r"\bmake this turn fail\b", re.IGNORECASE)
+
+#: What the stub raises for that prompt. Shaped like the model error it stands in for —
+#: `services/turns.py` classifies 429 as retryable, so the UI offers "You can try again".
+STUB_FAILURE_MESSAGE = "429 RESOURCE_EXHAUSTED: stub failure requested by the prompt"
+
 #: A reply exercising every construct the transcript renders: a GFM table, an equation, a
 #: fenced code block, and a mermaid diagram (docs/06-frontend.md#markdown-in-the-transcript).
 #:
@@ -264,6 +277,9 @@ class StubModel(BaseLlm):
     async def generate_content_async(
         self, llm_request: Any, stream: bool = False
     ) -> AsyncGenerator[LlmResponse, None]:
+        if _FAILURE_PATTERN.search(_last_user_text(llm_request)):
+            raise RuntimeError(STUB_FAILURE_MESSAGE)
+
         call = _plan_tool_call(llm_request)
         if call is not None:
             # Function calls are not streamed in pieces: a partial function call is not a
@@ -459,6 +475,7 @@ __all__ = [
     "DEFAULT_DELAY_MS",
     "DELAY_ENV_VAR",
     "DONE_REPLY",
+    "STUB_FAILURE_MESSAGE",
     "StubModel",
     "budget_minutes",
     "first_task_id",

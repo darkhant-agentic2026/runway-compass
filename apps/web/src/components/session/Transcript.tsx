@@ -148,7 +148,7 @@ export function Transcript({
             </Bubble>
           ) : null}
           {live.status === 'error' && live.error ? (
-            <p role="alert" className="text-sm text-destructive">
+            <p role="alert" className="text-sm text-destructive" data-testid="turn-error">
               {live.error.message}
               {live.error.retryable ? ' You can try again.' : ''}
             </p>

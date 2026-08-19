@@ -38,7 +38,7 @@ import {
 import { ApiError } from '@/lib/api';
 import { formatMinutes } from '@/lib/format';
 import { getSocket } from '@/lib/socket';
-import { useStreamStore } from '@/stores/stream';
+import { newestTurnFor, useStreamStore } from '@/stores/stream';
 
 export default function TaskWorkspacePage() {
   const { projectId = '', taskId = '' } = useParams();
@@ -68,13 +68,13 @@ export default function TaskWorkspacePage() {
     The turn is the honest signal, so the button follows the turn.
   */
   const turns = useStreamStore((state) => state.turns);
-  const liveTurn = Object.values(turns).find(
-    (turn) => turn.sessionId === sessionId && turn.status !== 'complete',
-  );
+  const liveTurn = newestTurnFor(turns, sessionId);
   const researching =
     startResearch.isPending ||
     task?.researchStatus === 'in_progress' ||
-    (startResearch.data?.turnId != null && liveTurn?.turnId === startResearch.data.turnId);
+    (startResearch.data?.turnId != null &&
+      liveTurn?.turnId === startResearch.data.turnId &&
+      liveTurn.status === 'running');
 
   function research(force: boolean) {
     if (!sessionId) return;

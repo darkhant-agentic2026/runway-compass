@@ -239,6 +239,13 @@ and plans from *this turn's* function responses — the second being what makes 
 loop terminate. Both are pinned by `tests/test_stub_model.py`, because a stub is one of
 the three surfaces whose failure mode is silent success.
 
+**And it fails on one prompt** (`make this turn fail`), which is the only way the
+`turn_error` half of the UI is reachable end to end. A stub that always succeeds leaves
+every error path untested in a built bundle — which is how a failed turn came to sit in
+front of every later turn in its session, red error stuck on screen and the next reply
+streaming into a buffer nothing rendered, until a real 429 from Vertex found it in
+production ([09-roadmap.md](09-roadmap.md#five-more-rows-for-the-table-above)).
+
 **And it answers one prompt in markdown** (`show me the formatting`), which is the only
 way the transcript's renderer can be tested where it actually has to work.
 `Markdown.test.tsx` mocks shiki and mermaid — it has to, or it would be asserting things

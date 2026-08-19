@@ -47,7 +47,7 @@ import { useCancelTurn, useSessionEvents, useStartTurn } from '@/features/querie
 import { useAttachmentUploads } from '@/features/use-uploads';
 import { pendingConfirmation, toMessages } from '@/lib/transcript';
 import { useComposerStore } from '@/stores/composer';
-import { useStreamStore } from '@/stores/stream';
+import { newestTurnFor, useStreamStore } from '@/stores/stream';
 
 /** Whether a drag carries files, as opposed to selected text or a dragged link. */
 function hasFiles(event: DragEvent): boolean {
@@ -86,7 +86,11 @@ export function SessionPane({
   const { uploadAll } = useAttachmentUploads(sessionId);
   const [dragDepth, setDragDepth] = useState(0);
 
-  const live = Object.values(turns).find((turn) => turn.sessionId === sessionId) ?? null;
+  // The *newest* turn for this session, never merely the first one found. See
+  // `newestTurnFor`: a turn that ended in `turn_error` is not cleared by anything, so a
+  // first-match lookup left a failed turn in front of every later one — red error stuck on
+  // screen, next reply streaming into a buffer nobody rendered.
+  const live = newestTurnFor(turns, sessionId);
 
   // The handoff. Refetch first, then drop the buffer.
   const handled = useRef<string | null>(null);

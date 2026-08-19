@@ -146,3 +146,18 @@ def test_only_one_prompt_switches_the_reply_to_markdown() -> None:
 
     for prompt in ["roughly 3 hours of work", "discard the first one", "formatting"]:
         assert _prose_reply(_request(prompt)) == stub_reply(prompt)
+
+
+def test_the_stub_can_be_made_to_fail() -> None:
+    """The `turn_error` path needs to be reachable, or nothing exercises it.
+
+    A stub that always succeeds makes the whole error half of the UI untestable end to
+    end, which is how a failed turn came to shadow every later turn in its session for a
+    milestone. Guarded by an exact phrase so no ordinary prompt trips it.
+    """
+    from coach.integrations.stub_model import _FAILURE_PATTERN
+
+    assert _FAILURE_PATTERN.search("please make this turn fail")
+    assert _FAILURE_PATTERN.search("Make This Turn Fail")
+    assert not _FAILURE_PATTERN.search("what happens when a turn fails?")
+    assert not _FAILURE_PATTERN.search("this task will make me fail my exam")
