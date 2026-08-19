@@ -29,7 +29,7 @@ function renderList(subtasks = SUBTASKS, onSetState = vi.fn()) {
 
 const SUBTASKS = [
   makeTask({ id: 'k_read', title: 'Read the paper', state: 'completed', estimatedMinutes: 30 }),
-  makeTask({ id: 'k_notes', title: 'Write notes', state: 'current', estimatedMinutes: 45 }),
+  makeTask({ id: 'k_notes', title: 'Write notes', state: 'in_progress', estimatedMinutes: 45 }),
   makeTask({ id: 'k_quiz', title: 'Try the exercises', state: 'not_started' }),
 ];
 

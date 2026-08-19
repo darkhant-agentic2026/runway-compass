@@ -89,19 +89,10 @@ class TaskRepository:
             return _to_task(doc)
         return None
 
-    async def find_current(
-        self, project_id: str, transaction: AsyncTransaction | None = None
-    ) -> list[Task]:
-        """Tasks currently in the `current` state.
-
-        Returns a list rather than a single task: the single-`current` invariant is
-        something `TaskService` *enforces*, so this read must be able to observe a
-        violation in order to repair it.
-        """
-        query = self._collection(project_id).where(
-            filter=FieldFilter("state", "==", TaskState.CURRENT.value)
-        )
-        return [_to_task(doc) async for doc in query.stream(transaction=transaction)]
+    # `find_current` lived here until M4. It existed so `TaskService` could observe a
+    # duplicated `current` task in order to repair it; `in_progress` is not singular, so
+    # there is no violation left to observe and no caller. Deleted rather than left as a
+    # query nobody runs against an index nobody needs.
 
     # --- writes --------------------------------------------------------------------
 

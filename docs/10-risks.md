@@ -111,22 +111,34 @@ alias in production.
 
 These do not block M0–M2. Each needs an answer before the milestone named.
 
-**Q1–Q3 were due at M3 and are settled — each took its default.** Where a default is a
-rule about what the agent may do, it is enforced in `agents/tools.py` rather than in the
-instruction, on the same reasoning as `discard_task`'s confirmation gate: a rule the model
-can decline to follow is not a rule.
+**Q1–Q6 are settled — each took its default.** Q1–Q3 were due at M3, Q4 at M4, and Q5–Q6
+at M5; the last two were answered early, at M4, because the research path M4 builds is the
+one M5 schedules and it is cheaper to build it against a decided cadence than to leave the
+guards parameterised on an open question. Where a default is a rule about what the agent
+may do, it is enforced in `agents/tools.py` rather than in the instruction, on the same
+reasoning as `discard_task`'s confirmation gate: a rule the model can decline to follow is
+not a rule.
 
 | # | Question | Needed by | Default if unanswered |
 | --- | --- | --- | --- |
-| Q1 | Should the coach ever mark a task complete on its own (e.g. after grading a submitted exercise), or is completion always the user's click? | ~~M3~~ **settled** | User's click only. The agent may *suggest* completion. `set_task_state` refuses `completed` — and refuses `discarded` too, which would otherwise be a second route around the confirmation gate. |
+| Q1 | Should the coach ever mark a task complete on its own (e.g. after grading a submitted exercise), or is completion always the user's click? | ~~M3~~ **settled** | User's click only. The agent may *suggest* completion. `set_task_state` refuses `completed` — and refuses `discarded` too, which would otherwise be a second route around the confirmation gate. See the note below on how M4's item checklist keeps this true. |
 | Q2 | How deep should task nesting go? The plan assumes exactly one level (task → subtask). | ~~M3~~ **settled** | One level, enforced transactionally in `TaskService`. Deeper nesting complicates rollups, ordering, and the board for little gain. |
 | Q3 | When the user's estimate and the agent's disagree (user says 30 min, agent says 90), who wins? | ~~M3~~ **settled** | User wins. Prompt behaviour rather than a guard, because the disagreement is a conversation: the coach flags it once, offers to split, and then works to their number. `update_task` may still change an estimate the learner asked it to change. |
-| Q4 | Should research reports accumulate per task (history) or should a re-run replace the previous report? | M4 | Accumulate, newest shown by default, older ones collapsible. Cheap and non-destructive. |
-| Q5 | Autonomous cadence — is every 15 minutes with a 6-hour per-project cooldown right, or should it be a nightly batch? | M5 | The 15 min / 6 h combination. Revisit against real cost data at M7. |
-| Q6 | Does the user need to see and approve agent-proposed tasks before they appear on the board, or do they appear directly with undo? | M5 | Appear directly, badged, with undo. A pending-approval queue is more friction than an unread badge. |
+| Q4 | Should research reports accumulate per task (history) or should a re-run replace the previous report? | ~~M4~~ **settled** | Accumulate, newest shown by default, older ones collapsible. Cheap and non-destructive. A re-run *replaces* the task's item checklist, though — see [02-data-model.md](02-data-model.md#task-items) — because two reports' worth of items is a checklist nobody can finish. |
+| Q5 | Autonomous cadence — is every 15 minutes with a 6-hour per-project cooldown right, or should it be a nightly batch? | ~~M5~~ **settled** | The 15 min / 6 h combination. Revisit against real cost data at M7. |
+| Q6 | Does the user need to see and approve agent-proposed tasks before they appear on the board, or do they appear directly with undo? | ~~M5~~ **settled** | Appear directly, badged, with undo. A pending-approval queue is more friction than an unread badge. |
 | Q7 | Retention of session transcripts — indefinite, or a rolling window? | M7 | Indefinite; deleted on account deletion. Revisit if storage cost matters. |
 | Q8 | Any content policy on what projects are allowed (the coach will research arbitrary web content on the user's behalf)? | M7 | Standard Gemini safety settings, no additional filtering. |
 | Q9 | Is seeding sign-in with the `ENV=local` dev token good enough for e2e, or does the suite need real-shaped ID tokens locally? | M0 | Dev token plus the nightly real-sign-in test against `coach-dev`. Revisit only if a token-shape bug reaches dev. |
+
+**Q1 and the item checklist.** M4 gives a leaf task an ordered list of items and completes
+the task automatically once every item is done and no research is outstanding
+([02-data-model.md](02-data-model.md#task-items)). That is not a reversal of Q1. An item is
+marked done either by the learner's checkbox or by `complete_task_item`, which is gated with
+ADK's `require_confirmation` exactly as `discard_task` is — so the last thing to happen
+before a task completes is still a click. What changed is *which* button: the learner
+confirms the last piece of work rather than the task as a whole. `set_task_state` still
+refuses `completed`, so the agent has no path to the state itself.
 
 ## Things deliberately not in v1
 

@@ -24,6 +24,12 @@ const LABELS: Record<string, string> = {
   set_next_up: 'Choosing what is next',
   reorder_task: 'Reordering the board',
   list_tasks: 'Looking at your board',
+  add_task_items: 'Adding steps to this task',
+  complete_task_item: 'Marking a step done',
+  update_task: 'Updating a task',
+  update_project_prefs: 'Updating your preferences',
+  discard_task: 'Discarding a task',
+  search_agent: 'Searching the web',
   load_memory: 'Remembering earlier sessions',
 };
 

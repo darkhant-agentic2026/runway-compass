@@ -100,7 +100,7 @@ def test_completed_tasks_do_not_count_as_open_minutes() -> None:
 def test_next_up_prefers_the_current_task() -> None:
     tasks = [
         _task(id="a", order="a0"),
-        _task(id="b", order="a1", state=TaskState.CURRENT),
+        _task(id="b", order="a1", state=TaskState.IN_PROGRESS),
     ]
     assert compute_next_up(tasks, at=now()) == "b"
 
@@ -191,7 +191,7 @@ async def test_editing_a_subtask_estimate_recomputes_the_parent(
 
 async def test_completing_a_subtask_recomputes_the_parent(container, alice, project) -> None:
     parent, children = await _parent_with_children(container, alice, project, [60, 90])
-    await container.tasks.set_state(alice, children[0].id, TaskState.CURRENT)
+    await container.tasks.set_state(alice, children[0].id, TaskState.IN_PROGRESS)
     await container.tasks.set_state(alice, children[0].id, TaskState.COMPLETED)
 
     refreshed = await container.task_repository.get(project.id, parent.id)
@@ -248,7 +248,7 @@ async def test_project_counts_track_the_board(container, alice, project) -> None
     assert refreshed.counts.total == 2
     assert refreshed.counts.open_minutes == 135
 
-    await container.tasks.set_state(alice, first.id, TaskState.CURRENT)
+    await container.tasks.set_state(alice, first.id, TaskState.IN_PROGRESS)
     await container.tasks.set_state(alice, first.id, TaskState.COMPLETED)
 
     refreshed = await container.project_repository.get(project.id)

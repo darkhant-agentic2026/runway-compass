@@ -73,6 +73,27 @@ def task_view(task: Task) -> dict[str, Any]:
     return view
 
 
+def items_view(task: Task) -> list[dict[str, Any]]:
+    """The task's checklist, as the model sees it after changing it.
+
+    `details` is included because this is the coach's own working copy — for a guided item
+    it is the teaching material it needs in order to teach. The *UI* is what must not render
+    a guided item's details (docs/06-frontend.md); the model is exactly who they are for.
+    """
+    return [
+        {
+            "itemId": item.item_id,
+            "shortDescription": item.short_description,
+            "details": item.details,
+            "guided": item.guided,
+            "completed": item.completed,
+            **({"minutes": item.minutes} if item.minutes is not None else {}),
+            **({"url": item.url} if item.url else {}),
+        }
+        for item in task.items
+    ]
+
+
 def board_view(board: list[TaskWithSubtasks]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for parent in board:
@@ -297,11 +318,11 @@ class DomainTools:
     ) -> dict[str, Any]:
         """Move a task to a new state.
 
-        Valid states are `not_started`, `current`, `postponed`, and `postponed_until`.
+        Valid states are `not_started`, `in_progress`, `postponed`, and `postponed_until`.
         Only transitions the board allows will succeed. To discard a task, use
         `discard_task` — and **you cannot mark a task complete**: finishing a piece of work
-        is the learner's own judgement of it. Say you think they are done and let them
-        click.
+        is the learner's own judgement of it. If every item on its checklist is done, the
+        task completes itself; otherwise say you think they are done and let them click.
 
         Args:
             task_id: The task to move.
@@ -326,14 +347,25 @@ class DomainTools:
             # *suggest* completion." A guard rather than an instruction, on the same
             # reasoning as `discard_task`'s confirmation — a rule the model can decline to
             # follow is not a rule. Answered as a result so the coach can say so out loud.
+            #
+            # M4 gave completion a second route — a leaf task whose checklist is finished
+            # completes itself — and this guard is what keeps that route honest. Every item
+            # is ticked either by the learner or through `complete_task_item`, which asks
+            # first, so the derivation is always downstream of a click. Opening this door
+            # would put a way round that in the model's hands.
             raise ValidationProblem(
                 "Only the learner marks a task complete — finishing a piece of work is "
-                "their judgement of it, not yours. Say you think they are done and let "
-                "them click."
+                "their judgement of it, not yours. Complete its checklist items instead "
+                "(complete_task_item asks them first), or say you think they are done."
             )
         if target is TaskState.DISCARDED:
             raise ValidationProblem(
                 "Use discard_task to propose discarding a task; it asks the learner first."
+            )
+        if target is TaskState.DRAFT:
+            raise ValidationProblem(
+                "'draft' is a state a task leaves, not one it is put into: it means the "
+                "task has no plan yet. Give it items or subtasks instead."
             )
         task = await self._tasks.set_state(
             context.principal,
@@ -345,15 +377,33 @@ class DomainTools:
         return {"ok": True, "task": task_view(task)}
 
     async def set_next_up(self, task_id: str, tool_context: ToolContext) -> dict[str, Any]:
-        """Make one task the learner's next-up task, demoting whichever was before it.
+        """Move one task to the front of the board, so it is what the learner picks up next.
+
+        This changes the order of the board; it does not start the task or finish anything
+        else. Use it when the conversation has established that something should come
+        first.
 
         Args:
-            task_id: The task to pin as next up. It must be waiting to be started.
+            task_id: The task to move to the front. It must be a top-level task.
         """
         return await self._guarded(tool_context, self._set_next_up, task_id)
 
     async def _set_next_up(self, context: AgentContext, task_id: str) -> dict[str, Any]:
-        task = await self._tasks.set_state(context.principal, task_id, TaskState.CURRENT)
+        # Until M4 this promoted the task to `current`, which was singular and therefore
+        # *was* the next-up pointer. `in_progress` is not singular and `nextUpTaskId` is
+        # derived from `order` (docs/02-data-model.md#task-state-machine), so pinning
+        # something is a reorder — and, unlike the old behaviour, it no longer silently
+        # un-starts whatever the learner had open.
+        board = await self._tasks.list_board(
+            context.principal, context.project_id, include_completed=False
+        )
+        first = next((t for t in board if t.id != task_id), None)
+        if first is None:
+            raise ValidationProblem(
+                "That is already the only task on the board; there is nothing to move it "
+                "in front of."
+            )
+        task = await self._tasks.reorder(context.principal, task_id, before_task_id=first.id)
         await self._announce(context, [task.id])
         return {"ok": True, "task": task_view(task)}
 
@@ -417,6 +467,68 @@ class DomainTools:
         )
         await self._announce(context, [task.id])
         return {"ok": True, "task": task_view(task)}
+
+    async def add_task_items(
+        self, items: list[dict[str, Any]], tool_context: ToolContext
+    ) -> dict[str, Any]:
+        """Add steps to this task's checklist, in the order they should be worked.
+
+        The checklist is what the learner has to get through for this task to be done, so
+        add something here only when the conversation has turned up real work the prepared
+        materials did not anticipate — not to restate what is already on the list.
+
+        Args:
+            items: The steps to append, in order. Each is an object with
+                `shortDescription` (one line, what the learner will do), `details` (for a
+                step you will walk them through: your notes for teaching it; for one they
+                go and do alone: the instruction itself, with any link), `guided` (true if
+                you will work through it with them in this conversation, false if they go
+                away and do it), and optional `minutes` and `url`.
+        """
+        return await self._guarded(tool_context, self._add_task_items, items)
+
+    async def _add_task_items(
+        self, context: AgentContext, items: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        task_id = _require_task(context)
+        task = await self._tasks.add_items(context.principal, task_id, items)
+        await self._announce(context, [task.id])
+        return {"ok": True, "task": task_view(task), "items": items_view(task)}
+
+    async def complete_task_item(
+        self, item_id: str, note: str, tool_context: ToolContext
+    ) -> dict[str, Any]:
+        """Mark one checklist item done. **The learner must confirm this.**
+
+        Completing the last outstanding item completes the whole task, so this is their
+        call rather than yours: say what you saw them do and let them agree. Do not use it
+        to tidy up items they have not actually worked through.
+
+        Args:
+            item_id: The item to mark done, from the checklist in your context.
+            note: What the learner did that finished this, in a sentence.
+        """
+        return await self._guarded(tool_context, self._complete_task_item, item_id, note)
+
+    async def _complete_task_item(
+        self, context: AgentContext, item_id: str, note: str
+    ) -> dict[str, Any]:
+        task_id = _require_task(context)
+        task = await self._tasks.patch_item(context.principal, task_id, item_id, completed=True)
+        logger.info(
+            "agent completed a checklist item",
+            extra={"task_id": task_id, "item_id": item_id, "note": note},
+        )
+        await self._announce(context, [task.id])
+        return {
+            "ok": True,
+            "task": task_view(task),
+            "items": items_view(task),
+            # Spelled out rather than left for the model to infer from `state`: the
+            # completion is a consequence of this call, and a coach that does not notice it
+            # happened will congratulate the learner on one item and miss the task.
+            "taskCompleted": task.state is TaskState.COMPLETED,
+        }
 
     async def update_project_prefs(
         self,
@@ -525,6 +637,12 @@ class DomainTools:
             # `adk_request_confirmation` call and runs the body only after the learner
             # answers, so the gate does not depend on the model respecting it.
             FunctionTool(self.discard_task, require_confirmation=True),
+            FunctionTool(self.add_task_items),
+            # The second gated tool, and the more consequential of the two: completing the
+            # last item completes the task (docs/02-data-model.md#task-items), so this is
+            # what keeps "completion is the learner's click" true now that a task can
+            # finish itself.
+            FunctionTool(self.complete_task_item, require_confirmation=True),
             FunctionTool(self.update_project_prefs),
         ]
 
@@ -558,6 +676,22 @@ def _subtask_draft(draft: dict[str, Any], context: AgentContext) -> dict[str, An
         "estimatedMinutes": minutes,
         "needsResearch": bool(draft.get("needsResearch", draft.get("needs_research", True))),
     }
+
+
+def _require_task(context: AgentContext) -> str:
+    """The task this conversation is about.
+
+    Item tools take no task id: a task-scoped session is the only place they are useful, and
+    an argument naming a task would be a way to point them at a different one — the same
+    argument that keeps `add_task` from writing to someone else's project
+    (docs/03-agent-design.md#domain-tools).
+    """
+    if context.task_id is None:
+        raise ValidationProblem(
+            "This conversation is about the project as a whole rather than one task, so "
+            "there is no checklist to change. Open the task to work through its items."
+        )
+    return context.task_id
 
 
 def _task_state(state: str) -> TaskState:

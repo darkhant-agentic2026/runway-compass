@@ -18,12 +18,14 @@ from coach.services.models import (
     EffectivePrefs,
     GlobalPrefs,
     GuidanceStyle,
+    ItemFeedback,
     LearnerProfile,
     Minutes,
     Plan,
     Project,
     ProjectStatus,
     ResearchDepth,
+    ResearchReport,
     SessionSummary,
     Task,
     TaskState,
@@ -153,6 +155,39 @@ class TaskSplit(RequestModel):
     subtasks: list[SubtaskDraft] = Field(min_length=2, max_length=8)
 
 
+class TaskItemDraft(RequestModel):
+    """One checklist item, as a client or a tool supplies it.
+
+    No `itemId`: it is assigned server-side, like a report item's
+    (docs/02-data-model.md#task-items). No `completed` either — an item is added as
+    outstanding work, and ticking it is a `PATCH` on the item it became.
+    """
+
+    short_description: str = Field(min_length=1, max_length=300)
+    details: str = ""
+    guided: bool = False
+    minutes: Minutes | None = None
+    url: str | None = None
+
+
+class TaskItemsAdd(RequestModel):
+    items: list[TaskItemDraft] = Field(min_length=1, max_length=30)
+
+
+class TaskItemPatch(RequestModel):
+    completed: bool | None = None
+    short_description: str | None = Field(default=None, min_length=1, max_length=300)
+    details: str | None = None
+    guided: bool | None = None
+
+
+class TaskItemReorder(RequestModel):
+    """Exactly one of the two must be given; the service enforces that."""
+
+    after_item_id: str | None = None
+    before_item_id: str | None = None
+
+
 class ProjectDerived(ResponseModel):
     """The project fields a task mutation can move."""
 
@@ -178,6 +213,57 @@ class TaskMutationResponse(ResponseModel):
 
 class TaskDetailResponse(ResponseModel):
     task: TaskWithSubtasks
+    #: docs/04-api-contract.md: `GET /api/tasks/{id}` returns "Task + `items[]` + subtasks
+    #: + `latestReport`". The checklist is on the task; the report is the material behind
+    #: it, and the workspace renders `optional[]` and the citations from here.
+    latest_report: ResearchReport | None = None
+
+
+class ReportListResponse(ResponseModel):
+    """`GET /api/tasks/{id}/reports` — newest first.
+
+    A list because reports accumulate rather than replacing each other
+    (docs/10-risks.md Q4); the UI renders the newest and collapses the rest.
+    """
+
+    reports: list[ResearchReport]
+
+
+class ReportItemFeedback(RequestModel):
+    """`PATCH /api/reports/{reportId}/items/{itemId}`.
+
+    Feedback and nothing else. This body used to carry `completed` as well; item completion
+    moved onto the task at M4 (docs/04-api-contract.md#tasks), and the field is *absent*
+    rather than ignored so a client still sending one gets a 422 instead of a silent
+    success. `taskId` is required because a report is addressed without its project and
+    ownership is checked through the task.
+    """
+
+    task_id: str
+    feedback: ItemFeedback | None = None
+
+
+class ReportResponse(ResponseModel):
+    report: ResearchReport
+
+
+class ResearchRequest(RequestModel):
+    reason: str = Field(default="", max_length=2000)
+    budget_minutes_override: Minutes | None = None
+    #: Re-run even when the task already has materials.
+    force: bool = False
+
+
+class ResearchResponse(ResponseModel):
+    """The 202 from `POST /api/sessions/{sid}/research`.
+
+    `turnId` is what the client subscribes to: a manual run has one, and subscribing by
+    `runId` is M5 (docs/04-api-contract.md#post-apisessionssidresearch).
+    """
+
+    run_id: str
+    turn_id: str | None
+    mode: str
 
 
 class EffectivePrefsResponse(ResponseModel):

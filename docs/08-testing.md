@@ -18,6 +18,11 @@ algorithm), the gcloud Firestore emulator (`gcloud beta emulators firestore star
 - ISO-8601 duration parsing and the video-budget filter.
 - `ResearchReport` validation: rejects `Σ required.minutes > budget`, rejects an item in
   both lists, requires `why` on every required item.
+- **Promotion into the checklist**: `post_research_report` writes the report *and*
+  `tasks/{id}.items[]` in one transaction, in `required[]`'s order, with `guided` defaulting
+  from `kind`; `optional[]` is not promoted; a re-run replaces the list while keeping the
+  `completed` flag of an item whose `shortDescription` and `url` are unchanged, and never
+  drops a hand-added item ([02-data-model.md](02-data-model.md#task-items)).
 - SSRF guard on `fetch_url`: private ranges, redirect chains into private ranges,
   `file://`, oversized bodies, slow-loris timeouts.
 - **`ENV=local` auth bypass is inert everywhere else.** Parametrized over every non-`local`
@@ -39,8 +44,29 @@ algorithm), the gcloud Firestore emulator (`gcloud beta emulators firestore star
 ### Task state machine
 
 A table-driven test over every (from_state, transition) pair asserting allowed/denied and
-the resulting invariants — plus a concurrency test that two simultaneous `set_next_up`
-calls leave exactly one `current` task (run against the emulator, real transactions).
+the resulting invariants. The concurrency test that used to assert "two simultaneous
+`set_next_up` calls leave exactly one `current` task" no longer has an invariant to check —
+M4 removed the singleton — and was replaced by one asserting that two simultaneous starts
+leave **both** tasks `in_progress` with a `nextUpTaskId` naming one of them. Still against
+the emulator and real transactions: what is being tested is that the contended write to
+`projects/{id}` retries rather than that anything is demoted.
+
+### Task items
+
+- `draft` promotes to `not_started` on the first item and on the first subtask, and does not
+  regress when the last item is deleted (invariant 1).
+- The auto-complete rule, one assertion per clause: all items done → `completed`; all items
+  done with `researchStatus: in_progress` → **not** completed; an empty item list → not
+  completed; a parent whose children are all complete → not completed.
+- Un-ticking the last item of a `completed` task reopens it — the derivation runs in both
+  directions, or a mis-click becomes a state the learner has to fix by hand.
+- Item endpoints refused on a task with subtasks; `PATCH …/items/{itemId}` returns the whole
+  task, including the `state` the write just changed.
+- **`completed` is refused on `PATCH /api/reports/{rid}/items/{itemId}`** — the endpoint
+  writes feedback and nothing else. This is the assertion that moved out of the
+  session-service section above, and it is worth keeping precisely because the field used to
+  be accepted there: a client still sending it must fail loudly rather than write nothing
+  and report success.
 
 ### Rollups
 
@@ -72,9 +98,10 @@ against the emulator:
   second raises. The override reimplements the shipped transaction, so this check is the
   thing most likely to be dropped in a careless edit — and losing it corrupts state silently
   rather than loudly.
-- **Optional-item completion is refused.** `PATCH /api/reports/{id}/items/{itemId}` with
-  `completed: true` on an item in `optional[]` returns `4xx`
-  ([04-api-contract.md](04-api-contract.md)).
+The third assertion that used to sit here — "optional-item completion is refused" — moved to
+the task-item tests below when M4 moved completion off the report
+([04-api-contract.md](04-api-contract.md#tasks)). It was never a session-service concern; it
+was filed here because it arrived in the same paragraph.
 
 ### Streaming and disconnect resilience (the critical suite)
 
@@ -150,9 +177,14 @@ Stack: Vitest, React Testing Library, MSW for HTTP, a fake WebSocket server for 
   output.
 - **Composite task workspace** — a parent renders one card per subtask with its state
   actions, and none of them is a link; a leaf task renders no subtask block at all.
-- **Research report rendering** — required and optional blocks are distinct landmarks;
-  optional items render no completion checkbox; the budget meter sums only required items.
+- **Research report rendering** — the checklist and optional blocks are distinct landmarks;
+  optional items render no completion checkbox; the budget meter sums only checklist items.
   This is a product requirement, so it gets an explicit regression test.
+- **A guided item does not render its `details`** — the coach's teaching notes are not the
+  learner's instructions, and the exercise's answer is in there
+  ([06-frontend.md](06-frontend.md#task-workspace-projectsprojectidtaskstaskid)). Asserted
+  as an absence, with the same string present on an unguided item in the same render, so the
+  test fails if the component stops rendering `details` at all rather than passing vacuously.
 - **Theme resolution** — the full matrix of `pref` (`light`/`dark`/`system`) ×
   `prefers-color-scheme` (`light`/`dark`), asserting the resolved class on `<html>` and the
   `color-scheme` style. Plus: a `matchMedia` `change` event re-resolves when `pref` is
@@ -294,7 +326,10 @@ Golden flows:
    the fallback when the test wants the whole network gone, but it is a blunter tool — it
    also kills the `POST /turns` and the transcript refetch, so a passing test proves less.
 5. **Manual research trigger** — user creates a task, clicks "Research this task now",
-   sees progress chips, and the report renders with required/optional separation.
+   sees progress chips, and the report renders with checklist/optional separation. The task
+   was `draft` before the run and is `not_started` after it, which is the visible half of
+   invariant 1; then ticking every checklist item completes the task without the learner
+   touching a state control, which is the visible half of invariant 6.
 6. **Autonomous update visible on return** — trigger `/internal/tick` from the test,
    assert a `board_update` arrives on an open board and the "Updated by your coach" banner
    lists the change, and that undo reverses it.

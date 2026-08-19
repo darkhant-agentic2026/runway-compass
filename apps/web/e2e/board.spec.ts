@@ -87,13 +87,14 @@ test('manage tasks by hand: add, start, complete, and the default filter hides i
   await addTask(page, 'Second task', 90);
   await expect(page.getByTestId('task-card')).toHaveCount(2);
 
-  // Start it: only legal transitions are offered, so "Complete" is not there yet.
+  // Only legal transitions are offered: a task with no plan yet cannot be postponed,
+  // because deferring is reachable only from `in_progress`.
   await page.getByRole('button', { name: 'Actions for First task' }).click();
-  await expect(page.getByRole('menuitem', { name: 'Complete' })).toHaveCount(0);
+  await expect(page.getByRole('menuitem', { name: 'Postpone' })).toHaveCount(0);
   await page.getByRole('menuitem', { name: 'Start' }).click();
 
   const first = page.getByTestId('task-card').filter({ hasText: 'First task' });
-  await expect(first).toHaveAttribute('data-state', 'current');
+  await expect(first).toHaveAttribute('data-state', 'in_progress');
   await expect(first).toContainText('Next up');
 
   await page.getByRole('button', { name: 'Actions for First task' }).click();

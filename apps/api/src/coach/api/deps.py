@@ -22,22 +22,28 @@ from fastapi import Depends, Request
 
 from coach.adk_firestore import CoachSessionService
 from coach.agents.prompt import PromptBuilder
+from coach.agents.research_tools import ResearchTools
 from coach.agents.runner import RunnerFactory
 from coach.agents.tools import DomainTools
 from coach.core.config import Settings
 from coach.core.principal import Principal
 from coach.integrations.artifacts import artifact_service_provider
 from coach.integrations.storage import build_object_store
+from coach.integrations.youtube import YouTubeClient
 from coach.repositories.firestore import Database, LazyAsyncClient
 from coach.repositories.idempotency import IdempotencyRepository
 from coach.repositories.presence import PresenceRepository
 from coach.repositories.projects import ProjectRepository
+from coach.repositories.reports import ReportRepository
+from coach.repositories.runs import RunRepository
 from coach.repositories.tasks import TaskRepository
 from coach.repositories.tickets import TicketRepository
 from coach.repositories.turns import TurnRepository
 from coach.repositories.uploads import UploadRepository
 from coach.repositories.users import UserRepository
 from coach.services.projects import ProjectService
+from coach.services.reports import ReportService
+from coach.services.research import ResearchService
 from coach.services.sessions import SessionService
 from coach.services.tasks import TaskService
 from coach.services.turns import TurnService
@@ -79,6 +85,8 @@ class Container:
         self.turn_repository = TurnRepository(self.db)
         self.upload_repository = UploadRepository(self.db)
         self.presence_repository = PresenceRepository(self.db)
+        self.report_repository = ReportRepository(self.db)
+        self.run_repository = RunRepository(self.db)
         self.tickets = TicketRepository(self.db)
 
         self.users = UserService(self.user_repository)
@@ -138,6 +146,14 @@ class Container:
         # call them directly, which is how a guard gets a test that does not depend on
         # persuading a model to trip it.
         self.domain_tools = DomainTools(self.tasks, self.projects, self.board_updates)
+        self.reports = ReportService(self.report_repository, self.tasks, self.projects)
+        # A plain HTTP client and an API key, not a Google client with ADC: the YouTube
+        # Data API is a different credential from everything else in this process, and
+        # borrowing a client built for Firestore or Storage is the trap
+        # docs/09-roadmap.md tabulates as "an OAuth scope failure reads exactly like a
+        # missing IAM role".
+        self.youtube = YouTubeClient(settings.youtube_api_key)
+        self.research_tools = ResearchTools(self.reports, self.youtube, self.board_updates)
         self.prompt_builder = PromptBuilder(
             self.sessions, self.projects, self.tasks, self.users
         )
@@ -146,6 +162,7 @@ class Container:
             self.session_service,
             self.artifacts,
             tools=self.domain_tools,
+            research_tools=self.research_tools,
             prompt=self.prompt_builder,
         )
         self.turns = TurnService(
@@ -156,6 +173,13 @@ class Container:
             self.runners,
             self.registry,
             self.broker,
+            instance_id=self.instance_id,
+        )
+        self.research = ResearchService(
+            self.run_repository,
+            self.tasks,
+            self.sessions,
+            self.turns,
             instance_id=self.instance_id,
         )
 
@@ -194,12 +218,22 @@ def get_upload_service(container: Container = Depends(get_container)) -> UploadS
     return container.uploads
 
 
+def get_report_service(container: Container = Depends(get_container)) -> ReportService:
+    return container.reports
+
+
+def get_research_service(container: Container = Depends(get_container)) -> ResearchService:
+    return container.research
+
+
 Users = Annotated[UserService, Depends(get_user_service)]
 Projects = Annotated[ProjectService, Depends(get_project_service)]
 Tasks = Annotated[TaskService, Depends(get_task_service)]
 Sessions = Annotated[SessionService, Depends(get_session_service)]
 Turns = Annotated[TurnService, Depends(get_turn_service)]
 Uploads = Annotated[UploadService, Depends(get_upload_service)]
+Reports = Annotated[ReportService, Depends(get_report_service)]
+Research = Annotated[ResearchService, Depends(get_research_service)]
 SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
 
 # Re-exported so routers depend on one module.

@@ -20,6 +20,9 @@ import {
   problemSchema,
   projectListSchema,
   projectSchema,
+  reportListSchema,
+  reportResponseSchema,
+  researchAcceptedSchema,
   sessionEventsSchema,
   sessionResponseSchema,
   sessionSummarySchema,
@@ -195,8 +198,8 @@ export const api = {
       ...(idempotencyKey ? { idempotencyKey } : {}),
     }),
 
-  getTask: (taskId: string) =>
-    request(`/api/tasks/${taskId}`, taskDetailSchema).then((response) => response.task),
+  /** Task + `items[]` + subtasks + `latestReport` (docs/04-api-contract.md). */
+  getTask: (taskId: string) => request(`/api/tasks/${taskId}`, taskDetailSchema),
 
   patchTask: (
     taskId: string,
@@ -228,6 +231,74 @@ export const api = {
       method: 'POST',
       body: { subtasks },
     }).then((response) => response.task),
+
+  // --- checklist items ------------------------------------------------------------------
+  // Every one of these answers with the *whole task*, because a checklist write can move
+  // the task's state (invariant 6) and the project's counts. The caller reconciles both.
+
+  addTaskItems: (
+    taskId: string,
+    items: { shortDescription: string; details?: string; guided?: boolean; minutes?: number }[],
+    idempotencyKey?: string,
+  ) =>
+    request(`/api/tasks/${taskId}/items`, taskMutationSchema, {
+      method: 'POST',
+      body: { items },
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    }),
+
+  patchTaskItem: (
+    taskId: string,
+    itemId: string,
+    patch: {
+      completed?: boolean;
+      shortDescription?: string;
+      details?: string;
+      guided?: boolean;
+    },
+  ) =>
+    request(`/api/tasks/${taskId}/items/${itemId}`, taskMutationSchema, {
+      method: 'PATCH',
+      body: patch,
+    }),
+
+  deleteTaskItem: (taskId: string, itemId: string) =>
+    request(`/api/tasks/${taskId}/items/${itemId}`, taskMutationSchema, { method: 'DELETE' }),
+
+  // --- research -------------------------------------------------------------------------
+
+  listReports: (taskId: string) =>
+    request(`/api/tasks/${taskId}/reports`, reportListSchema).then((r) => r.reports),
+
+  /**
+   * The thumbs control. Feedback only — completion lives on the task from M4, and sending
+   * `completed` here is a 422 rather than a silent no-op (docs/04-api-contract.md#tasks).
+   */
+  setReportItemFeedback: (
+    reportId: string,
+    itemId: string,
+    taskId: string,
+    feedback: 'up' | 'down' | null,
+  ) =>
+    request(`/api/reports/${reportId}/items/${itemId}`, reportResponseSchema, {
+      method: 'PATCH',
+      body: { taskId, feedback },
+    }).then((r) => r.report),
+
+  /**
+   * 202. A `409` carries the in-flight `runId` in its problem document, so the caller can
+   * attach to that run instead of starting a duplicate.
+   */
+  startResearch: (
+    sessionId: string,
+    body: { reason?: string; force?: boolean } = {},
+    idempotencyKey?: string,
+  ) =>
+    request(`/api/sessions/${sessionId}/research`, researchAcceptedSchema, {
+      method: 'POST',
+      body: { reason: body.reason ?? '', force: body.force ?? false },
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    }),
 
   // --- sessions & turns ---------------------------------------------------------------
 

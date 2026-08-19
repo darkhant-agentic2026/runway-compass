@@ -34,6 +34,10 @@ from coach.core.principal import Principal
 PROJECT_ID_KEY = "temp:coach_project_id"
 TASK_ID_KEY = "temp:coach_task_id"
 DEFAULT_MINUTES_KEY = "temp:coach_default_minutes"
+#: The minute budget a research report's required list has to fit inside — the task's own
+#: estimate, falling back to the project default. `post_research_report` validates against
+#: this rather than re-reading the number out of the rendered instruction.
+RESEARCH_BUDGET_KEY = "temp:coach_research_budget"
 
 #: Per-invocation counter behind the `add_task` cap. Also `temp:`, which is what makes the
 #: cap per *run* rather than per session: docs/03-agent-design.md guards `add_task` at
@@ -106,6 +110,7 @@ __all__ = [
     "MAX_TASKS_PER_RUN",
     "MAX_TASK_MINUTES_FACTOR",
     "PROJECT_ID_KEY",
+    "RESEARCH_BUDGET_KEY",
     "TASK_ID_KEY",
     "AgentContext",
     "agent_context",

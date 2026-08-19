@@ -46,7 +46,12 @@ A project is a candidate if all hold:
 | **Owner not present** | `presence/{ownerUid}` does not show `activeProjectId == projectId` with a heartbeat in the last 120 s |
 | No lease held | `projects/{id}/locks/agent` absent or expired |
 | Under quota | `usage/{uid}_{today}.autonomousRuns < plan.limits.autonomousRunsPerDay` |
-| Work exists | At least one task in `not_started`/`current` with `researchStatus != done` |
+| Work exists | At least one task in `draft`/`not_started`/`in_progress` with `researchStatus != done` |
+
+`draft` is first in that list on purpose. From M4 it is the state a task starts in and the
+one it leaves when research gives it a checklist ([02-data-model.md](02-data-model.md#task-state-machine)),
+so a project full of drafts is exactly the project with the most for a run to do — and a
+guard written before `draft` existed would have skipped it as having no work.
 
 Ordering of candidates: `lastAutonomousRunAt ASC` (fairness), capped at N projects per
 tick to bound cost.

@@ -358,12 +358,102 @@ of the repo is written against.
   `youtube_find_by_duration` with real duration filtering and a 24 h cache.
 - `ResearchReport` schema, `post_research_report` tool with budget validation, storage, and
   the session event.
-- Report UI: separated required/optional blocks, budget meter, citations, per-item completion.
+- Report UI: separated checklist/optional blocks, budget meter, citations, per-item completion.
 - `POST /api/sessions/{sid}/research` — the manual trigger, on the shared run path.
+- **The task-model amendment** decided at the start of the milestone: `draft` as the state
+  every task starts in, `in_progress` replacing a singular `current`, and an ordered
+  checklist on every leaf task that research populates and whose completion completes the
+  task ([02-data-model.md](02-data-model.md#task-items)). It lands here rather than on its
+  own branch because the checklist's only writer is the research run.
 
 **Exit:** Playwright flow #5 passes; report validation rejects over-budget required lists;
 recommended videos actually fit the remaining budget (verified against real API responses
-in the nightly live run).
+in the nightly live run); a finished checklist completes its task without the learner
+touching a state control.
+
+---
+
+## Status after M4
+
+Complete locally; **not yet deployed** (see the first row of the deferred table). What
+follows is the carry-over a later milestone needs, recorded here because it is not
+derivable from the code.
+
+**Met.** Golden flow #5 passes on all four Playwright projects, alongside every earlier
+spec: 31 specs, 124 runs, three consecutive green suites. Report validation rejects an
+over-budget required list, an item in both lists, and a required item with no `why`, each
+with its own test. Recommended videos fit the remaining budget because the filter is
+arithmetic on `contentDetails.duration` rather than a request to the model — asserted
+against recorded `search.list` / `videos.list` payloads; the nightly live run against the
+real API is still unimplemented, and is in the table below. 487 backend tests, 229 web.
+
+**M4 also carried a data-model change that was not in the original plan**, decided at the
+start of the milestone and recorded in the design documents rather than only here: the task
+state machine gained `draft`, `current` became `in_progress` and stopped being singular, and
+a leaf task gained an ordered checklist that research populates and that completes the task
+when it is finished. [02-data-model.md](02-data-model.md#task-items) is the specification;
+the decisions table below records what implementing it settled.
+
+**Open questions Q4–Q6** ([10-risks.md](10-risks.md#open-questions)) are settled, each
+taking its default. Q4 was due here; Q5 and Q6 were due at M5 and were answered early,
+because M4 builds the path M5 schedules and leaving the cadence open would have meant
+parameterising guards on an undecided number.
+
+**Deliberately deferred, and the milestone that needs it:**
+
+| Item | Needed by | Note |
+| --- | --- | --- |
+| **Deploy to `coach-dev` and the hand verification** | **now** | Every prior milestone's first deployed run surfaced something the local gate had not, and M4 adds two of the exact surfaces that table warns about: a composite Firestore index and a second Google API with its own credential. The index is in Terraform and `terraform apply` has not run |
+| Nightly **live** YouTube and search tests | M6 | The recorded-fixture half is done; `--live` is not wired. What no fixture can catch is a quota shape or a response field moving |
+| ADK **evalsets** for research quality | M6 | The tool contract is tested; whether a report is *good* is not, and cannot be by a stub. Still as recorded after M1 |
+| `subscribe` by `runId` | **M5** | Still deferred. A manual run has a `turnId` and the client watches that; a *scheduled* run has no turn, which is when the frame becomes necessary |
+| `propose_tasks` and `reprioritize` | **M5** | `research_agent` has no board-mutating tools by design ([10-risks.md](10-risks.md#r7--prompt-injection-via-fetched-pages-and-uploads)); reshaping the board is a separate step with its own budget |
+| `post_report`'s **event-level idempotency** | **M5** | [05-autonomous-runs.md](05-autonomous-runs.md#execution-semantics) already flags this. The report document is idempotent by overwrite; the session event is not, and a manual run cannot be re-executed so nothing exercises it yet |
+| Everything still open after M3 | as recorded | Content scanning (M7), `turns` composite indexes (M5), `board_update` across instances (M5), `prod` and `terraform destroy` |
+
+**Endpoints in the API contract still unimplemented**: everything under runs (M5),
+`PATCH /api/me/learner-profile`'s Settings UI (M6), and `DELETE /api/me` (M7). `GET
+/api/runs/{runId}` is *reachable* through `ResearchService.get` but has no route, because
+the contract files it under M5 and a manual run is watched by its turn.
+
+**Decisions made during implementation** that the design documents did not fix:
+
+| Decision | Why | Where |
+| --- | --- | --- |
+| `set_next_up` **reorders** rather than setting a state | It used to promote a task to `current`, which was singular and therefore *was* the pointer. With `nextUpTaskId` derived, pinning something is a reorder — and, unlike the old behaviour, it no longer silently un-starts whatever the learner had open | `agents/tools.py` |
+| An explicit state write is **exempt from the derivation for its own transaction** | Otherwise invariant 6 and the `reopen` action fight: reopening a task whose checklist is fully ticked lands on `not_started`, is re-derived to `completed` in the same transaction, and the button does nothing at all — visibly, repeatably, with no error | `services/tasks.py` |
+| `TaskService.set_research` goes through the board transaction | `researchStatus` is half of invariant 6, so the write that sets `done` is exactly the write that can complete a task. A bare field patch would leave it finished-but-open until something unrelated touched it | `services/tasks.py` |
+| A report item's `why` becomes the checklist entry's one line | A checklist reads as things to do; a list of titles reads as a bibliography and leaves the learner to work out what each one is for. It is also why `why` is *required* on a required item and validated server-side | `services/reports.py` |
+| `guided` defaults from `kind`, and the model may override | An exercise is worked through in conversation; an article is not. A report that says nothing about guidance still produces a sensible checklist | `services/models.py` |
+| `fetch_url` extracts text with `html.parser`, not a markdown converter | [03-agent-design.md](03-agent-design.md#integration-tools) says "HTML→markdown", but the model is answering "does this page cover the task" and heading syntax does not help with that — while a dependency that parses hostile HTML is a real surface | `integrations/fetch_url.py` |
+| Redirects are followed **by hand**, and every hop re-checked | `follow_redirects=True` validates the first URL and then connects wherever the server points. A public host answering `302 → 169.254.169.254` is the attack that works against a fetcher which only checks the first hop | `integrations/fetch_url.py` |
+| The YouTube cache is **process-local** | It caches a quota cost, not a correctness property. A second instance paying for its own first lookup is cheaper than a collection, a TTL policy, and a read on the research path | `integrations/youtube.py` |
+| A research run is an **ordinary turn** | It gets the same `turns/{turnId}` document, detached task, checkpoints, and broker subscription — so the disconnect guarantee, the tool chips, and resume all cover it without a second implementation. One argument to `TurnService.start` selects the agent | `services/research.py` |
+| `TurnService.start` grew an `on_finished` **done callback** | Never an await — the module's first rule. `ResearchService` uses it to close the ledger and drop the lease the instant generation stops. See the new table below for what the polling version cost | `services/turns.py` |
+| A manual run's ledger row omits the steps M4 does not implement | Absent rather than `pending`, so `cursor` — "first non-complete step" — stays truthful and M5's executor does not inherit a backlog of runs it thinks it left half-finished | `services/models.py` |
+| `TaskRepository.find_current` deleted | It existed so `TaskService` could observe a duplicated `current` in order to repair it. There is no violation left to observe and no caller — the same reasoning that deleted M2's uncalled `turns` queries | `repositories/tasks.py` |
+| `PATCH /api/reports/{rid}/items/{iid}` **refuses** `completed` | The field used to be accepted there. A client that has not caught up must fail loudly rather than write nothing and report success | `api/schemas.py` |
+
+### Two more rows for the table above
+
+M4 recurred one row of [the M3 table](#three-more-rows-for-the-table-above) — a singleton's
+configuration belonging to whoever reached for it first, this time as a *query key* nothing
+invalidated — and added two of its own. Both were found by golden flow #5 and neither was
+visible to a fully green unit run.
+
+| Trap | How it presents | Where it will recur |
+| --- | --- | --- |
+| **A push reaches the screens that were listening when it was written, not the ones that exist now** | `board_update` invalidated `['tasks', projectId]` and `['project', projectId]`; the task workspace reads `['task', taskId]`, which neither prefix covers. Nothing noticed for a milestone, because every writer until M4 was a tool the user had just talked to and the reply's own refetch hid it. A research run posts its report and says nothing further — so the checklist never appeared, on a screen where every unit test passed | Any new screen keyed differently from the one a push was designed for. M5's run banner and undo are both read from keys that do not exist yet. **When adding a writer, enumerate the readers** — and note that the *frame already carried* `taskIds`, so the information was there and unused |
+| **A lease outliving its run is a button the server refuses** | `post_research_report` pushes `board_update` — so the report renders — while the turn is still streaming its closing prose and the project's agent lease is still held. A poller closing the ledger half a second later left a window in which "Research again" answered `409 your coach is already working on this project`. It failed on two of four Playwright projects, roughly one run in three, and read as a timing flake | Anything whose *visible* completion precedes its *bookkeeping* completion. M5's scheduled runs have the same shape with a longer tail. Hang the bookkeeping off the work's own completion — `TurnService.start`'s `on_finished` — rather than off a clock |
+
+**A third thing worth recording, which is a test-design trap rather than a defect.** Flow
+#5's re-run spec failed intermittently in the full suite and never in isolation, because a
+single `toBeVisible({ timeout: 30_000 })` sat inside Playwright's 30-second *test* timeout:
+an assertion given the whole budget can never actually wait for it, so it fails at whatever
+is left over and reads as a product bug. The fix was to raise the describe-block's timeout
+and put the per-assertion waits back to the default. **A per-assertion timeout that equals
+or exceeds the test timeout is always wrong**, and the symptom is a flake that points at
+the feature rather than at the budget.
 
 ---
 

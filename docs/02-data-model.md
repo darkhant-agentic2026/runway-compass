@@ -157,7 +157,7 @@ authority, and it repairs the pointer when it runs.
   "projectId": "…", "ownerUid": "…",     // denormalized for collection-group queries
   "parentTaskId": null | "…",
   "title": "…", "description": "…",
-  "state": "not_started",                // see state machine below
+  "state": "draft",                      // see state machine below
   "postponedUntil": null | ts,           // set iff state == "postponed_until"
   "estimatedMinutes": 45,
   "actualMinutes": null,
@@ -166,6 +166,11 @@ authority, and it repairs the pointer when it runs.
   "needsResearch": true,
   "researchStatus": "none" | "pending" | "in_progress" | "done" | "failed",
   "latestReportId": null | "…",
+  "items": [                             // LEAF tasks only; see Task items below
+    { "itemId": "i_01J…", "shortDescription": "…", "details": "…",
+      "guided": true, "completed": false, "completedAt": null,
+      "sourceReportId": "rep_01J…" | null }
+  ],
   "rollup": {                            // maintained on PARENT tasks only
     "subtaskCount": 4, "completedSubtasks": 1, "totalEstimatedMinutes": 150
   },
@@ -174,41 +179,121 @@ authority, and it repairs the pointer when it runs.
 }
 ```
 
+`items` and `rollup` are the same field in two moods and are mutually exclusive by
+construction: a leaf task's plan is its item list, a parent's plan is its subtasks. Nothing
+enforces the exclusion with a validator, because `split_task` is the only way a leaf becomes
+a parent and it refuses a task that already has items — the learner would otherwise lose a
+checklist to a reshape they did not ask for.
+
+### Task items
+
+A leaf task carries an **ordered, unnumbered** list of the things that have to happen for it
+to be done. Ordered because the coach works through them in sequence and the reading has to
+come before the exercise that uses it; unnumbered because the count is not a promise — a
+re-run of research replaces the list, and "step 3 of 7" that becomes "step 3 of 5" reads as
+work disappearing rather than as a better plan.
+
+| Field | Meaning |
+| --- | --- |
+| `itemId` | Stable, server-assigned. Completion and the tool's argument key on it |
+| `shortDescription` | The one-liner the checklist renders. Not a title — a thing to do |
+| `minutes` | What this item is expected to cost, carried over from the report item. `null` on a hand-added item; the budget meter sums what it has |
+| `url` | The thing an unguided item points at, if there is one. Also half of the identity a re-run matches on |
+| `details` | What the coach teaches *from*. For an unguided item this is the instruction itself ("read §3–4 of this page", with the link); for a guided one it is the material the coach needs in order to walk the learner through it, and the learner never sees it verbatim |
+| `guided` | Whether the coach walks the learner through this in the session, or the learner goes and does it and comes back to say so |
+| `completed`, `completedAt` | User-owned. Written by the checkbox and by `complete_task_item`, never by free-form model output |
+| `sourceReportId` | The report that contributed the item, or `null` for one the learner added by hand |
+
+**`guided` is a routing decision, not a difficulty rating.** An unguided item is one whose
+work happens outside the conversation — watch this video, read that page, run this tutorial
+— so the coach's job is to hand it over and then wait. A guided item is one the coach does
+*with* the learner: the Socratic walkthrough, the exercise it marks, the concept it explains
+against the learner's own code. The distinction is what stops the coach from narrating a
+YouTube video it cannot see, and from silently skipping the teaching it is actually for.
+
+**The list is populated by the research agent** and replaced wholesale when research re-runs:
+`post_research_report` writes the report and promotes its `required[]` entries into
+`items[]` in the same transaction ([03-agent-design.md](03-agent-design.md#domain-tools)).
+Completion state survives the replacement where an item's `shortDescription` and `url` are
+unchanged, so a re-run that keeps a reading the learner has already done does not ask them
+to do it again. The learner may also add, edit, reorder, and delete items by hand; a
+hand-added item has `sourceReportId: null` and is never dropped by a re-run.
+
+**A leaf task with every item completed and no research outstanding becomes `completed`.**
+The check runs in the same transaction as the item write, and its two halves are both
+necessary: items alone would complete a task the moment the first thin report's list was
+ticked off, while research was still running and about to add five more items to it. So the
+rule is `all(items.completed) and items != [] and researchStatus not in {pending,
+in_progress}`. A leaf with no items at all never auto-completes — an empty list is the
+absence of a plan, not a finished one — and a parent never does: its plan is its subtasks,
+and invariant 4 already makes completing one with unfinished children a decision the UI puts
+to the learner.
+
 ### Task state machine
 
 ```
-                     ┌──────────────┐
-      ┌─────────────▶│ not_started  │◀─────────────────────┐
-      │              └──────┬───────┘                      │
-      │            start    │                              │ un-postpone / restore
-      │                     ▼                              │ (manual, or the nightly
-      │              ┌──────────────┐                      │  sweep once postponedUntil
-      │              │   current    │                      │  is in the past)
-      │              └──┬────────┬──┘                      │
-      │        complete │        │ defer                   │
-      │                 │        ├──────────▶┌──────────────┴─┐
-      │   reopen        │        │           │   postponed    │
-      │                 │        │           └────────────────┘
-      │                 │        │ defer until…              ▲
-      │                 │        └──────────▶┌───────────────┴┐
-      │                 │                    │postponed_until │ (+ postponedUntil ts)
-      │          ┌──────▼───────┐            └────────────────┘
-      └──────────│  completed   │
-                 └──────────────┘            ┌────────────────┐
+   ┌──────────────┐  plan appears
+   │    draft     │──(items or subtasks created)──┐
+   └──────┬───────┘                               │
+          │                                       ▼
+          │                         ┌──────────────┐
+          │            ┌───────────▶│ not_started  │◀─────────────────────┐
+          │            │            └──────┬───────┘                      │
+          │            │          start    │                              │ un-postpone /
+          │  start     │                   ▼                              │ restore
+          │            │            ┌──────────────┐                      │ (manual, or the
+          └───────────────────────▶ │ in_progress  │                      │  nightly sweep
+                       │            └──┬────────┬──┘                      │  once postponed-
+                       │      complete │        │ defer                   │  Until is past)
+                       │               │        ├──────────▶┌──────────────┴─┐
+                       │   reopen      │        │           │   postponed    │
+                       │               │        │           └────────────────┘
+                       │               │        │ defer until…              ▲
+                       │               │        └──────────▶┌───────────────┴┐
+                       │        ┌──────▼───────┐            │postponed_until │ (+ ts)
+                       └────────│  completed   │            └────────────────┘
+                                └──────────────┘
+                                             ┌────────────────┐
    any state ──────────discard─────────────▶ │   discarded    │
                                              └────────────────┘
 ```
+
+`draft` is where every task starts, whoever created it. It means "on the board, no plan
+yet": a title and an estimate, and nothing said about how the work actually gets done. A
+task leaves `draft` for `not_started` the moment it acquires a plan — its first items, or
+its first subtasks — which for an agent-created task is usually the research run that
+follows it onto the board, and for a hand-written one is whenever the learner or the coach
+gets round to it.
+
+**`draft` is not a lock.** The learner may start a draft task directly
+(`draft → in_progress`) or discard it, exactly as they could a `not_started` one; `draft`
+carries every transition `not_started` has, plus the automatic one. A board that refused to
+let someone begin work until an LLM had blessed it with a checklist would be a worse board
+than the one that existed before M4. What `draft` buys is a truthful "next up" and a visible
+target for research — not a gate.
 
 `postponed` and `postponed_until` are distinct states, not one state with an optional
 field: the first waits for the user, the second waits for a clock. Both return to
 `not_started` — the first only by user action, the second also by the sweep in
 `/internal/tick`.
 
+**`in_progress` replaced `current` at M4, and the rename carried a rule with it.** `current`
+was singular by construction — one current task per project, the previous one demoted on
+every start — and that was a claim about the learner's attention that the data could not
+actually keep: research runs while a task sits open, a parent and a subtask are worked in
+the same sitting, and demoting one to start another lost the fact that the first was
+half-done. `in_progress` describes the task, not the learner's focus, so **any number of
+tasks may be `in_progress` at once** and starting one demotes nothing. What the board pins
+as "Next up" is `project.nextUpTaskId`, which is now derived rather than enforced: the
+lowest-`order` top-level task that is `in_progress`, or failing that the lowest-`order` one
+available to start.
+
 Invariants enforced in a Firestore transaction by `TaskService`:
 
-1. **At most one `current` task per project.** Setting a task `current` demotes the
-   previous one to `not_started`. `project.nextUpTaskId` is updated in the same
-   transaction.
+1. **A task's state and its plan agree.** A `draft` task that gains its first item or its
+   first subtask becomes `not_started` in the same transaction. This is the only automatic
+   promotion out of `draft`; losing every item again does not send it back, because by then
+   the learner has seen a plan and a task silently regressing is worse than a stale state.
 2. `postponed_until` requires a future `postponedUntil`; a nightly sweep (part of
    `/internal/tick`) flips expired ones back to `not_started`.
 3. `discarded` is terminal except by explicit user restore. The agent may *propose*
@@ -218,6 +303,9 @@ Invariants enforced in a Firestore transaction by `TaskService`:
 5. Any subtask write recomputes the parent's `rollup` in the same transaction. Parent
    cards therefore render counts and summed minutes with no extra reads — which is the
    "card shows number of sub-tasks and total estimated duration" requirement.
+6. **A leaf task whose items are all complete, with no research outstanding, is
+   `completed`** — evaluated on every item write, in that write's transaction, and never on
+   a parent. See [Task items](#task-items) for why both halves of the condition are load-bearing.
 
 The task document also carries its own `id` as a field, mirroring the document key. This
 is the same denormalization-for-collection-group-queries the `projectId` and `ownerUid`
@@ -271,7 +359,6 @@ collision or exhaustion, `TaskService` rebalances the whole project in one batch
   "budgetMinutes": 45,
   "citations": [ { "uri": "…", "title": "…" } ],   // grounding metadata
   "progress": {                        // user-owned, never written by the agent
-    "completedItemIds": ["i_01J…"],    // required items only; optional items have no checkbox
     "feedback": { "i_01J…": "down" }   // thumbs-down feeds the learner profile (R5)
   },
   "createdAt": ts, "updatedAt": ts
@@ -279,17 +366,34 @@ collision or exhaustion, `TaskService` rebalances the whole project in one batch
 ```
 
 `itemId` is assigned server-side by `post_research_report`, not by the model — the model
-returns items, the tool numbers them. Without stable ids, per-item completion breaks the
-moment a report is re-run and item order shifts.
+returns items, the tool numbers them. Without stable ids, per-item feedback breaks the
+moment a report is re-run and item order shifts, and the promotion into `task.items` would
+have nothing to key on.
+
+**Completion lives on the task, not on the report.** `post_research_report` promotes every
+`required[]` entry into `tasks/{taskId}.items[]` in the same transaction that writes the
+report, carrying the `itemId` across; the checkbox the learner ticks writes there. This is a
+change from the pre-M4 design, which kept `progress.completedItemIds` on the report — two
+reports for one task meant two checklists, and neither of them was the answer to "what is
+left to do on this task". `progress` survives holding only `feedback`, which genuinely does
+belong to the report: a thumbs-down is a judgement about *this recommendation*, and it has
+to stay attached to the recommendation when a re-run supersedes it.
 
 `progress` is a separate sub-object because it has a different writer and a different
-lifetime from the report body: the report is immutable once written, progress accumulates
+lifetime from the report body: the report is immutable once written, feedback accumulates
 against it.
 
 `required` vs `optional` being separate arrays — rather than a `required: bool` flag on a
 flat list — makes it structurally impossible for the UI to blur the distinction, and makes
 `totalRequiredMinutes ≤ budgetMinutes` a validatable invariant. The tool rejects a report
-that overruns the budget and asks the model to move items to `optional`.
+that overruns the budget and asks the model to move items to `optional`. Only `required[]`
+is promoted; an optional item is material the learner may want and is not a thing they owe
+the task, which is exactly the distinction a checkbox would erase.
+
+`kind` survives the promotion as far as the item's `guided` flag: an `exercise` or a
+`code_scaffold` is guided, an `article`, `video`, or `doc` is not. The model may override
+per item — some readings genuinely want walking through — but the default falls out of the
+kind, so a report that says nothing about guidance still produces a sensible checklist.
 
 ## Sessions + events (ADK-owned layout)
 
@@ -394,6 +498,7 @@ See [05-autonomous-runs.md](05-autonomous-runs.md) for the full schema and seman
 | --- | --- |
 | Board: tasks by order, excluding hidden states | `tasks`: `state ASC, order ASC` |
 | Next-up selection | `tasks`: `state ASC, needsResearch ASC, order ASC` |
+| Task's reports, newest first | `research_reports`: `taskId ASC, createdAt DESC` — two fields, so a composite. The emulator answers it without one; Firestore returns `FAILED_PRECONDITION` on the first deployed call, which is the first row of [09-roadmap.md](09-roadmap.md#what-a-green-local-run-does-not-prove) and the reason this row was written in the same change as the query |
 | Expired postponements sweep | collection group `tasks`: `state ASC, postponedUntil ASC` |
 | Projects list | `projects`: `ownerUid ASC, status ASC, updatedAt DESC` |
 | Autonomous candidates | `projects`: `status ASC, lastAutonomousRunAt ASC` |

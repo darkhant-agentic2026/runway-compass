@@ -11,8 +11,9 @@
 import { z } from 'zod';
 
 export const taskStateSchema = z.enum([
+  'draft',
   'not_started',
-  'current',
+  'in_progress',
   'completed',
   'postponed',
   'postponed_until',
@@ -40,6 +41,27 @@ export const rollupSchema = z.object({
 });
 export type Rollup = z.infer<typeof rollupSchema>;
 
+/**
+ * One entry on a leaf task's checklist (docs/02-data-model.md#task-items).
+ *
+ * `details` is asymmetric between guided and unguided, and the UI has to respect that:
+ * for an unguided item it is the instruction and is rendered; for a guided one it is the
+ * coach's teaching notes, the exercise's answer lives in there, and it must **not** be
+ * rendered (docs/06-frontend.md).
+ */
+export const taskItemSchema = z.object({
+  itemId: z.string(),
+  shortDescription: z.string(),
+  details: z.string().default(''),
+  guided: z.boolean().default(false),
+  completed: z.boolean().default(false),
+  completedAt: z.string().nullable().default(null),
+  minutes: z.number().int().nullable().default(null),
+  url: z.string().nullable().default(null),
+  sourceReportId: z.string().nullable().default(null),
+});
+export type TaskItem = z.infer<typeof taskItemSchema>;
+
 export const taskSchema = z.object({
   id: z.string(),
   projectId: z.string(),
@@ -56,6 +78,8 @@ export const taskSchema = z.object({
   needsResearch: z.boolean().default(true),
   researchStatus: researchStatusSchema.default('none'),
   latestReportId: z.string().nullable().default(null),
+  /** Leaf tasks only; mutually exclusive with `rollup`. */
+  items: z.array(taskItemSchema).default([]),
   rollup: rollupSchema.nullable().default(null),
   origin: originSchema.default('user'),
   createdAt: z.string().nullable().default(null),
@@ -178,7 +202,71 @@ export const taskMutationSchema = z.object({
 });
 export type TaskMutation = z.infer<typeof taskMutationSchema>;
 
-export const taskDetailSchema = z.object({ task: taskWithSubtasksSchema });
+// --- research reports ------------------------------------------------------------------
+
+export const reportItemKindSchema = z.enum([
+  'article',
+  'video',
+  'exercise',
+  'doc',
+  'code_scaffold',
+]);
+export type ReportItemKind = z.infer<typeof reportItemKindSchema>;
+
+export const reportItemSchema = z.object({
+  itemId: z.string(),
+  kind: reportItemKindSchema,
+  title: z.string(),
+  url: z.string().nullable().default(null),
+  minutes: z.number().int(),
+  why: z.string().default(''),
+  details: z.string().default(''),
+  source: z.enum(['youtube', 'web', 'generated']).default('web'),
+  meta: z.record(z.string(), z.string()).default({}),
+  guided: z.boolean().nullable().default(null),
+});
+export type ReportItem = z.infer<typeof reportItemSchema>;
+
+/**
+ * `progress` holds feedback and nothing else. Per-item completion moved onto the task at
+ * M4 (docs/02-data-model.md#task-items): a task has one checklist and may have several
+ * reports, so completion on the report was answering the wrong question.
+ */
+export const researchReportSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  ownerUid: z.string(),
+  taskId: z.string(),
+  runId: z.string().nullable().default(null),
+  sessionId: z.string().nullable().default(null),
+  summary: z.string().default(''),
+  required: z.array(reportItemSchema).default([]),
+  optional: z.array(reportItemSchema).default([]),
+  totalRequiredMinutes: z.number().int().default(0),
+  budgetMinutes: z.number().int().default(45),
+  citations: z.array(z.object({ uri: z.string(), title: z.string().default('') })).default([]),
+  progress: z
+    .object({ feedback: z.record(z.string(), z.enum(['up', 'down'])).default({}) })
+    .default({ feedback: {} }),
+  createdAt: z.string().nullable().default(null),
+  updatedAt: z.string().nullable().default(null),
+});
+export type ResearchReport = z.infer<typeof researchReportSchema>;
+
+export const reportListSchema = z.object({ reports: z.array(researchReportSchema) });
+export const reportResponseSchema = z.object({ report: researchReportSchema });
+
+export const researchAcceptedSchema = z.object({
+  runId: z.string(),
+  turnId: z.string().nullable(),
+  mode: z.string(),
+});
+
+export const taskDetailSchema = z.object({
+  task: taskWithSubtasksSchema,
+  latestReport: researchReportSchema.nullable().default(null),
+});
+export type TaskDetail = z.infer<typeof taskDetailSchema>;
 
 // --- sessions & turns ------------------------------------------------------------------
 
@@ -238,5 +326,11 @@ export const problemSchema = z.object({
   status: z.number().int(),
   detail: z.string().default(''),
   instance: z.string().optional(),
+  /**
+   * Present on the `409` from `POST /api/sessions/{sid}/research`: the run already holding
+   * the project's agent lease. What makes that response actionable rather than a dead end
+   * (docs/04-api-contract.md#post-apisessionssidresearch).
+   */
+  runId: z.string().optional(),
 });
 export type Problem = z.infer<typeof problemSchema>;

@@ -30,6 +30,7 @@ from coach.agents.context import (
 )
 from coach.agents.prompt import (
     BOARD_KEY,
+    BUDGET_TEXT_KEY,
     FOCUS_KEY,
     LEARNER_KEY,
     MODE_KEY,
@@ -38,6 +39,7 @@ from coach.agents.prompt import (
     PROJECT_KEY,
     format_minutes,
 )
+from coach.agents.research_agent import RESEARCH_INSTRUCTION, SEARCH_INSTRUCTION
 
 #: The same pattern `google.adk.utils.instructions_utils` substitutes with.
 _PLACEHOLDER = re.compile(r"{+[^{}]*}+")
@@ -47,18 +49,43 @@ def _placeholders(template: str) -> set[str]:
     return {match.group().strip("{}").strip() for match in _PLACEHOLDER.finditer(template)}
 
 
+#: Every key `PromptBuilder` writes. One set for both agents deliberately: they share the
+#: callback, so a placeholder either has a writer or does not, whichever instruction it is
+#: in.
+WRITTEN = {
+    PROJECT_KEY,
+    PREFS_KEY,
+    BOARD_KEY,
+    FOCUS_KEY,
+    OUTCOMES_KEY,
+    LEARNER_KEY,
+    MODE_KEY,
+    BUDGET_TEXT_KEY,
+}
+
+
 def test_every_placeholder_in_the_instruction_has_a_writer() -> None:
     """Read the template, not the code that fills it. See the module docstring."""
-    written = {
-        PROJECT_KEY,
-        PREFS_KEY,
-        BOARD_KEY,
-        FOCUS_KEY,
-        OUTCOMES_KEY,
-        LEARNER_KEY,
-        MODE_KEY,
-    }
-    assert _placeholders(INSTRUCTION) == written
+    assert _placeholders(INSTRUCTION) <= WRITTEN
+    assert _placeholders(INSTRUCTION) == WRITTEN - {BUDGET_TEXT_KEY}
+
+
+def test_every_placeholder_in_the_research_instruction_has_a_writer() -> None:
+    """The same check for `research_agent`, which shares `PromptBuilder`.
+
+    It matters more here, not less: a research run happens inside a detached task with no
+    client necessarily attached, so a `KeyError` while assembling the request would show up
+    as a run that failed for no visible reason rather than as a message on screen.
+    """
+    assert _placeholders(RESEARCH_INSTRUCTION) <= WRITTEN
+    assert BUDGET_TEXT_KEY in _placeholders(RESEARCH_INSTRUCTION)
+
+
+def test_the_search_agents_instruction_has_no_placeholders() -> None:
+    """`search_agent` runs under `AgentTool`, so it does not go through the coach's
+    `before_agent_callback` at all — a placeholder here would have no writer by
+    construction."""
+    assert _placeholders(SEARCH_INSTRUCTION) == set()
 
 
 def test_no_placeholder_is_optional() -> None:
@@ -67,7 +94,8 @@ def test_no_placeholder_is_optional() -> None:
     Every key is written unconditionally by `PromptBuilder`, including on the failure
     path, so an optional marker here would only hide a builder that stopped writing one.
     """
-    assert not any(name.endswith("?") for name in _placeholders(INSTRUCTION))
+    for template in (INSTRUCTION, RESEARCH_INSTRUCTION):
+        assert not any(name.endswith("?") for name in _placeholders(template))
 
 
 class _FakeState(dict[str, Any]):

@@ -110,6 +110,25 @@ resource "google_firestore_index" "projects_autonomous_candidates" {
   }
 }
 
+# "Task's reports, newest first" — backs `GET /api/tasks/{id}/reports`. Added at M4 in the
+# same change as the query, because the emulator answers a two-filter query without an index
+# and Firestore refuses it (docs/09-roadmap.md#what-a-green-local-run-does-not-prove).
+resource "google_firestore_index" "reports_by_task" {
+  project     = var.project_id
+  database    = google_firestore_database.this.name
+  collection  = "research_reports"
+  query_scope = "COLLECTION"
+
+  fields {
+    field_path = "taskId"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "createdAt"
+    order      = "DESCENDING"
+  }
+}
+
 # "Stuck runs"
 resource "google_firestore_index" "runs_stuck" {
   project     = var.project_id

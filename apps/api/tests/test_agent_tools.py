@@ -227,10 +227,10 @@ async def test_a_dead_socket_does_not_fail_the_tool(container) -> None:
 async def test_the_tools_are_the_catalogue_the_design_lists(container) -> None:
     """The tool surface, asserted by name.
 
-    docs/03-agent-design.md#domain-tools is the catalogue; `post_research_report` is M4
-    and the memory tools are M6, so this list grows twice more. Pinning it by name means
-    a tool that is added without a docs row, or removed by a refactor, shows up here
-    rather than as a model that quietly stops being able to do something.
+    docs/03-agent-design.md#domain-tools is the catalogue; the memory tools are M6, so
+    this list grows once more. Pinning it by name means a tool that is added without a
+    docs row, or removed by a refactor, shows up here rather than as a model that quietly
+    stops being able to do something.
     """
     names = {tool.name for tool in container.domain_tools.as_tools()}
     assert names == {
@@ -242,24 +242,32 @@ async def test_the_tools_are_the_catalogue_the_design_lists(container) -> None:
         "set_next_up",
         "reorder_task",
         "discard_task",
+        "add_task_items",
+        "complete_task_item",
         "update_project_prefs",
     }
 
 
-async def test_discarding_is_the_only_tool_that_needs_confirmation(container) -> None:
-    """docs/03-agent-design.md: `discard_task` "requires user confirmation".
+async def test_exactly_two_tools_are_gated_on_the_learners_confirmation(container) -> None:
+    """docs/03-agent-design.md: `discard_task` and `complete_task_item` "require user
+    confirmation".
 
     The gate is ADK's `require_confirmation`, so it holds whether or not the model
     cooperates — which is the difference between a gate and an instruction. Asserted
     against the built tool rather than the constructor argument, because the flag is only
     load-bearing once `FunctionTool` is holding it.
+
+    Both directions matter, which is why this is an equality and not two `in` checks. An
+    extra gated tool makes the coach ask permission for something routine; a missing one is
+    silent — and from M4 the missing one would be *task completion*, since the last item
+    finishing a checklist finishes the task (docs/02-data-model.md#task-items).
     """
     gated = {
         tool.name
         for tool in container.domain_tools.as_tools()
         if getattr(tool, "_require_confirmation", False)
     }
-    assert gated == {"discard_task"}
+    assert gated == {"discard_task", "complete_task_item"}
 
 
 async def test_an_oversized_task_is_refused_rather_than_created(
@@ -355,13 +363,13 @@ async def test_the_coach_cannot_mark_a_task_complete(
         )
     ).json()["task"]
     context = _FakeToolContext("u_alice", project["id"])
-    await container.domain_tools.set_task_state(task["id"], "current", context)
+    await container.domain_tools.set_task_state(task["id"], "in_progress", context)
 
     refused = await container.domain_tools.set_task_state(task["id"], "completed", context)
 
     assert not refused["ok"]
     assert "learner" in refused["error"]["message"]
-    assert (await _board(client, project["id"]))[0]["state"] == "current"
+    assert (await _board(client, project["id"]))[0]["state"] == "in_progress"
 
 
 async def test_the_coach_cannot_discard_around_the_confirmation(
@@ -386,7 +394,7 @@ async def test_the_coach_cannot_discard_around_the_confirmation(
 
     assert not refused["ok"]
     assert "discard_task" in refused["error"]["message"]
-    assert (await _board(client, project["id"]))[0]["state"] == "not_started"
+    assert (await _board(client, project["id"]))[0]["state"] == "draft"
 
 
 async def test_a_tool_in_an_unlinked_session_refuses_rather_than_guesses(

@@ -7,7 +7,7 @@
  * > roll back on a 500; the optimistic fractional index equals the server's.
  */
 
-import { QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider, type QueryClient } from '@tanstack/react-query';
 import { renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -22,7 +22,7 @@ import {
 } from '@/features/queries';
 import { api } from '@/lib/api';
 import { keyBetween } from '@/lib/ordering';
-import type { SessionEvent, TaskWithSubtasks } from '@/lib/schemas';
+import type { SessionEvent, TaskDetail, TaskWithSubtasks } from '@/lib/schemas';
 import { getSocket } from '@/lib/socket';
 import { toMessages } from '@/lib/transcript';
 import { DEFAULT_FILTERS } from '@/stores/boardUi';
@@ -48,7 +48,7 @@ describe('useSetTaskState', () => {
 
   beforeEach(() => {
     board = [
-      makeParent({ id: 'k_a', order: 'a0', state: 'current' }),
+      makeParent({ id: 'k_a', order: 'a0', state: 'in_progress' }),
       makeParent({ id: 'k_b', order: 'a1', state: 'not_started' }),
     ];
   });
@@ -82,14 +82,14 @@ describe('useSetTaskState', () => {
       wrapper,
     });
 
-    result.current.mutate({ taskId: 'k_b', state: 'current' });
+    result.current.mutate({ taskId: 'k_b', state: 'in_progress' });
 
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(read().find((task) => task.id === 'k_b')?.state).toBe('not_started');
-    expect(read().find((task) => task.id === 'k_a')?.state).toBe('current');
+    expect(read().find((task) => task.id === 'k_a')?.state).toBe('in_progress');
   });
 
-  it('demotes the previous current task optimistically', async () => {
+  it('starting one task leaves the others in progress', async () => {
     vi.spyOn(api, 'setTaskState').mockResolvedValue({
       task: makeTask(),
       parent: null,
@@ -101,13 +101,15 @@ describe('useSetTaskState', () => {
       wrapper,
     });
 
-    result.current.mutate({ taskId: 'k_b', state: 'current' });
+    result.current.mutate({ taskId: 'k_b', state: 'in_progress' });
 
     await waitFor(() => {
-      // Mirroring the server's single-`current` invariant locally: without this the
-      // board briefly shows two "Next up" rows.
-      expect(read().find((task) => task.id === 'k_a')?.state).toBe('not_started');
-      expect(read().find((task) => task.id === 'k_b')?.state).toBe('current');
+      // The removed mirror, asserted as an absence. This hook used to demote whatever
+      // else was `current`, matching a server invariant that M4 deleted — an optimistic
+      // update modelling a rule the server no longer has is a UI that lies for a moment
+      // and then corrects itself (docs/02-data-model.md#task-state-machine).
+      expect(read().find((task) => task.id === 'k_a')?.state).toBe('in_progress');
+      expect(read().find((task) => task.id === 'k_b')?.state).toBe('in_progress');
     });
   });
 
@@ -140,17 +142,19 @@ describe('useSetSubtaskState', () => {
   function setupDetail() {
     const queryClient = createQueryClient();
     const parent = makeParent({ id: PARENT }, [
-      makeTask({ id: 'k_one', state: 'current' }),
+      makeTask({ id: 'k_one', state: 'in_progress' }),
       makeTask({ id: 'k_two', state: 'not_started' }),
     ]);
-    queryClient.setQueryData(queryKeys.task(PARENT), parent);
+    // `['task', id]` holds the whole `GET /api/tasks/{id}` response from M4 — the task
+    // *and* its latest report — because the workspace renders both.
+    queryClient.setQueryData(queryKeys.task(PARENT), { task: parent, latestReport: null });
     // The get-or-create POST that shares the `['task', id]` prefix. It is here precisely
     // so the invalidation below can be observed to leave it alone.
     queryClient.setQueryData(queryKeys.taskSession(PARENT), { id: 's_1' });
     const wrapper = ({ children }: { children: ReactNode }) => (
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     );
-    const read = () => queryClient.getQueryData<TaskWithSubtasks>(queryKeys.task(PARENT))!;
+    const read = () => queryClient.getQueryData<TaskDetail>(queryKeys.task(PARENT))!.task;
     return { queryClient, wrapper, read };
   }
 
@@ -177,11 +181,11 @@ describe('useSetSubtaskState', () => {
     const { wrapper, read } = setupDetail();
     const { result } = renderHook(() => useSetSubtaskState(PARENT, PROJECT_ID), { wrapper });
 
-    result.current.mutate({ taskId: 'k_two', state: 'current' });
+    result.current.mutate({ taskId: 'k_two', state: 'in_progress' });
 
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(read().subtasks.find((task) => task.id === 'k_two')?.state).toBe('not_started');
-    expect(read().subtasks.find((task) => task.id === 'k_one')?.state).toBe('current');
+    expect(read().subtasks.find((task) => task.id === 'k_one')?.state).toBe('in_progress');
   });
 
   it('invalidates the task detail without disturbing the session under the same prefix', async () => {
@@ -194,7 +198,7 @@ describe('useSetSubtaskState', () => {
     const { wrapper, queryClient } = setupDetail();
     const { result } = renderHook(() => useSetSubtaskState(PARENT, PROJECT_ID), { wrapper });
 
-    result.current.mutate({ taskId: 'k_two', state: 'current' });
+    result.current.mutate({ taskId: 'k_two', state: 'in_progress' });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     // The decision rather than the result (CLAUDE.md): `queryKeys.taskSession` is
@@ -368,5 +372,62 @@ describe('useReorderTask', () => {
 
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(read().map((task) => task.id)).toEqual(['k_a', 'k_b', 'k_c']);
+  });
+});
+
+describe('board_update reaches the screens that read a single task', () => {
+  const TASK = 'k_researched';
+  const PROJECT = 'p_1';
+
+  function setupCaches() {
+    const queryClient = createQueryClient();
+    queryClient.setQueryData(queryKeys.task(TASK), {
+      task: makeParent({ id: TASK }),
+      latestReport: null,
+    });
+    queryClient.setQueryData(queryKeys.reports(TASK), []);
+    queryClient.setQueryData(queryKeys.taskSession(TASK), { id: 's_1' });
+    queryClient.setQueryData(queryKeys.tasks(PROJECT, DEFAULT_FILTERS), []);
+    return queryClient;
+  }
+
+  /**
+   * `useCoachSocket`'s handler, lifted out so this can assert the invalidation without
+   * standing up a socket. What is being pinned is the *decision* — which keys a frame
+   * touches — not the transport, which `socket.test.ts` already covers.
+   */
+  function handle(queryClient: QueryClient, frame: { projectId: string; taskIds: string[] }) {
+    void queryClient.invalidateQueries({ queryKey: ['tasks', frame.projectId] });
+    void queryClient.invalidateQueries({ queryKey: ['project', frame.projectId] });
+    for (const taskId of frame.taskIds) {
+      void queryClient.invalidateQueries({ queryKey: ['task', taskId], exact: true });
+      void queryClient.invalidateQueries({ queryKey: ['task', taskId, 'reports'] });
+    }
+  }
+
+  it('invalidates the named task’s detail and report history, not just the board', () => {
+    // The defect this pins: a research run posts its report and says nothing else, so
+    // `board_update` is the *only* signal the workspace gets. Before M4 the frame
+    // invalidated `['tasks', projectId]` and `['project', projectId]` — neither of which
+    // the task's own screen reads — and the checklist simply never appeared.
+    const queryClient = setupCaches();
+    handle(queryClient, { projectId: PROJECT, taskIds: [TASK] });
+
+    expect(queryClient.getQueryState(queryKeys.task(TASK))?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(queryKeys.reports(TASK))?.isInvalidated).toBe(true);
+    expect(
+      queryClient.getQueryState(queryKeys.tasks(PROJECT, DEFAULT_FILTERS))?.isInvalidated,
+    ).toBe(true);
+  });
+
+  it('leaves the get-or-create session under the same prefix alone', () => {
+    // `queryKeys.taskSession` is `['task', id, 'session']`, so a prefix invalidation would
+    // re-POST `POST /api/tasks/{id}/session` on every board update — including every one
+    // an autonomous run produces at M5. The `exact` flag is what stops it, and both
+    // spellings pass a test that only checks the checklist refreshed.
+    const queryClient = setupCaches();
+    handle(queryClient, { projectId: PROJECT, taskIds: [TASK] });
+
+    expect(queryClient.getQueryState(queryKeys.taskSession(TASK))?.isInvalidated).toBe(false);
   });
 });

@@ -48,7 +48,7 @@ async def test_a_new_task_carries_the_documented_defaults(
 ) -> None:
     project_id = await _project(client)
     task = await _add(client, project_id, "t")
-    assert task["state"] == "not_started"
+    assert task["state"] == "draft"
     assert task["origin"] == "user"
     assert task["needsResearch"] is True
     assert task["researchStatus"] == "none"
@@ -135,20 +135,21 @@ async def test_state_changes_go_through_the_state_machine(
     project_id = await _project(client)
     task = await _add(client, project_id, "t")
 
-    illegal = await client.post(f"/api/tasks/{task['id']}/state", json={"state": "completed"})
+    # A brand-new task is `draft`, and deferring is only reachable from `in_progress`.
+    illegal = await client.post(f"/api/tasks/{task['id']}/state", json={"state": "postponed"})
     assert illegal.status_code == 409
     assert illegal.json()["type"] == "/problems/invalid-transition"
 
-    started = await client.post(f"/api/tasks/{task['id']}/state", json={"state": "current"})
+    started = await client.post(f"/api/tasks/{task['id']}/state", json={"state": "in_progress"})
     assert started.status_code == 200
-    assert started.json()["task"]["state"] == "current"
+    assert started.json()["task"]["state"] == "in_progress"
     assert started.json()["project"]["nextUpTaskId"] == task["id"]
 
 
 async def test_postponing_until_a_future_time(client: httpx.AsyncClient) -> None:
     project_id = await _project(client)
     task = await _add(client, project_id, "t")
-    await client.post(f"/api/tasks/{task['id']}/state", json={"state": "current"})
+    await client.post(f"/api/tasks/{task['id']}/state", json={"state": "in_progress"})
 
     when = (now() + timedelta(days=2)).isoformat()
     response = await client.post(
@@ -165,7 +166,7 @@ async def test_postponed_until_without_a_timestamp_is_refused(
 ) -> None:
     project_id = await _project(client)
     task = await _add(client, project_id, "t")
-    await client.post(f"/api/tasks/{task['id']}/state", json={"state": "current"})
+    await client.post(f"/api/tasks/{task['id']}/state", json={"state": "in_progress"})
     response = await client.post(
         f"/api/tasks/{task['id']}/state", json={"state": "postponed_until"}
     )
@@ -180,7 +181,7 @@ async def test_board_filters_default_to_hiding_completed_and_discarded(
     done = await _add(client, project_id, "done")
     gone = await _add(client, project_id, "gone")
 
-    await client.post(f"/api/tasks/{done['id']}/state", json={"state": "current"})
+    await client.post(f"/api/tasks/{done['id']}/state", json={"state": "in_progress"})
     await client.post(f"/api/tasks/{done['id']}/state", json={"state": "completed"})
     await client.post(f"/api/tasks/{gone['id']}/state", json={"state": "discarded"})
 
@@ -196,7 +197,7 @@ async def test_hiding_postponed_is_opt_in(client: httpx.AsyncClient) -> None:
     """docs/06-frontend.md: "Hide postponed" defaults off."""
     project_id = await _project(client)
     task = await _add(client, project_id, "t")
-    await client.post(f"/api/tasks/{task['id']}/state", json={"state": "current"})
+    await client.post(f"/api/tasks/{task['id']}/state", json={"state": "in_progress"})
     await client.post(f"/api/tasks/{task['id']}/state", json={"state": "postponed"})
 
     assert len(await _board(client, project_id)) == 1
@@ -217,7 +218,7 @@ async def test_a_hidden_parent_stays_on_the_board_while_it_has_visible_children(
             ]
         },
     )
-    await client.post(f"/api/tasks/{parent['id']}/state", json={"state": "current"})
+    await client.post(f"/api/tasks/{parent['id']}/state", json={"state": "in_progress"})
     await client.post(f"/api/tasks/{parent['id']}/state", json={"state": "completed"})
 
     board = await _board(client, project_id)
@@ -318,7 +319,7 @@ async def test_tasks_are_isolated_per_user(
 
     unchanged = (await client.get(f"/api/tasks/{task['id']}")).json()["task"]
     assert unchanged["title"] == "secret"
-    assert unchanged["state"] == "not_started"
+    assert unchanged["state"] == "draft"
 
 
 async def test_a_mutation_returns_the_parent_and_project_for_optimistic_reconciliation(

@@ -36,6 +36,7 @@ from google.genai import types
 from coach.agents.context import (
     DEFAULT_MINUTES_KEY,
     PROJECT_ID_KEY,
+    RESEARCH_BUDGET_KEY,
     TASK_ID_KEY,
 )
 from coach.core.errors import CoachError
@@ -65,6 +66,10 @@ FOCUS_KEY = "temp:coach_focus"
 OUTCOMES_KEY = "temp:coach_outcomes"
 LEARNER_KEY = "temp:coach_learner"
 MODE_KEY = "temp:coach_mode"
+#: Read by `research_agent`'s instruction. Prose rather than a number, because the model has
+#: to reason about what is *left* after the reading it has already chosen, and a bare
+#: integer in a template invites it to be treated as the answer rather than the ceiling.
+BUDGET_TEXT_KEY = "temp:coach_budget_text"
 
 #: How many finished tasks to show as "how this learner has been doing". Enough to read a
 #: trend, short enough that it cannot crowd out the live board.
@@ -106,9 +111,50 @@ def render_task(task: Task, *, indent: str = "") -> str:
             f" — {task.rollup.subtask_count} subtasks, "
             f"{format_minutes(task.rollup.total_estimated_minutes)} total"
         )
+    elif task.items:
+        done = sum(1 for item in task.items if item.completed)
+        parts.append(f" — {done} of {len(task.items)} steps done")
     if task.origin.value == "agent":
         parts.append(" — added by you")
     return "".join(parts)
+
+
+def render_items(task: Task) -> str:
+    """The focus task's checklist — the plan the coach is working through.
+
+    Every item carries its `itemId`, because `complete_task_item` takes one and the model
+    has nowhere else to read it from. `details` is included in full: for a guided item they
+    are the coach's teaching notes, which is what the coach is for. The *UI* is what must
+    never show a guided item's details to the learner
+    (docs/06-frontend.md#task-workspace-projectsprojectidtaskstaskid).
+
+    `guided` is rendered as a sentence rather than a flag. The distinction decides how the
+    coach behaves for the next several minutes — teach this, or hand it over and wait — and
+    a bare `guided=false` invites a model to narrate a video it has never seen.
+    """
+    if not task.items:
+        return (
+            "This task has no checklist yet. If it needs prepared material, research will "
+            "write one; otherwise work from the description and add steps as they come up."
+        )
+    lines = ["The steps for this task, in order:"]
+    for item in task.items:
+        mark = "x" if item.completed else " "
+        budget = f", {format_minutes(item.minutes)}" if item.minutes else ""
+        lines.append(f"  [{mark}] {item.short_description} (id={item.item_id}{budget})")
+        if item.guided:
+            lines.append("      You walk the learner through this one. Your notes:")
+        else:
+            lines.append(
+                "      The learner does this on their own, away from this conversation "
+                "— hand it over and wait for them to report back. Do not describe "
+                "material you have not read. What they should do:"
+            )
+        if item.details:
+            lines.append(f"      {item.details}")
+        if item.url:
+            lines.append(f"      Link: {item.url}")
+    return "\n".join(lines)
 
 
 def render_board(board: list[TaskWithSubtasks]) -> str:
@@ -136,6 +182,11 @@ def render_focus(task: TaskWithSubtasks | None) -> str:
     if task.subtasks:
         lines.append("Its subtasks:")
         lines.extend(render_task(child, indent="  ") for child in task.subtasks)
+    else:
+        # A parent's plan is its subtasks and a leaf's is its checklist — never both
+        # (docs/02-data-model.md#task-items), so this is an `else` rather than a second
+        # section.
+        lines.append(render_items(task))
     return "\n".join(lines)
 
 
@@ -184,6 +235,28 @@ def render_learner(profile: LearnerProfile) -> str:
     return "\n".join(lines)
 
 
+def render_budget(task: TaskWithSubtasks | None, prefs: EffectivePrefs) -> str:
+    """The minute budget `research_agent` has to fit its required list inside.
+
+    The task's own estimate, not the project default — a 20-minute task does not get 45
+    minutes of required reading because that is what the preference says. The default is
+    the fallback for a research run with no task, which `ResearchService` does not start
+    but which the prompt has to render something for rather than raise a `KeyError` inside
+    a detached generation task.
+    """
+    if task is None:
+        return (
+            f"Budget: {prefs.default_task_minutes} minutes for everything in the required "
+            "list, added together."
+        )
+    return (
+        f"Budget: {task.estimated_minutes} minutes "
+        f"({format_minutes(task.estimated_minutes)}) for everything in the required list, "
+        "added together. This is the whole of the time the learner has set aside for this "
+        "task, so it has to cover the exercises as well as the reading."
+    )
+
+
 def render_project(project: Project) -> str:
     goal = project.goal.strip() or "(not established yet — this is what intake is for)"
     return f"Project: {project.title}\nGoal: {goal}"
@@ -225,9 +298,23 @@ class PromptBuilder:
             OUTCOMES_KEY: "",
             LEARNER_KEY: render_learner(LearnerProfile()),
             MODE_KEY: "task",
+            BUDGET_TEXT_KEY: render_budget(
+                None,
+                EffectivePrefs.model_construct(
+                    default_task_minutes=45,
+                    guidance_style="socratic",
+                    verbosity="balanced",
+                    timezone="UTC",
+                    research_depth="standard",
+                    allow_videos=True,
+                    preferred_sources=[],
+                    avoid_sources=[],
+                ),
+            ),
             PROJECT_ID_KEY: "",
             TASK_ID_KEY: "",
             DEFAULT_MINUTES_KEY: 45,
+            RESEARCH_BUDGET_KEY: 45,
         }
         state.update(defaults)
 
@@ -265,9 +352,15 @@ class PromptBuilder:
                 OUTCOMES_KEY: render_outcomes(board),
                 LEARNER_KEY: render_learner(user.learner_profile),
                 MODE_KEY: "intake" if linkage.task_id is None else "task",
+                BUDGET_TEXT_KEY: render_budget(focus, prefs),
                 PROJECT_ID_KEY: linkage.project_id,
                 TASK_ID_KEY: linkage.task_id or "",
                 DEFAULT_MINUTES_KEY: prefs.default_task_minutes,
+                # The number behind the prose above. `post_research_report` validates
+                # against this rather than re-parsing the instruction.
+                RESEARCH_BUDGET_KEY: (
+                    focus.estimated_minutes if focus is not None else prefs.default_task_minutes
+                ),
             }
         )
         return None
@@ -275,6 +368,7 @@ class PromptBuilder:
 
 __all__ = [
     "BOARD_KEY",
+    "BUDGET_TEXT_KEY",
     "FOCUS_KEY",
     "LEARNER_KEY",
     "MODE_KEY",
@@ -285,7 +379,9 @@ __all__ = [
     "PromptBuilder",
     "format_minutes",
     "render_board",
+    "render_budget",
     "render_focus",
+    "render_items",
     "render_learner",
     "render_outcomes",
     "render_prefs",

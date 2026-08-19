@@ -83,7 +83,7 @@ async def test_asking_to_discard_does_not_discard(
 
     calls = await _function_calls(client, session_id)
     assert [call["name"] for call in calls] == ["discard_task", CONFIRMATION_FUNCTION_NAME]
-    assert await _states(client, project_with_a_task["project"]["id"]) == ["not_started"]
+    assert await _states(client, project_with_a_task["project"]["id"]) == ["draft"]
 
 
 async def test_confirming_lets_it_through(
@@ -129,7 +129,7 @@ async def test_refusing_leaves_the_task_alone(
         confirmation={"functionCallId": request["id"], "confirmed": False},
     )
 
-    assert await _states(client, project_with_a_task["project"]["id"]) == ["not_started"]
+    assert await _states(client, project_with_a_task["project"]["id"]) == ["draft"]
 
 
 async def test_a_confirmation_alone_is_a_valid_turn(

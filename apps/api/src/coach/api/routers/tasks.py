@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, status
 
-from coach.api.deps import CurrentUser, Tasks
+from coach.api.deps import CurrentUser, Reports, Tasks
 from coach.api.idempotency import idempotency_guard
 from coach.api.schemas import (
     ProjectDerived,
     TaskCreate,
     TaskDetailResponse,
+    TaskItemPatch,
+    TaskItemReorder,
+    TaskItemsAdd,
     TaskMutationResponse,
     TaskPatch,
     TaskReorder,
@@ -58,8 +61,18 @@ async def create_task(
 
 
 @router.get("/tasks/{task_id}", response_model=TaskDetailResponse)
-async def get_task(task_id: str, principal: CurrentUser, tasks: Tasks) -> TaskDetailResponse:
-    return TaskDetailResponse(task=await tasks.get_with_subtasks(principal, task_id))
+async def get_task(
+    task_id: str, principal: CurrentUser, tasks: Tasks, reports: Reports
+) -> TaskDetailResponse:
+    """Task + `items[]` + subtasks + `latestReport` (docs/04-api-contract.md).
+
+    The report is read by `latestReportId` rather than by re-running the ordered query —
+    one point read against no index — and is `None` until a run has posted one.
+    """
+    task = await tasks.get_with_subtasks(principal, task_id)
+    return TaskDetailResponse(
+        task=task, latest_report=await reports.latest_for_task(principal, task)
+    )
 
 
 @router.patch(
@@ -110,6 +123,87 @@ async def reorder_task(
         after_task_id=body.after_task_id,
         before_task_id=body.before_task_id,
     )
+    return await _mutation_response(tasks, task)
+
+
+# --- checklist items -------------------------------------------------------------------
+# docs/02-data-model.md#task-items. Every one of these returns the *whole task* rather than
+# the item, because a write to the checklist can move the task's `state` (invariant 6) and
+# the project's `counts` — a client that patched only the item into its cache would show a
+# finished checklist above a task still badged "in progress" until the next refetch.
+
+
+@router.post(
+    "/tasks/{task_id}/items",
+    response_model=TaskMutationResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(idempotency_guard)],
+)
+async def add_task_items(
+    task_id: str, body: TaskItemsAdd, principal: CurrentUser, tasks: Tasks
+) -> TaskMutationResponse:
+    task = await tasks.add_items(
+        principal, task_id, [item.model_dump(by_alias=True) for item in body.items]
+    )
+    return await _mutation_response(tasks, task)
+
+
+@router.patch(
+    "/tasks/{task_id}/items/{item_id}",
+    response_model=TaskMutationResponse,
+    dependencies=[Depends(idempotency_guard)],
+)
+async def patch_task_item(
+    task_id: str,
+    item_id: str,
+    body: TaskItemPatch,
+    principal: CurrentUser,
+    tasks: Tasks,
+) -> TaskMutationResponse:
+    """The checkbox and the inline edit."""
+    task = await tasks.patch_item(
+        principal,
+        task_id,
+        item_id,
+        completed=body.completed,
+        short_description=body.short_description,
+        details=body.details,
+        guided=body.guided,
+    )
+    return await _mutation_response(tasks, task)
+
+
+@router.post(
+    "/tasks/{task_id}/items/{item_id}/reorder",
+    response_model=TaskMutationResponse,
+    dependencies=[Depends(idempotency_guard)],
+)
+async def reorder_task_item(
+    task_id: str,
+    item_id: str,
+    body: TaskItemReorder,
+    principal: CurrentUser,
+    tasks: Tasks,
+) -> TaskMutationResponse:
+    task = await tasks.reorder_item(
+        principal,
+        task_id,
+        item_id,
+        after_item_id=body.after_item_id,
+        before_item_id=body.before_item_id,
+    )
+    return await _mutation_response(tasks, task)
+
+
+@router.delete(
+    "/tasks/{task_id}/items/{item_id}",
+    response_model=TaskMutationResponse,
+    dependencies=[Depends(idempotency_guard)],
+)
+async def delete_task_item(
+    task_id: str, item_id: str, principal: CurrentUser, tasks: Tasks
+) -> TaskMutationResponse:
+    task = await tasks.delete_item(principal, task_id, item_id)
     return await _mutation_response(tasks, task)
 
 

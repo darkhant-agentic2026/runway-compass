@@ -38,6 +38,19 @@ export function useCoachSocket(): void {
     const unsubscribe = socket.onBoardUpdate((frame) => {
       void queryClient.invalidateQueries({ queryKey: ['tasks', frame.projectId] });
       void queryClient.invalidateQueries({ queryKey: ['project', frame.projectId] });
+      // The *named* tasks, too. The board reads `['tasks', projectId]` and the workspace
+      // reads `['task', taskId]` — different keys — so before M4 a task's own screen was
+      // the one place a push could not reach. Nothing noticed while the only writers were
+      // tools the user had just talked to, because the reply arriving refetched the
+      // transcript anyway; a research run posts its report and says nothing further, so
+      // the checklist simply never appeared.
+      //
+      // `exact`, because `queryKeys.taskSession` is `['task', id, 'session']`: a prefix
+      // invalidation would re-issue that get-or-create POST on every board update.
+      for (const taskId of frame.taskIds) {
+        void queryClient.invalidateQueries({ queryKey: ['task', taskId], exact: true });
+        void queryClient.invalidateQueries({ queryKey: ['task', taskId, 'reports'] });
+      }
     });
     void socket.connect();
 

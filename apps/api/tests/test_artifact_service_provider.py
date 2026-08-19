@@ -33,6 +33,7 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 
 from coach.agents.prompt import PromptBuilder
+from coach.agents.research_tools import ResearchTools
 from coach.agents.runner import RunnerFactory
 from coach.agents.tools import DomainTools
 from coach.core.app import APP_NAME
@@ -100,6 +101,7 @@ async def test_a_runner_can_open_an_invocation_context(deployed_artifacts) -> No
         # services rather than mocked, because a mock would imply they were part of what
         # is under test.
         tools=DomainTools(cast(Any, None), cast(Any, None), BoardUpdateHub()),
+        research_tools=ResearchTools(cast(Any, None), cast(Any, None), BoardUpdateHub()),
         prompt=PromptBuilder(*(cast(Any, None),) * 4),
     )
     # A scripted model so that no model client is built either; the artifact service is

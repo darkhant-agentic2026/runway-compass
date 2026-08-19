@@ -24,7 +24,16 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from coach.api.idempotency import IdempotencyMiddleware, ReplayedResponse
-from coach.api.routers import health, me, projects, sessions, tasks, uploads, ws
+from coach.api.routers import (
+    health,
+    me,
+    projects,
+    reports,
+    sessions,
+    tasks,
+    uploads,
+    ws,
+)
 from coach.core.config import Settings, get_settings
 from coach.core.errors import PROBLEM_CONTENT_TYPE, CoachError
 from coach.core.ids import trace_id as new_trace_id
@@ -203,6 +212,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(me.router)
     app.include_router(projects.router)
     app.include_router(tasks.router)
+    app.include_router(reports.router)
     app.include_router(sessions.router)
     app.include_router(uploads.router)
     app.include_router(ws.router)

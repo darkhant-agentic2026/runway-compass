@@ -114,14 +114,23 @@ A single module owns the socket:
 
 ### Task board (`/projects/:projectId`)
 
-- Ordered list of top-level tasks. The `current` task is visually pinned as "Next up."
+- Ordered list of top-level tasks. Whatever `project.nextUpTaskId` names is visually pinned
+  as "Next up." That pointer is derived rather than enforced from M4
+  ([02-data-model.md](02-data-model.md#task-state-machine)), so the pin can sit on an
+  `in_progress` task while other tasks are also `in_progress` — the board no longer implies
+  the learner has exactly one thing open.
 - **The project's intake conversation sits beside the board** (added at M3). The session
   `POST /api/projects` opens has `taskId: null` and no route of its own, and the board is
   the screen a new project lands on — so the learner watches cards appear as the coach
   proposes them, which is what `board_update` is for. It is the same `SessionPane` the
   task workspace renders; `POST /api/projects/{id}/session` resolves it on a later visit.
 - Card shows: title, estimated duration chip, state badge, research status (a small
-  "materials ready" indicator), and `origin: agent` badge when the coach created it.
+  "materials ready" indicator), and `origin: agent` badge when the coach created it. A leaf
+  task with items shows "2 of 5 done" in the same slot a parent shows its subtask rollup —
+  the two are the same idea and never both apply.
+- **A `draft` card reads as "no plan yet", not as blocked.** The badge is muted and the card
+  offers "Research this task" alongside the ordinary Start action, because `draft` is a
+  state the learner may work straight out of ([02-data-model.md](02-data-model.md#task-state-machine)).
 - **Parent cards show `rollup.subtaskCount` and `rollup.totalEstimatedMinutes`** ("4
   subtasks · 2 h 30 m") with a progress ring for `completedSubtasks`. Expanding reveals
   subtasks inline.
@@ -151,25 +160,40 @@ Left — **task detail**:
   Above them sits the same `rollup` pair the board's parent card shows — a progress ring
   over `completedSubtasks` and "4 subtasks · 2 h 30 m" — read from the same field, so the
   board and the workspace cannot disagree about how far along a task is.
-- **Research report** rendered as two clearly separated blocks:
+- **The checklist and the report, as two clearly separated blocks:**
 
 ```
 ┌ To complete this task ─────────────── 38 of 45 min ┐
-│ ▸ Article · 12 min · "Structured concurrency in…"  │
-│ ▸ Video   · 14 min · YouTube — channel, duration   │
-│ ▸ Exercise · 12 min · written by your coach        │
+│ ☑ Read §3–4 on structured concurrency      12 min  │  ← unguided: link, opens out
+│ ☐ Watch "Nurseries explained"              14 min  │  ← unguided: YouTube, channel
+│ ☐ Work through the cancellation exercise   12 min  │  ← guided: "with your coach"
 └────────────────────────────────────────────────────┘
 ┌ Optional, if you want to go deeper ────────────────┐
 │ ▸ Article · 30 min · …                             │
 └────────────────────────────────────────────────────┘
 ```
 
-  Different container styling, different heading, a running "X of Y min" budget meter on
-  the required block, and per-item checkboxes that feed completion. Optional items have no
-  checkboxes at all — the affordance itself encodes the distinction.
-- Citations list from grounding metadata.
-- "Research this task now" button → `POST /api/sessions/{sid}/research`, with progress
-  from `run_status` frames.
+  The top block is `task.items[]` — the checklist, in array order, each with a checkbox
+  writing `PATCH /api/tasks/{id}/items/{itemId}`. The bottom is the latest report's
+  `optional[]`, which has **no checkboxes at all**: the affordance itself encodes the
+  distinction, and it is now structural rather than conventional, since the two blocks read
+  from different documents.
+- **A guided item and an unguided one look different, because they ask for different
+  things.** An unguided item renders its `details` — the link, the section, the video's
+  channel and duration — because that is the instruction, and it carries a "Mark done"
+  affordance for the learner to report back with. A guided item renders only its
+  `shortDescription` and a "with your coach" marker; its `details` are the coach's teaching
+  notes and showing them to the learner would hand over the answer to the exercise. **Do not
+  render `item.details` for a guided item**, in this screen or any future one.
+- Different container styling, different heading, and a running "X of Y min" budget meter
+  over the checklist.
+- Citations list from grounding metadata, on the report block.
+- **Report history is collapsed.** Q4 ([10-risks.md](10-risks.md#open-questions)) settles
+  reports as accumulating: the newest renders expanded, older ones as a "3 earlier runs"
+  disclosure. The checklist is not versioned this way — there is one, and it is current.
+- "Research this task now" button → `POST /api/sessions/{sid}/research`, with progress from
+  the turn's tool chips. On a `draft` task this is the screen's primary action; once
+  materials exist it moves into the report block's header as "Research again."
 
 Right — **session chat**:
 - Streamed markdown, rendered ([below](#markdown-in-the-transcript)); tool activity as inline status chips

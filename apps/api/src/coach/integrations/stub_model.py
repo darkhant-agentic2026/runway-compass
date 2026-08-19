@@ -35,6 +35,16 @@ writes as `Default task length: 120 minutes` — and:
    if it does not fit the budget, into `ceil(minutes / budget)` equal subtasks;
 3. on the turn after that, answers in prose.
 
+## Research (M4)
+
+Golden flow #5 needs a report, so the stub also answers as `research_agent`. It recognises
+that agent by its tool set — `post_research_report` present, `add_task` absent — and emits
+one report call, with a required list sized from the **research** budget line the prompt
+carries (`Budget: 45 minutes`, written by `agents/prompt.py`'s `render_budget`). That is a
+different number from the coach's `Default task length`, and parsing it separately is what
+makes the e2e assertion meaningful: the checklist fits the *task's* estimate because the
+prompt said so, not because the test and the stub agreed on 45.
+
 That makes flow #7 a real assertion rather than a staged one: the *only* thing that
 differs between a project with a two-hour override and one on the 45-minute global
 default is the number the prompt carried, so subtask sizes that follow the override prove
@@ -110,6 +120,11 @@ graph TD;
 #: reading the same prompt the real model would.
 _BUDGET_PATTERN = re.compile(r"Default task length:\s*(\d+)\s*minutes")
 
+#: `render_budget`'s line, which carries the *task's* estimate rather than the project
+#: default. A separate pattern rather than a reused one, because the two numbers differ and
+#: conflating them would make flow #5 assert the wrong one.
+_RESEARCH_BUDGET_PATTERN = re.compile(r"Budget:\s*(\d+)\s*minutes")
+
 #: "4 hours", "90 minutes", "2h". Whole units only: a stub that parsed "2.5 hours" would
 #: be inventing precision no assertion depends on.
 _DURATION_PATTERN = re.compile(r"(\d+)\s*(hours?|hrs?|h|minutes?|mins?|m)\b", re.IGNORECASE)
@@ -143,6 +158,57 @@ def budget_minutes(instruction: str) -> int:
     """The task budget the prompt carried, or the global default if it carried none."""
     match = _BUDGET_PATTERN.search(instruction)
     return int(match.group(1)) if match else DEFAULT_BUDGET_MINUTES
+
+
+def research_budget_minutes(instruction: str) -> int:
+    """The minute budget the research prompt carried, or the global default."""
+    match = _RESEARCH_BUDGET_PATTERN.search(instruction)
+    return int(match.group(1)) if match else DEFAULT_BUDGET_MINUTES
+
+
+def research_plan(budget: int) -> dict[str, Any]:
+    """A report that fits `budget`: one thing to read, one thing to do.
+
+    Two items rather than one so that flow #5 can tick one and see the task *not* complete,
+    then tick the other and see it complete — which is the difference between testing
+    invariant 6 and testing that a checkbox writes a boolean. One guided and one unguided,
+    so the two renderings are both on screen.
+
+    The reading takes the smaller share, so the two sum to exactly `budget` and the budget
+    meter's "X of Y" is an equality.
+    """
+    reading = max(1, budget // 3)
+    return {
+        "summary": "Two things to get through: one to read, one to work through with me.",
+        "required": [
+            {
+                "kind": "article",
+                "title": "The official guide",
+                "url": "https://example.com/guide",
+                "minutes": reading,
+                "why": "Read the official guide, so you have the vocabulary for the rest",
+                "source": "web",
+            },
+            {
+                "kind": "exercise",
+                "title": "Work through it with your coach",
+                "minutes": budget - reading,
+                "why": "Work through the exercise with me, to check it actually landed",
+                "details": "Ask them to explain it back before showing them the answer.",
+                "source": "generated",
+            },
+        ],
+        "optional": [
+            {
+                "kind": "article",
+                "title": "A deeper treatment",
+                "url": "https://example.com/deeper",
+                "minutes": 30,
+                "why": "If you want to go further than this task needs",
+                "source": "web",
+            }
+        ],
+    }
 
 
 def first_task_id(instruction: str) -> str | None:
@@ -245,13 +311,23 @@ def _plan_tool_call(llm_request: Any) -> types.FunctionCall | None:
     answers no forever, which is worse: the stub re-issues `split_task` on every pass and
     the turn never ends. `_turn_responses` is the boundary between the two.
     """
-    if "add_task" not in _available_tools(llm_request):
+    tools = _available_tools(llm_request)
+    responses = _turn_responses(llm_request)
+
+    if "post_research_report" in tools:
+        # `research_agent`. One report, then prose — and nothing else, because the real one
+        # is instructed to deliver exactly one `post_research_report` call.
+        if responses:
+            return None
+        plan = research_plan(research_budget_minutes(_instruction(llm_request)))
+        return types.FunctionCall(name="post_research_report", args=plan)
+
+    if "add_task" not in tools:
         # No domain tools on this agent — the disconnect suite builds one that way, and
         # it must keep getting the plain streaming reply it asserts against.
         return None
 
     budget = budget_minutes(_instruction(llm_request))
-    responses = _turn_responses(llm_request)
 
     if any(name == "split_task" for name, _ in responses):
         return None
@@ -387,6 +463,8 @@ __all__ = [
     "budget_minutes",
     "first_task_id",
     "requested_minutes",
+    "research_budget_minutes",
+    "research_plan",
     "split_plan",
     "stub_reply",
 ]
