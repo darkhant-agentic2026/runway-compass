@@ -25,7 +25,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from typing import Any
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Any, Literal
 
 from google.adk.agents._streaming_mode import StreamingMode
 from google.adk.agents.run_config import RunConfig
@@ -61,12 +63,44 @@ CANCELLED_CODE = "cancelled"
 
 MAX_TURN_TEXT = 32_000
 
+#: Which agent a turn's detached task drives. Not a `Settings` value and not something the
+#: client chooses: `TurnService.start`'s callers are the turns router (always `coach`) and
+#: `ResearchService` (always `research`).
+AgentChoice = Literal["coach", "research"]
+
+
+@dataclass(frozen=True, slots=True)
+class Confirmation:
+    """The learner's answer to a tool that asked first.
+
+    A dataclass rather than the `(call_id, confirmed)` tuple this used to be: `ask_learner`
+    answers with a *selection*, not a yes or no, and threading a third element through a
+    tuple is how the wrong one gets read.
+    """
+
+    function_call_id: str
+    confirmed: bool
+    payload: dict[str, Any] | None = None
+
+
 #: ADK's own name for the synthetic call a `require_confirmation` tool produces
 #: (`google.adk.flows.llm_flows.functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME`).
 #: Restated rather than imported, deliberately: it is a private module, and the constant
 #: is also parsed by `apps/web/src/lib/transcript.ts`, which cannot import it at all. The
 #: bump checklist in docs/03-agent-design.md carries the pair.
 CONFIRMATION_FUNCTION_NAME = "adk_request_confirmation"
+
+#: Strong references to `on_finished` callbacks in flight. `asyncio` holds only a weak
+#: reference to a task, so one with nothing pointing at it can be collected mid-`await` —
+#: which for `ResearchService` would mean a lease left to expire on its own five-minute TTL.
+_FINISHERS: set[asyncio.Task[None]] = set()
+
+
+def _run_detached(coroutine: Awaitable[None]) -> None:
+    """Schedule `coroutine` from a done callback, which cannot await it."""
+    task = asyncio.ensure_future(coroutine)
+    _FINISHERS.add(task)
+    task.add_done_callback(_FINISHERS.discard)
 
 
 class TurnService:
@@ -105,9 +139,27 @@ class TurnService:
         *,
         text: str = "",
         attachments: list[dict[str, str]] | None = None,
-        confirmation: tuple[str, bool] | None = None,
+        confirmation: Confirmation | None = None,
+        agent: AgentChoice = "coach",
+        on_finished: Callable[[], Awaitable[None]] | None = None,
     ) -> Turn:
-        """`POST /api/sessions/{sid}/turns` — 202, generation continues in background."""
+        """`POST /api/sessions/{sid}/turns` — 202, generation continues in background.
+
+        `agent` selects which runner the detached task drives. A research run is a turn
+        like any other — same checkpointing, same broker, same disconnect guarantee — and
+        differs only in which agent reads the message. Threading it here rather than
+        giving research its own generation loop is what keeps
+        docs/04-api-contract.md#surviving-client-disconnects true of research as well: a
+        second loop would be a second place for the guarantee to be quietly lost.
+
+        `on_finished` runs once the generation task is over, whatever its outcome. It is a
+        **done callback, never an await**: the module docstring's first rule is that this
+        method must not await generation, and a caller that needed to know when a turn
+        ended would otherwise be tempted to. `ResearchService` uses it to close its ledger
+        row and drop the project's agent lease at the moment generation stops, rather than
+        at the next tick of a poller — a lease outliving its run by even half a second is a
+        button the learner can press and the server refuses.
+        """
         if self._registry.draining:
             raise Conflict(
                 "This instance is shutting down and is not accepting new turns. "
@@ -130,7 +182,9 @@ class TurnService:
                 instance_id=self._instance_id,
             )
         )
-        self._registry.spawn(turn.id, self._generate(turn, principal, content))
+        task = self._registry.spawn(turn.id, self._generate(turn, principal, content, agent))
+        if on_finished is not None:
+            task.add_done_callback(lambda _: _run_detached(on_finished()))
         return turn
 
     async def cancel(self, principal: Principal, session_id: str, turn_id: str) -> Turn:
@@ -234,7 +288,7 @@ class TurnService:
         principal: Principal,
         text: str,
         attachments: list[dict[str, str]],
-        confirmation: tuple[str, bool] | None = None,
+        confirmation: Confirmation | None = None,
     ) -> types.Content | None:
         parts: list[types.Part] = []
         if confirmation is not None:
@@ -242,13 +296,19 @@ class TurnService:
             # looks for a function *response* to `adk_request_confirmation` on the last
             # user-authored event and resumes the original call from it, so this part has
             # to carry the call id it is answering — which is why the client sends one.
-            call_id, confirmed = confirmation
+            # `ToolConfirmation`'s own field names, because ADK validates this dict
+            # straight into that model (`from_response_dict`) and it is `extra="forbid"`.
+            # `payload` is omitted rather than sent as `None` for the yes/no gates, so
+            # their response stays byte-identical to what M3 sent.
+            response: dict[str, Any] = {"confirmed": confirmation.confirmed}
+            if confirmation.payload is not None:
+                response["payload"] = confirmation.payload
             parts.append(
                 types.Part(
                     function_response=types.FunctionResponse(
-                        id=call_id,
+                        id=confirmation.function_call_id,
                         name=CONFIRMATION_FUNCTION_NAME,
-                        response={"confirmed": confirmed},
+                        response=response,
                     )
                 )
             )
@@ -266,7 +326,13 @@ class TurnService:
             parts.append(part)
         return types.Content(role="user", parts=parts) if parts else None
 
-    async def _generate(self, turn: Turn, principal: Principal, content: types.Content) -> None:
+    async def _generate(
+        self,
+        turn: Turn,
+        principal: Principal,
+        content: types.Content,
+        agent: AgentChoice = "coach",
+    ) -> None:
         """The detached task. Nothing awaits this; the registry only holds it."""
         seq = 0
         event_ids: list[str] = []
@@ -281,7 +347,11 @@ class TurnService:
             async with self._slots:
                 watcher = asyncio.create_task(self._watch_cancellation(turn.id))
                 async with CheckpointWriter(self._turns, turn.id) as writer:
-                    runner = self._runners.runner()
+                    runner = (
+                        self._runners.research_runner()
+                        if agent == "research"
+                        else self._runners.runner()
+                    )
                     async for event in runner.run_async(
                         user_id=principal.uid,
                         session_id=turn.session_id,

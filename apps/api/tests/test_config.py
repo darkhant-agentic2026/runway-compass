@@ -126,3 +126,73 @@ def test_the_two_internal_caller_service_accounts_stay_separate() -> None:
 def test_an_unknown_env_value_is_refused() -> None:
     with pytest.raises(ValidationError):
         Settings(env="staging")  # type: ignore[arg-type]
+
+
+# --- unseeded secrets -------------------------------------------------------------------
+# `terraform apply` creates each Secret Manager secret with a placeholder first version and
+# leaves the real value to RUNBOOK §4, a human step. Nothing fails at boot when it is
+# skipped, which is how M4 shipped a deployed revision whose research reports silently
+# contained no videos: the placeholder is a non-empty string, so the YouTube client thought
+# it had a key, sent it to Google, and reported the resulting 400 as "the YouTube API did
+# not answer".
+
+
+def test_the_placeholder_matches_the_terraform_that_writes_it() -> None:
+    """The constant is restated across an HCL/Python boundary, so it is pinned by a test.
+
+    Same reasoning as the theme's `localStorage` key and ADK's
+    `adk_request_confirmation`: two files have to agree about a literal and neither can
+    import the other. A drift here is silent in exactly the direction that matters —
+    Terraform starts writing a *different* placeholder, Python stops recognising it, and
+    the failure goes back to being a 400 from Google.
+    """
+    from pathlib import Path
+
+    from coach.core.config import SECRET_PLACEHOLDER
+
+    root = Path(__file__).resolve().parents[3] / "infra" / "terraform" / "envs"
+    written = {
+        env: (root / env / "main.tf").read_text(encoding="utf-8") for env in ("dev", "prod")
+    }
+    for env, body in written.items():
+        assert f'secret_placeholder = "{SECRET_PLACEHOLDER}"' in body, env
+
+
+@pytest.mark.parametrize("env", ["dev", "prod"])
+def test_a_placeholder_youtube_key_reads_as_absent(env: str) -> None:
+    from coach.core.config import SECRET_PLACEHOLDER
+
+    settings = Settings(env=env, youtube_api_key=SECRET_PLACEHOLDER, **DEPLOYED)
+
+    assert settings.youtube_api_key is None
+    assert settings.placeholder_secrets == ["youtube_api_key"]
+
+
+def test_a_real_youtube_key_is_left_alone() -> None:
+    settings = Settings(env="dev", youtube_api_key="AIza-real-looking-key", **DEPLOYED)
+
+    assert settings.youtube_api_key == "AIza-real-looking-key"
+    assert settings.placeholder_secrets == []
+
+
+def test_a_missing_youtube_key_does_not_stop_a_deployment_booting() -> None:
+    """Deliberately not fatal.
+
+    A project can run with `allowVideos: false`, and refusing to start would take the whole
+    service down over a feature it can do without. The compensating control is that the
+    absence is *loud* — `main.py` logs it at startup and the tool logs every refusal — not
+    that it is fatal.
+    """
+    settings = Settings(env="dev", **DEPLOYED)
+
+    assert settings.youtube_api_key is None
+    assert settings.placeholder_secrets == []
+
+
+def test_a_placeholder_gemini_key_fails_the_backend_that_needs_one() -> None:
+    """Here the loud treatment is free: the existing guard refuses to start, and after the
+    placeholder is nulled it sees a backend with no key at all."""
+    from coach.core.config import SECRET_PLACEHOLDER
+
+    with pytest.raises(ValidationError, match="GEMINI_API_KEY"):
+        Settings(env="local", model_backend="gemini_api", gemini_api_key=SECRET_PLACEHOLDER)

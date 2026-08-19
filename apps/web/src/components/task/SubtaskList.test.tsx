@@ -17,19 +17,31 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
 import { SubtaskList } from '@/components/task/SubtaskList';
-import { makeParent, makeTask } from '@/test/factories';
+import { makeParent, makeTask, makeTaskItem } from '@/test/factories';
 
-function renderList(subtasks = SUBTASKS, onSetState = vi.fn()) {
+function renderList(
+  subtasks = SUBTASKS,
+  onSetState = vi.fn(),
+  onToggleItem = vi.fn(),
+  onAdd = vi.fn(),
+) {
   const parent = makeParent({}, subtasks);
   render(
-    <SubtaskList subtasks={parent.subtasks} rollup={parent.rollup} onSetState={onSetState} />,
+    <SubtaskList
+      subtasks={parent.subtasks}
+      rollup={parent.rollup}
+      onSetState={onSetState}
+      onToggleItem={onToggleItem}
+      onAdd={onAdd}
+      hasItems={false}
+    />,
   );
-  return { onSetState };
+  return { onSetState, onToggleItem, onAdd };
 }
 
 const SUBTASKS = [
   makeTask({ id: 'k_read', title: 'Read the paper', state: 'completed', estimatedMinutes: 30 }),
-  makeTask({ id: 'k_notes', title: 'Write notes', state: 'current', estimatedMinutes: 45 }),
+  makeTask({ id: 'k_notes', title: 'Write notes', state: 'in_progress', estimatedMinutes: 45 }),
   makeTask({ id: 'k_quiz', title: 'Try the exercises', state: 'not_started' }),
 ];
 
@@ -43,10 +55,33 @@ describe('SubtaskList', () => {
     expect(screen.queryByRole('link')).not.toBeInTheDocument();
   });
 
-  it('renders nothing at all for a leaf task', () => {
-    render(<SubtaskList subtasks={[]} rollup={null} onSetState={vi.fn()} />);
+  it('offers the add control on a leaf task, with no cards', async () => {
+    // A leaf still renders the section, because adding the first subtask is how a task
+    // *becomes* composite — and since `POST /api/tasks/{id}/split` was removed this form is
+    // the only hand path to a subtask there is.
+    const onAdd = vi.fn();
+    renderList([], vi.fn(), vi.fn(), onAdd);
 
-    expect(screen.queryByTestId('subtask-cards')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('subtask-card')).not.toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText('New subtask'), 'The parser');
+    await userEvent.click(screen.getByRole('button', { name: 'Add subtask' }));
+    expect(onAdd).toHaveBeenCalledWith('The parser', 45);
+  });
+
+  it('warns that a first subtask will take the checklist', () => {
+    // The consequence the learner cannot see from the form: their steps move. Said before
+    // the click rather than reported after it.
+    render(
+      <SubtaskList
+        subtasks={[]}
+        rollup={null}
+        onSetState={vi.fn()}
+        onToggleItem={vi.fn()}
+        onAdd={vi.fn()}
+        hasItems
+      />,
+    );
+    expect(screen.getByText(/moves this task’s steps onto it/)).toBeInTheDocument();
   });
 
   it('shows the parent rollup, which is the number the board card shows', () => {
@@ -92,5 +127,67 @@ describe('SubtaskList', () => {
     expect(cards).toHaveLength(2);
     expect(cards[1]).toHaveAttribute('data-state', 'discarded');
     expect(screen.getByTestId('subtask-rollup')).toHaveTextContent('0 of 1 subtask done');
+  });
+});
+
+describe('a subtask’s own checklist', () => {
+  /**
+   * A subtask has no route (docs/06-frontend.md), which has to mean "reachable from the
+   * parent" rather than "unreachable". It holds items exactly as a leaf task does — the
+   * first subtask inherits the parent's — so without these the coach could plan work the
+   * learner had no way to see, let alone tick off.
+   */
+  const WITH_ITEMS = [
+    makeTask({
+      id: 'k_child',
+      title: 'The parser',
+      state: 'not_started',
+      items: [
+        makeTaskItem({ itemId: 'i_a', shortDescription: 'Read the grammar' }),
+        makeTaskItem({
+          itemId: 'i_b',
+          shortDescription: 'Write the tokenizer',
+          completed: true,
+        }),
+      ],
+    }),
+  ];
+
+  it('shows the subtask’s steps inside its card', () => {
+    renderList(WITH_ITEMS);
+    const card = screen.getByTestId('subtask-card');
+    expect(within(card).getByText('Read the grammar')).toBeInTheDocument();
+    expect(within(card).getByText('Steps for this subtask')).toBeInTheDocument();
+  });
+
+  it('reports a tick against the subtask, not the parent', async () => {
+    // The whole reason this needs its own mutation: the write is against a different task
+    // from the one the workspace is keyed on.
+    const { onToggleItem } = renderList(WITH_ITEMS);
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Read the grammar' }));
+    expect(onToggleItem).toHaveBeenCalledWith('k_child', 'i_a', true);
+  });
+
+  it('gives each checklist its own heading id', () => {
+    // Several checklists share one screen — the task's own and one per subtask — and
+    // `aria-labelledby` pointing at a duplicated id names whichever came first, which is
+    // the wrong section for every checklist but one.
+    renderList([
+      ...WITH_ITEMS,
+      makeTask({
+        id: 'k_second',
+        title: 'The evaluator',
+        items: [makeTaskItem({ itemId: 'i_c', shortDescription: 'Read about environments' })],
+      }),
+    ]);
+    const ids = screen
+      .getAllByTestId('checklist')
+      .map((section) => section.getAttribute('aria-labelledby'));
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('renders no checklist for a subtask that has none', () => {
+    renderList();
+    expect(screen.queryByTestId('checklist')).not.toBeInTheDocument();
   });
 });

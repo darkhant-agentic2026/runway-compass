@@ -13,6 +13,7 @@
  */
 
 import type { SessionEvent } from '@/lib/schemas';
+import { describeTool } from '@/lib/tool-labels';
 
 export interface TranscriptMessage {
   id: string;
@@ -41,6 +42,15 @@ export interface TranscriptTool {
    * happened yet and the buttons are still on screen.
    */
   ok: boolean | null;
+  /**
+   * A one-line summary of what this call did, from its arguments and its result.
+   *
+   * Empty when the tool has no summariser. A chip that says only "Adding a task" tells the
+   * learner an action happened and not which one, which is the least useful thing a record
+   * of the coach's actions could say — and for `ask_learner` it would hide *their own
+   * answer* behind a label reading "Asking you something".
+   */
+  detail: string;
 }
 
 export interface TranscriptAttachment {
@@ -193,29 +203,41 @@ export function toMessages(events: SessionEvent[]): TranscriptMessage[] {
  * without it — ADK's confirmation placeholder, or a shape a future tool invents — is
  * `null` rather than assumed good: see `TranscriptTool.ok`.
  */
-function outcomesByCallId(events: SessionEvent[]): Map<string, boolean | null> {
-  const outcomes = new Map<string, boolean | null>();
+function outcomesByCallId(events: SessionEvent[]): Map<string, ToolOutcome> {
+  const outcomes = new Map<string, ToolOutcome>();
   for (const stored of events) {
     for (const part of partsOf(stored.event)) {
       const response = part.function_response ?? part.functionResponse;
       const callId = str(response?.id);
       if (!response || !callId) continue;
       const payload = response.response;
+      const isObject = Boolean(payload) && typeof payload === 'object';
       const ok =
-        payload && typeof payload === 'object' && typeof (payload as Ok).ok === 'boolean'
+        isObject && typeof (payload as Ok).ok === 'boolean'
           ? ((payload as Ok).ok as boolean)
           : null;
-      outcomes.set(callId, ok);
+      // The whole result is kept, not just `ok`: a chip's detail line is written from it
+      // — `ask_learner` records the learner's own answer there, and a chip that dropped it
+      // would leave the conversation with no record of what they chose.
+      outcomes.set(callId, {
+        ok,
+        result: isObject ? (payload as Record<string, unknown>) : {},
+      });
     }
   }
   return outcomes;
+}
+
+interface ToolOutcome {
+  ok: boolean | null;
+  result: Record<string, unknown>;
 }
 
 interface Ok {
   ok?: unknown;
 }
 
-function toolsOf(parts: EventPart[], outcomes: Map<string, boolean | null>): TranscriptTool[] {
+function toolsOf(parts: EventPart[], outcomes: Map<string, ToolOutcome>): TranscriptTool[] {
   const tools: TranscriptTool[] = [];
   for (const part of parts) {
     const call = part.function_call ?? part.functionCall;
@@ -225,7 +247,17 @@ function toolsOf(parts: EventPart[], outcomes: Map<string, boolean | null>): Tra
     // `ConfirmationPrompt` is its UI. A chip for it would say the coach had done
     // something called "adk request confirmation".
     if (!name || !callId || name === CONFIRMATION_FUNCTION_NAME) continue;
-    tools.push({ callId, name, ok: outcomes.get(callId) ?? null });
+    const outcome = outcomes.get(callId);
+    tools.push({
+      callId,
+      name,
+      ok: outcome?.ok ?? null,
+      detail: describeTool(
+        name,
+        (call?.args ?? {}) as Record<string, unknown>,
+        outcome?.result,
+      ),
+    });
   }
   return tools;
 }
@@ -251,6 +283,34 @@ function fileOf(part: EventPart): FileLike | undefined {
  */
 export const CONFIRMATION_FUNCTION_NAME = 'adk_request_confirmation';
 
+/**
+ * A question `ask_learner` posted, parsed out of the confirmation payload.
+ *
+ * ADK's `ToolConfirmation` carries a free-form `payload` beside `confirmed`, and a tool
+ * that calls `request_confirmation(hint, payload)` itself can therefore ask for something
+ * richer than approval. `agents/tools.py` puts the question there; this reads it back.
+ *
+ * `kind` is checked rather than assumed, because the same `adk_request_confirmation` call
+ * carries the yes/no gates too — and one of those with a malformed payload must fall back
+ * to buttons rather than render an empty dialog.
+ */
+export interface ConfirmationQuestion {
+  question: string;
+  options: string[];
+  allowMultiple: boolean;
+  allowNone: boolean;
+  /** Label for the free-text box, or `''` for no box. */
+  notePrompt: string;
+}
+
+/**
+ * The marker `agents/tools.py` writes as `QUESTION_PAYLOAD_KIND`.
+ *
+ * Restated across a boundary neither side can import across, exactly like
+ * `CONFIRMATION_FUNCTION_NAME` above, and on the ADK bump checklist for the same reason.
+ */
+export const QUESTION_PAYLOAD_KIND = 'coach_question';
+
 export interface PendingConfirmation {
   /** The id of the `adk_request_confirmation` call, sent back to answer it. */
   functionCallId: string;
@@ -258,6 +318,30 @@ export interface PendingConfirmation {
   toolName: string;
   /** That tool's arguments, for saying *what* is about to happen. */
   args: Record<string, unknown>;
+  /** Set when the tool asked a question rather than for approval. */
+  question: ConfirmationQuestion | null;
+}
+
+function questionOf(args: Record<string, unknown>): ConfirmationQuestion | null {
+  const confirmation = (args.toolConfirmation ?? args.tool_confirmation) as
+    Record<string, unknown> | undefined;
+  const payload = confirmation?.payload as Record<string, unknown> | undefined;
+  if (!payload || payload.kind !== QUESTION_PAYLOAD_KIND) return null;
+
+  const options = Array.isArray(payload.options)
+    ? payload.options.filter((option): option is string => typeof option === 'string')
+    : [];
+  // A question with no options is not answerable, so it degrades to the yes/no prompt
+  // rather than to a dialog with nothing in it.
+  if (options.length === 0) return null;
+
+  return {
+    question: str(payload.question) ?? '',
+    options,
+    allowMultiple: payload.allowMultiple === true,
+    allowNone: payload.allowNone === true,
+    notePrompt: str(payload.notePrompt) ?? '',
+  };
 }
 
 /**
@@ -296,6 +380,7 @@ export function pendingConfirmation(events: SessionEvent[]): PendingConfirmation
         functionCallId: callId,
         toolName: str(original.name) ?? 'this change',
         args: (original.args ?? {}) as Record<string, unknown>,
+        question: questionOf(args),
       };
     }
   }

@@ -109,7 +109,7 @@ describe('card chrome', () => {
   });
 
   it('marks the next-up task', () => {
-    renderCard(makeParent({ state: 'current' }), { isNextUp: true });
+    renderCard(makeParent({ state: 'in_progress' }), { isNextUp: true });
     expect(screen.getByText('Next up')).toBeInTheDocument();
   });
 
@@ -120,17 +120,31 @@ describe('card chrome', () => {
 });
 
 describe('row actions offer only legal transitions', () => {
-  it('a not-started task can be started or discarded, but not completed', async () => {
+  it('a not-started task can be started, completed, or discarded, but not postponed', async () => {
     renderCard(makeParent({ title: 'Fresh', state: 'not_started' }));
     await userEvent.click(screen.getByRole('button', { name: 'Actions for Fresh' }));
 
     expect(await screen.findByRole('menuitem', { name: 'Start' })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: 'Discard' })).toBeInTheDocument();
-    expect(screen.queryByRole('menuitem', { name: 'Complete' })).not.toBeInTheDocument();
+    // `complete` is reachable from `not_started` from M4: ticking the last checklist item
+    // finishes a task nobody explicitly started, and the machine has to allow the arrow
+    // the derivation takes (docs/02-data-model.md#task-state-machine).
+    expect(screen.getByRole('menuitem', { name: 'Complete' })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Postpone' })).not.toBeInTheDocument();
+  });
+
+  it('a draft task offers everything a not-started one does', async () => {
+    renderCard(makeParent({ title: 'Unplanned', state: 'draft' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Actions for Unplanned' }));
+
+    // `draft` means "no plan yet", not "locked". A board that refused to let someone begin
+    // work until an LLM had written them a checklist would be worse than the M3 one.
+    expect(await screen.findByRole('menuitem', { name: 'Start' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Discard' })).toBeInTheDocument();
   });
 
   it('a current task can be completed and postponed', async () => {
-    renderCard(makeParent({ title: 'Doing', state: 'current' }));
+    renderCard(makeParent({ title: 'Doing', state: 'in_progress' }));
     await userEvent.click(screen.getByRole('button', { name: 'Actions for Doing' }));
 
     expect(await screen.findByRole('menuitem', { name: 'Complete' })).toBeInTheDocument();

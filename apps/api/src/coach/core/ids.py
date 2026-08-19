@@ -63,10 +63,12 @@ def ticket_id() -> str:
 
 
 def item_id() -> str:
-    """Stable per-item id inside a research report.
+    """Stable per-item id, on a research report item and on the task item it promotes to.
 
-    Assigned server-side, never by the model: without stable ids, per-item completion
-    breaks as soon as a report is re-run and item order shifts.
-    docs/02-data-model.md
+    Assigned server-side, never by the model. The report and the task item it becomes share
+    one id, so a thumbs-down recorded against the recommendation and a tick recorded against
+    the checklist entry are talking about the same thing. Without stable ids, both break as
+    soon as a report is re-run and item order shifts.
+    docs/02-data-model.md#task-items
     """
     return _new("i")

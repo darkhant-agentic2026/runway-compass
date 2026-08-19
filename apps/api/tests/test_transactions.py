@@ -82,21 +82,26 @@ async def test_two_instances_contend_on_the_same_project(settings, alice) -> Non
         for index in range(3)
     ]
 
-    # Promotions from two different instances: the single-`current` invariant can only be
-    # enforced by the transaction here.
+    # Three starts from two instances. Each one rewrites the *project* document — `counts`
+    # and `nextUpTaskId` are recomputed on every task mutation — and the instances have
+    # separate `asyncio.Lock`s, so nothing but the Firestore transaction is serializing
+    # these. That is the whole point: the lock is an optimization, the transaction is the
+    # guarantee.
     await asyncio.gather(
-        left.tasks.set_state(alice, tasks[0].id, TaskState.CURRENT),
-        right.tasks.set_state(alice, tasks[1].id, TaskState.CURRENT),
-        left.tasks.set_state(alice, tasks[2].id, TaskState.CURRENT),
+        left.tasks.set_state(alice, tasks[0].id, TaskState.IN_PROGRESS),
+        right.tasks.set_state(alice, tasks[1].id, TaskState.IN_PROGRESS),
+        left.tasks.set_state(alice, tasks[2].id, TaskState.IN_PROGRESS),
     )
 
     board = await left.task_repository.list_all(project.id)
-    current = [t for t in board if t.state is TaskState.CURRENT]
-    assert len(current) == 1, [f"{t.id}={t.state}" for t in board]
+    started = [t for t in board if t.state is TaskState.IN_PROGRESS]
+    assert len(started) == 3, [f"{t.id}={t.state}" for t in board]
 
+    # Not "whichever committed last": the pointer is derived from `order`, so contention
+    # cannot leave it naming a task that lost a race.
     refreshed = await left.project_repository.get(project.id)
     assert refreshed is not None
-    assert refreshed.next_up_task_id == current[0].id
+    assert refreshed.next_up_task_id == min(started, key=lambda t: t.order).id
 
 
 async def test_concurrent_state_changes_all_land(container, alice) -> None:

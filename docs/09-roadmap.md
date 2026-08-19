@@ -310,7 +310,7 @@ milestone and are settled, each taking its default. Q4 is due at M4.
 | `APP_NAME` moved to `core/app.py` | It was in `agents/runner.py`, so `services/sessions.py` imported from `agents/` — an inversion of the layering that became visible, as an import cycle, only once `agents/` grew a module importing `services/` | `core/app.py` |
 | The transcript pins itself to its own bottom by `scrollTop`, and the chat pane is height-bounded on mobile | `scrollIntoView` scrolls every scrollable ancestor including the document, so a streaming reply moved the *page* once per delta on a short viewport: the composer walked away under the reader's finger and cancel was unreachable while there was something to cancel. Found as a mobile-only e2e flake whose cause was neither mobile-specific nor timing | `components/session/Transcript.tsx`, `components/session/SessionPane.tsx` |
 | Two M2 e2e specs were made deterministic rather than left intermittent | Flow #4 raced the reconnect banner — `backoffDelay(0)` plus a round trip, often shorter than one polling interval — and now holds the reconnect's ticket for 1.5 s. The cancel spec sends a long prompt and waits for text on screen, so it races neither the 202 nor the end of generation. Both pre-existing, both found only by running the suite many times in a row. [08-testing.md](08-testing.md#end-to-end-playwright) | `e2e/workspace.spec.ts` |
-| The stubbed model emits **scripted tool calls**, planned from *this turn's* function responses | Flows #1, #2, and #7 need the coach to act. Scoping the plan to the turn is the loop's termination argument: asked of the whole session history, "have I already split something?" answers yes forever; asked of nothing, the stub re-issues `split_task` until the turn never ends | `integrations/stub_model.py` |
+| The stubbed model emits **scripted tool calls**, planned from *this turn's* function responses | Flows #1, #2, and #7 need the coach to act. Scoping the plan to the turn is the loop's termination argument: asked of the whole session history, "have I already added a subtask?" answers yes forever; asked of nothing, the stub re-issues the call until the turn never ends | `integrations/stub_model.py` |
 
 ### Three more rows for the table above
 
@@ -344,7 +344,7 @@ of the repo is written against.
 | Raw HTML stays off, permanently | The transcript renders model output, some of it quoted from fetched pages. No `rehype-raw`; the only `dangerouslySetInnerHTML` in the app is mermaid's own SVG, which mermaid sanitizes at `securityLevel: 'strict'` | `components/markdown/` |
 | Mermaid renders only after `turn_complete` | Half a table is a table; half a graph is a parse error, and an error box flashing for the two seconds a definition streams in is worse than a diagram arriving a moment late. It also keeps mermaid out of the streaming path | `components/markdown/CodeBlock.tsx` |
 | Highlighting is dual-theme output, not a runtime restyle | Shiki emits `--shiki-light` and `--shiki-dark` per token and a rule gated on `.dark` picks; the theme switch stays one class on `<html>` and nothing re-highlights. Mermaid cannot do this — its SVG is baked — so a diagram is the one thing that re-renders on a theme change | `index.css`, `components/markdown/Mermaid.tsx` |
-| Only the coach's messages are markdown | The learner's message is the record of what they sent. Rendering it would collapse their line breaks, reflow a pasted stack trace, and emphasise a literal `*` | `components/session/Transcript.tsx` |
+| ~~Only the coach's messages are markdown~~ — **reversed after M4** | The original reason was that the learner's message is the record of what they sent, and rendering it would collapse their line breaks, reflow a pasted stack trace, and emphasise a literal `*`. Two of the three are now answered rather than accepted: `remark-breaks` keeps the line breaks for their messages only, and every message carries a copy control yielding the *source*, so the exact thing they sent is a click away. The literal `*` remains a real cost and is the smaller one | `components/session/Transcript.tsx` |
 | Tokens, not HTML, from the highlighter | `codeToHtml` returns a string only `dangerouslySetInnerHTML` can render, and the transcript's whole rule is that model text never becomes markup. `codeToTokens` returns data. The one exception in the app is mermaid's own SVG, which it constructs and sanitizes itself | `lib/highlighter.ts` |
 | Shiki runs on the JavaScript regex engine | The default oniguruma engine's WebAssembly is most of the download and the only part a strict CSP would object to. Passing an engine also keeps `shiki/wasm` from ever being fetched, though the build still emits the chunk | `lib/highlighter.ts` |
 | M1's reorder spec waits for the server before reloading | It failed once on webkit in nine runs and never again. The window is real rather than slow: a navigation cancels in-flight requests, so reloading before the `POST /reorder` lands stops it reaching the server at all, and the reloaded board then honestly shows the original order. An optimistic mutation makes that window invisible from the UI, which is what let a pre-existing race sit in a spec since M1 | `e2e/board.spec.ts` |
@@ -358,12 +358,114 @@ of the repo is written against.
   `youtube_find_by_duration` with real duration filtering and a 24 h cache.
 - `ResearchReport` schema, `post_research_report` tool with budget validation, storage, and
   the session event.
-- Report UI: separated required/optional blocks, budget meter, citations, per-item completion.
+- Report UI: separated checklist/optional blocks, budget meter, citations, per-item completion.
 - `POST /api/sessions/{sid}/research` — the manual trigger, on the shared run path.
+- **The task-model amendment** decided at the start of the milestone: `draft` as the state
+  every task starts in, `in_progress` replacing a singular `current`, and an ordered
+  checklist on every leaf task that research populates and whose completion completes the
+  task ([02-data-model.md](02-data-model.md#task-items)). It lands here rather than on its
+  own branch because the checklist's only writer is the research run.
 
 **Exit:** Playwright flow #5 passes; report validation rejects over-budget required lists;
 recommended videos actually fit the remaining budget (verified against real API responses
-in the nightly live run).
+in the nightly live run); a finished checklist completes its task without the learner
+touching a state control.
+
+---
+
+## Status after M4
+
+Complete and deployed to `coach-dev`. What follows is the carry-over a later milestone
+needs, recorded here because it is not derivable from the code.
+
+**The deploy found two defects, and both were in the half of the system a local run cannot
+reach**: the YouTube API key was the Terraform placeholder rather than a key, and the tool
+that discovered this told only the model. They are the last two rows of the table below.
+Every research report on the first deployed revisions therefore contained no videos, and
+the service looked entirely healthy while it happened.
+
+**Met.** Golden flow #5 passes on all four Playwright projects, alongside every earlier
+spec: 31 specs, 124 runs, three consecutive green suites. Report validation rejects an
+over-budget required list, an item in both lists, and a required item with no `why`, each
+with its own test. Recommended videos fit the remaining budget because the filter is
+arithmetic on `contentDetails.duration` rather than a request to the model — asserted
+against recorded `search.list` / `videos.list` payloads; the nightly live run against the
+real API is still unimplemented, and is in the table below. 487 backend tests, 229 web.
+
+**M4 also carried a data-model change that was not in the original plan**, decided at the
+start of the milestone and recorded in the design documents rather than only here: the task
+state machine gained `draft`, `current` became `in_progress` and stopped being singular, and
+a leaf task gained an ordered checklist that research populates and that completes the task
+when it is finished. [02-data-model.md](02-data-model.md#task-items) is the specification;
+the decisions table below records what implementing it settled.
+
+**Open questions Q4–Q6** ([10-risks.md](10-risks.md#open-questions)) are settled, each
+taking its default. Q4 was due here; Q5 and Q6 were due at M5 and were answered early,
+because M4 builds the path M5 schedules and leaving the cadence open would have meant
+parameterising guards on an undecided number.
+
+**Deliberately deferred, and the milestone that needs it:**
+
+| Item | Needed by | Note |
+| --- | --- | --- |
+| **Seed `youtube-api-key`** (RUNBOOK §4) and re-verify videos | **now** | `terraform apply` ran; the secret still holds the placeholder, which is why no report has recommended a video. The service now says so at `ERROR` on startup instead of degrading in silence |
+| Re-run the **hand verification** for videos specifically | **now** | The rest of M4 was verified on `coach-dev`; the YouTube path never succeeded there, so nothing has yet exercised `search.list` → `videos.list` against the real API |
+| Nightly **live** YouTube and search tests | M6 | The recorded-fixture half is done; `--live` is not wired. What no fixture can catch is a quota shape or a response field moving |
+| ADK **evalsets** for research quality | M6 | The tool contract is tested; whether a report is *good* is not, and cannot be by a stub. Still as recorded after M1 |
+| `subscribe` by `runId` | **M5** | Still deferred. A manual run has a `turnId` and the client watches that; a *scheduled* run has no turn, which is when the frame becomes necessary |
+| `propose_tasks` and `reprioritize` | **M5** | `research_agent` has no board-mutating tools by design ([10-risks.md](10-risks.md#r7--prompt-injection-via-fetched-pages-and-uploads)); reshaping the board is a separate step with its own budget |
+| `post_report`'s **event-level idempotency** | **M5** | [05-autonomous-runs.md](05-autonomous-runs.md#execution-semantics) already flags this. The report document is idempotent by overwrite; the session event is not, and a manual run cannot be re-executed so nothing exercises it yet |
+| Everything still open after M3 | as recorded | Content scanning (M7), `turns` composite indexes (M5), `board_update` across instances (M5), `prod` and `terraform destroy` |
+
+**Endpoints in the API contract still unimplemented**: everything under runs (M5),
+`PATCH /api/me/learner-profile`'s Settings UI (M6), and `DELETE /api/me` (M7). `GET
+/api/runs/{runId}` is *reachable* through `ResearchService.get` but has no route, because
+the contract files it under M5 and a manual run is watched by its turn.
+
+**Decisions made during implementation** that the design documents did not fix:
+
+| Decision | Why | Where |
+| --- | --- | --- |
+| `set_next_up` **reorders** rather than setting a state | It used to promote a task to `current`, which was singular and therefore *was* the pointer. With `nextUpTaskId` derived, pinning something is a reorder — and, unlike the old behaviour, it no longer silently un-starts whatever the learner had open | `agents/tools.py` |
+| An explicit state write is **exempt from the derivation for its own transaction** | Otherwise invariant 6 and the `reopen` action fight: reopening a task whose checklist is fully ticked lands on `not_started`, is re-derived to `completed` in the same transaction, and the button does nothing at all — visibly, repeatably, with no error | `services/tasks.py` |
+| `TaskService.set_research` goes through the board transaction | `researchStatus` is half of invariant 6, so the write that sets `done` is exactly the write that can complete a task. A bare field patch would leave it finished-but-open until something unrelated touched it | `services/tasks.py` |
+| A report item's `why` becomes the checklist entry's one line | A checklist reads as things to do; a list of titles reads as a bibliography and leaves the learner to work out what each one is for. It is also why `why` is *required* on a required item and validated server-side | `services/reports.py` |
+| `guided` defaults from `kind`, and the model may override | An exercise is worked through in conversation; an article is not. A report that says nothing about guidance still produces a sensible checklist | `services/models.py` |
+| `fetch_url` extracts text with `html.parser`, not a markdown converter | [03-agent-design.md](03-agent-design.md#integration-tools) says "HTML→markdown", but the model is answering "does this page cover the task" and heading syntax does not help with that — while a dependency that parses hostile HTML is a real surface | `integrations/fetch_url.py` |
+| Redirects are followed **by hand**, and every hop re-checked | `follow_redirects=True` validates the first URL and then connects wherever the server points. A public host answering `302 → 169.254.169.254` is the attack that works against a fetcher which only checks the first hop | `integrations/fetch_url.py` |
+| The YouTube cache is **process-local** | It caches a quota cost, not a correctness property. A second instance paying for its own first lookup is cheaper than a collection, a TTL policy, and a read on the research path | `integrations/youtube.py` |
+| A research run is an **ordinary turn** | It gets the same `turns/{turnId}` document, detached task, checkpoints, and broker subscription — so the disconnect guarantee, the tool chips, and resume all cover it without a second implementation. One argument to `TurnService.start` selects the agent | `services/research.py` |
+| `TurnService.start` grew an `on_finished` **done callback** | Never an await — the module's first rule. `ResearchService` uses it to close the ledger and drop the lease the instant generation stops. See the new table below for what the polling version cost | `services/turns.py` |
+| A manual run's ledger row omits the steps M4 does not implement | Absent rather than `pending`, so `cursor` — "first non-complete step" — stays truthful and M5's executor does not inherit a backlog of runs it thinks it left half-finished | `services/models.py` |
+| `TaskRepository.find_current` deleted | It existed so `TaskService` could observe a duplicated `current` in order to repair it. There is no violation left to observe and no caller — the same reasoning that deleted M2's uncalled `turns` queries | `repositories/tasks.py` |
+| `PATCH /api/reports/{rid}/items/{iid}` **refuses** `completed` | The field used to be accepted there. A client that has not caught up must fail loudly rather than write nothing and report success | `api/schemas.py` |
+
+### Five more rows for the table above
+
+M4 recurred one row of [the M3 table](#three-more-rows-for-the-table-above) — a singleton's
+configuration belonging to whoever reached for it first, this time as a *query key* nothing
+invalidated — and added four of its own. Two were found by golden flow #5 and neither was
+visible to a fully green unit run. **The other two were found by deploying, and are the
+first entries in this project's tables that a local run could not have caught even in
+principle**: one is a value that only exists in a Terraform-provisioned environment, and
+the other is an absence of logging, which no assertion was looking for.
+
+| Trap | How it presents | Where it will recur |
+| --- | --- | --- |
+| **A push reaches the screens that were listening when it was written, not the ones that exist now** | `board_update` invalidated `['tasks', projectId]` and `['project', projectId]`; the task workspace reads `['task', taskId]`, which neither prefix covers. Nothing noticed for a milestone, because every writer until M4 was a tool the user had just talked to and the reply's own refetch hid it. A research run posts its report and says nothing further — so the checklist never appeared, on a screen where every unit test passed | Any new screen keyed differently from the one a push was designed for. M5's run banner and undo are both read from keys that do not exist yet. **When adding a writer, enumerate the readers** — and note that the *frame already carried* `taskIds`, so the information was there and unused |
+| **An unseeded secret is a *value*, not an absence** | `terraform apply` seeds every Secret Manager secret with `REPLACE_ME_VIA_GCLOUD_SEE_RUNBOOK` and leaves the real one to RUNBOOK §4, a human step nothing fails without. The placeholder is a non-empty string, so `YouTubeClient` considered itself configured, sent it to Google, and turned the `400 API key not valid` into "the YouTube API did not answer". Every research report came back with no videos, on a deployment where `terraform apply` had succeeded and the service was otherwise healthy | Every secret this project adds, and the two that already exist beside this one. A reader that does not know the sentinel cannot distinguish "unset" from "set to something wrong" — and the sentinel exists precisely to make that distinction. `Settings` nulls it; `tests/test_config.py` pins the literal against the Terraform that writes it, because neither file can import the other |
+| **A degraded integration that only tells the model is not telling anyone** | `youtube_find_by_duration` answered `{"ok": false, …, "Recommend written material instead"}` and logged nothing. The model complied, the report was well-formed, the turn succeeded, and the *only* evidence was an absence — no videos, ever. Nothing in Cloud Logging, nothing in the UI, nothing on `/readyz` | Any tool that degrades rather than failing. The return value is for the model; a `logger.warning` is for the operator, and a tool needs both. Distinguish the reasons, too: "the key is wrong" and "nothing is short enough" produce the same empty report and want opposite fixes |
+| **A buffer with no exit stays in front of everything after it** | `useStreamStore.clear` is called from the `turn_complete` handoff and nowhere else, so a turn ending in `turn_error` was a permanent resident — and the pane read `Object.values(turns).find(…)`, the *first-inserted* match. After a 429 from Vertex the red error stayed on screen and the next reply streamed into a buffer nothing rendered. It had generated: a reload showed it, because a reload is what empties the store | Any keyed buffer whose removal sits on one path and whose read is a `find`. Two questions to ask of a store: *what removes an entry on every terminal path*, and *when there are several, which one does the UI mean*. Answering the second with insertion order is answering it by accident |
+| **A lease outliving its run is a button the server refuses** | `post_research_report` pushes `board_update` — so the report renders — while the turn is still streaming its closing prose and the project's agent lease is still held. A poller closing the ledger half a second later left a window in which "Research again" answered `409 your coach is already working on this project`. It failed on two of four Playwright projects, roughly one run in three, and read as a timing flake | Anything whose *visible* completion precedes its *bookkeeping* completion. M5's scheduled runs have the same shape with a longer tail. Hang the bookkeeping off the work's own completion — `TurnService.start`'s `on_finished` — rather than off a clock |
+
+**A third thing worth recording, which is a test-design trap rather than a defect.** Flow
+#5's re-run spec failed intermittently in the full suite and never in isolation, because a
+single `toBeVisible({ timeout: 30_000 })` sat inside Playwright's 30-second *test* timeout:
+an assertion given the whole budget can never actually wait for it, so it fails at whatever
+is left over and reads as a product bug. The fix was to raise the describe-block's timeout
+and put the per-assertion waits back to the default. **A per-assertion timeout that equals
+or exceeds the test timeout is always wrong**, and the symptom is a flake that points at
+the feature rather than at the budget.
 
 ---
 
@@ -387,6 +489,26 @@ touched.
 
 ## M6 — Learner model and adaptation (~1 week)
 
+- **Split the one coach agent into two.** Reported from use after M4: asked to add optional
+  topics to a study plan, the coach reaches for `add_task` — putting them on the *board* —
+  where the learner meant `add_subtask`, inside the work in front of them. The board is one
+  level up from the task the conversation is about, and one instruction serving both a
+  project-level conversation and a task-level one has to keep saying which is which.
+
+  The shape to build: a **project coach** for the intake session, which reasons about the
+  board and has no item tools at all; and a **task teacher** for a task's session, which
+  owns the checklist, the guided/unguided distinction, and `add_subtask`, and knows that
+  everything it does is inside one entry of a list it can see. `MODE_KEY` already carries
+  the distinction and the instruction already branches on it in prose, which is the version
+  of this that does not work well enough.
+
+  It lands here rather than sooner because it is a rework of the agent graph rather than a
+  wording fix, and because it wants the same session-scoped context the learner model
+  introduces. A prompt clarification went in after M4 as the cheap half.
+- **Task-level preference overrides**, which [02-data-model.md](02-data-model.md#task-items)
+  and `agents/tools.py` both anticipate: the checklist-size guidance currently reads the
+  *project's* default task length, and a single task that is deliberately longer has no way
+  to say so.
 - `CoachMemoryService` + contract suite; `load_memory` wired into the coach.
 - Session-close summarization into memory; `update_learner_profile` typed tool with
   versioning and an audit trail.

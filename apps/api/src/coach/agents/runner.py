@@ -19,6 +19,8 @@ from google.adk.sessions.base_session_service import BaseSessionService
 
 from coach.agents.coach_agent import build_coach_agent
 from coach.agents.prompt import PromptBuilder
+from coach.agents.research_agent import build_research_agent
+from coach.agents.research_tools import ResearchTools
 from coach.agents.tools import DomainTools
 from coach.core.app import APP_NAME
 from coach.core.config import Settings
@@ -36,10 +38,12 @@ class RunnerFactory:
         artifacts: ArtifactServiceProvider,
         *,
         tools: DomainTools,
+        research_tools: ResearchTools,
         prompt: PromptBuilder,
     ) -> None:
         self._settings = settings
         self._session_service = session_service
+        self._research_tools = research_tools
         # Both are process-wide and stateless over the services they wrap. They are built
         # once for the same reason the `Runner` is: `LlmAgent` derives every tool's
         # declaration from the callable, and rebuilding the agent per turn would rebuild
@@ -56,19 +60,20 @@ class RunnerFactory:
         self._artifacts = artifacts
         self._model: BaseLlm | None = None
         self._runner: Runner | None = None
+        self._research: Runner | None = None
 
     def set_model(self, model: BaseLlm | None) -> None:
         """Install a model, discarding any cached runner. See the module docstring."""
         self._model = model
         self._runner = None
+        self._research = None
 
     def runner(self) -> Runner:
         if self._runner is None:
-            model = self._model or build_model(self._settings)
             self._runner = Runner(
                 app_name=APP_NAME,
                 agent=build_coach_agent(
-                    model,
+                    self._build_model(),
                     tools=self._tools.as_tools(),
                     before_agent_callback=self._prompt,
                 ),
@@ -76,6 +81,35 @@ class RunnerFactory:
                 artifact_service=self._artifacts(),
             )
         return self._runner
+
+    def research_runner(self) -> Runner:
+        """The `research_agent` runner, sharing everything but the agent.
+
+        Same `app_name`, same session service, same artifact service — a research run
+        writes into the task's own session, so its tool calls and its report land in the
+        transcript the learner is reading (docs/05-autonomous-runs.md invariant 3). What
+        differs is the agent, its instruction, and above all its tool set: `ResearchTools`
+        has no board-mutating tool at all (docs/10-risks.md#r7).
+
+        Cached separately rather than rebuilt per run, for the reason in the module
+        docstring: `LlmAgent` derives a JSON schema per tool from the callable, and this
+        agent also owns a `search_agent` sub-agent that would be rebuilt with it.
+        """
+        if self._research is None:
+            self._research = Runner(
+                app_name=APP_NAME,
+                agent=build_research_agent(
+                    self._build_model(),
+                    tools=self._research_tools.as_tools(),
+                    before_agent_callback=self._prompt,
+                ),
+                session_service=self._session_service,
+                artifact_service=self._artifacts(),
+            )
+        return self._research
+
+    def _build_model(self) -> BaseLlm:
+        return self._model or build_model(self._settings)
 
 
 __all__ = ["RunnerFactory"]

@@ -80,20 +80,35 @@ or a row of user data.
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `POST` | `/api/projects/{id}/tasks` | `{ title, description?, estimatedMinutes, parentTaskId?, afterTaskId? }` |
-| `GET` | `/api/tasks/{id}` | Task + subtasks + `latestReport` |
+| `POST` | `/api/projects/{id}/tasks` | `{ title, description?, estimatedMinutes, parentTaskId?, afterTaskId? }` — with a `parentTaskId` this creates a **subtask**, and the first one inherits the parent's checklist ([02-data-model.md](02-data-model.md#task-items)) |
+| `GET` | `/api/tasks/{id}` | Task + `items[]` + subtasks + `latestReport` |
 | `PATCH` | `/api/tasks/{id}` | Fields; `estimatedMinutes` triggers parent rollup recompute |
 | `POST` | `/api/tasks/{id}/state` | `{ state, postponedUntil? }` — validated against state machine |
 | `POST` | `/api/tasks/{id}/reorder` | `{ afterTaskId } \| { beforeTaskId }` |
-| `POST` | `/api/tasks/{id}/split` | Manual split; agent uses the tool equivalent |
 | `GET` | `/api/tasks/{id}/reports` | Research reports for the task, newest first |
-| `PATCH` | `/api/reports/{reportId}/items/{itemId}` | `{ completed?: bool, feedback?: "up" \| "down" \| null }` — writes `progress` only, never the report body |
+| `POST` | `/api/tasks/{id}/items` | Append items by hand — `{ items: [{ shortDescription, details?, guided? }] }` |
+| `PATCH` | `/api/tasks/{id}/items/{itemId}` | `{ completed?, shortDescription?, details?, guided? }` — the checkbox and the inline edit |
+| `POST` | `/api/tasks/{id}/items/{itemId}/reorder` | `{ afterItemId } \| { beforeItemId }` — array positions, rewritten whole |
+| `DELETE` | `/api/tasks/{id}/items/{itemId}` | Remove an item the learner does not want |
+| `PATCH` | `/api/reports/{reportId}/items/{itemId}` | `{ feedback: "up" \| "down" \| null }` — writes `progress.feedback` only, never the report body |
 
-`PATCH /api/reports/{reportId}/items/{itemId}` is what backs the per-item checkboxes on the
-required block and the thumbs-down control ([06-frontend.md](06-frontend.md),
-[10-risks.md](10-risks.md#r5--research-quality-and-link-rot)). It rejects `completed` on an
-item in `optional[]` — optional items have no completion affordance by design, and enforcing
-that server-side keeps the distinction from eroding through a future UI change.
+**Item completion is a task endpoint, not a report endpoint** — the M4 change to the earlier
+contract. `PATCH /api/reports/{rid}/items/{iid}` used to take `completed` as well; a task's
+checklist now lives on the task ([02-data-model.md](02-data-model.md#task-items)) and a
+report is the immutable record of one research run. What survives on the report endpoint is
+the thumbs-down control ([06-frontend.md](06-frontend.md),
+[10-risks.md](10-risks.md#r5--research-quality-and-link-rot)), which is a judgement about a
+*recommendation* and has to stay attached to it when a re-run supersedes it. The endpoint
+now rejects `completed` outright rather than only on `optional[]` items, and the regression
+test in [08-testing.md](08-testing.md) moved with it.
+
+`PATCH /api/tasks/{id}/items/{itemId}` returns the **full updated task**, because a write
+that completes the last item also changes the task's `state` and its project's `counts` —
+a client that patched only the item into its cache would show a completed checklist above a
+task still badged "in progress" until the next refetch.
+
+Item endpoints are refused on a task with subtasks: `items` and `rollup` are mutually
+exclusive ([02-data-model.md](02-data-model.md#task-items)).
 
 All mutating endpoints accept `Idempotency-Key`. Reorder and state changes return the
 full updated task (plus the affected parent) so the client can reconcile optimistically
@@ -155,7 +170,22 @@ Behaviour:
   starting a duplicate.
 - Creates `autonomous_runs/{runId}` with `trigger: "manual"`, `mode: "inline"`, and runs
   the **same** `autonomous_workflow` — so manual and scheduled research cannot drift.
+- Sets `task.researchStatus` to `in_progress` before the first model call and to `done` or
+  `failed` at the end, which is what invariant 6
+  ([02-data-model.md](02-data-model.md#task-state-machine)) reads to keep a task from
+  completing itself while its checklist is still being written.
 - Streams progress over the WebSocket as the turn identified by `turnId`.
+
+**What M4 implements of this, and what waits for M5.** The endpoint, the lease, the ledger
+document, and the `research` and `post_report` steps are M4 — they are the whole of the
+manual path, and golden flow #5 exercises them. The trigger chain that *schedules* a run
+(`/internal/tick`, Cloud Tasks, recovery, the presence guard) and the two steps that reshape
+the board (`propose_tasks`, `reprioritize`) are M5. A manual run therefore has a `steps[]`
+array with the two later steps absent rather than `pending`, so that "first non-complete
+step" stays a truthful `cursor` and M5's executor does not inherit a backlog of runs it
+thinks it left half-finished. Subscribing by `runId` also stays M5
+([09-roadmap.md](09-roadmap.md#status-after-m2)): a manual run has a `turnId`, and the turn
+is what the client watches.
 
 ### Runs
 

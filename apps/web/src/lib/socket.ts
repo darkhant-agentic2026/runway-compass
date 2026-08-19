@@ -214,7 +214,7 @@ export class CoachSocket {
         stream.appendDelta(frame.turnId, frame.seq, frame.text);
         break;
       case 'tool_call':
-        stream.noteToolCall(frame.turnId, frame.seq, frame.name);
+        stream.noteToolCall(frame.turnId, frame.seq, frame.name, frame.argsPreview);
         break;
       case 'tool_result':
         stream.noteToolResult(frame.turnId, frame.seq, frame.name, frame.ok);

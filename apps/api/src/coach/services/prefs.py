@@ -19,6 +19,10 @@ from coach.services.models import EffectivePrefs, GlobalPrefs, ProjectPrefs, Res
 #: on one of these means "unset", not "inherit", because there is nothing to inherit from.
 DEFAULT_RESEARCH_DEPTH: ResearchDepth = "standard"
 DEFAULT_ALLOW_VIDEOS = True
+#: The gate on `complete_task_item` is on unless a project turns it off. Completing the
+#: last step completes the task, so this default is what keeps docs/10-risks.md Q1 —
+#: "completion is the learner's click" — true without the learner having to opt in.
+DEFAULT_CONFIRM_ITEM_COMPLETION = True
 
 
 def resolve_prefs(
@@ -47,6 +51,9 @@ def resolve_prefs(
         timezone=global_prefs.timezone,
         research_depth=inherited(project.research_depth, DEFAULT_RESEARCH_DEPTH),
         allow_videos=inherited(project.allow_videos, DEFAULT_ALLOW_VIDEOS),
+        confirm_item_completion=inherited(
+            project.confirm_item_completion, DEFAULT_CONFIRM_ITEM_COMPLETION
+        ),
         preferred_sources=inherited(project.preferred_sources, []),
         avoid_sources=inherited(project.avoid_sources, []),
     )

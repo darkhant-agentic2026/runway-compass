@@ -155,7 +155,15 @@ tabulated in `docs/09-roadmap.md#what-a-green-local-run-does-not-prove` and cont
 `docs/09-roadmap.md#three-more-rows-for-the-table-above`. **Read both before writing
 anything that queries Firestore, calls a second Google API, or reads a stored ADK event.**
 
-Four working habits follow, and none belongs in `docs/`:
+**`dev.sh lint` is fail-fast, so read its exit status and not its output.** The steps run
+in sequence under `set -e`, and `ruff check --fix` is first — so a lint error with no
+autofix (`RUF012`, say) aborts the run before eslint, prettier, and tsc have executed at
+all. The tree is then dirty in ways nothing reported, and CI fails on *formatting* for a
+branch whose real problem was one unfixable lint. Grepping the output for the word "error"
+is not a substitute: ruff does not print one, and a `cmd; echo ok` after a pipeline reports
+success unconditionally. Run it, check `$?`, and re-run until it is 0.
+
+Five working habits follow, and none belongs in `docs/`:
 
 - **When a fixture stands in for a shape this project does not define, generate it.**
   Hand-written fixtures encode the same assumption as the code they test, so both are wrong

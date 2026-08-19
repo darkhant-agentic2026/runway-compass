@@ -19,14 +19,136 @@ const LABELS: Record<string, string> = {
   youtube_find_by_duration: 'Checking video lengths',
   post_research_report: 'Writing up what it found',
   add_task: 'Adding a task',
-  split_task: 'Splitting a task',
+  add_subtask: 'Adding a subtask',
   set_task_state: 'Updating the board',
   set_next_up: 'Choosing what is next',
   reorder_task: 'Reordering the board',
   list_tasks: 'Looking at your board',
+  add_task_items: 'Adding steps to this task',
+  complete_task_item: 'Marking a step done',
+  update_task: 'Updating a task',
+  update_project_prefs: 'Updating your preferences',
+  discard_task: 'Discarding a task',
+  search_agent: 'Searching the web',
   load_memory: 'Remembering earlier sessions',
 };
 
 export function labelForTool(name: string): string {
   return LABELS[name] ?? name.replaceAll('_', ' ');
 }
+
+/**
+ * A one-line summary of what a tool call actually did.
+ *
+ * The label alone says an action happened; this says *which*. "Adding a task" and "Adding
+ * a task · Read the asyncio guide (45 min)" are the difference between a record the
+ * learner can audit and a record that merely proves the coach was busy — and for
+ * `ask_learner` the label alone would hide the learner's own answer behind "Asking you
+ * something".
+ *
+ * **Read from arguments first, result second.** A call that is still running, or that was
+ * refused, has no result — so a summariser that needed one would leave exactly the chips
+ * worth reading blank. `ask_learner` is the deliberate exception: the interesting half of
+ * that call is the *answer*, which only exists in the result.
+ *
+ * Unknown tools return `''` and the chip renders its label alone, which is the same
+ * graceful degradation `labelForTool` gives an unknown name: adding a tool never requires
+ * a change here first.
+ */
+export function describeTool(
+  name: string,
+  args: Record<string, unknown>,
+  result?: Record<string, unknown>,
+): string {
+  const summarise = DETAILS[name];
+  if (!summarise) return '';
+  try {
+    return summarise(args, result ?? {}).trim();
+  } catch {
+    // A summariser is decoration on a record of what happened. Nothing it can hit is worth
+    // failing a transcript render for.
+    return '';
+  }
+}
+
+type Summariser = (args: Record<string, unknown>, result: Record<string, unknown>) => string;
+
+/** A string argument, or `''`. Tool args arrive from a model and are not schema-checked. */
+function text(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function minutes(value: unknown): string {
+  return typeof value === 'number' && Number.isFinite(value) ? ` (${value} min)` : '';
+}
+
+function list(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === 'string')
+    : [];
+}
+
+const DETAILS: Record<string, Summariser> = {
+  add_task: (args) =>
+    text(args.title) + minutes(args.estimated_minutes ?? args.estimatedMinutes),
+  add_subtask: (args, result) => {
+    const inherited = result.inheritedItems;
+    const moved =
+      typeof inherited === 'number' && inherited > 0
+        ? ` · took over ${inherited} ${inherited === 1 ? 'step' : 'steps'}`
+        : '';
+    return text(args.title) + minutes(args.estimated_minutes ?? args.estimatedMinutes) + moved;
+  },
+  update_task: (args) =>
+    [text(args.title), minutes(args.estimated_minutes ?? args.estimatedMinutes).trim()]
+      .filter(Boolean)
+      .join(' '),
+  set_task_state: (args) => text(args.state).replaceAll('_', ' '),
+  discard_task: (args) => text(args.reason),
+  add_task_items: (args) => {
+    const items = Array.isArray(args.items) ? args.items : [];
+    const first = items[0] as Record<string, unknown> | undefined;
+    const lead = text(first?.shortDescription ?? first?.short_description);
+    if (items.length <= 1) return lead;
+    return `${lead} +${items.length - 1} more`;
+  },
+  update_task_item: (args) => text(args.short_description ?? args.shortDescription),
+  reorder_task_item: () => 'moved a step',
+  delete_task_item: (args) => text(args.reason),
+  complete_task_item: (args, result) =>
+    result.taskCompleted === true ? `${text(args.note)} — task finished` : text(args.note),
+  update_project_prefs: (args) =>
+    Object.entries(args)
+      .filter(([, value]) => value !== null && value !== undefined)
+      .map(([key, value]) => `${key.replaceAll('_', ' ')}: ${String(value)}`)
+      .join(', '),
+  fetch_url: (args) => text(args.url),
+  youtube_find_by_duration: (args, result) => {
+    const found = Array.isArray(result.videos) ? result.videos.length : null;
+    const query = text(args.query);
+    if (found === null) return query;
+    return `${query} — ${found} that fit`;
+  },
+  post_research_report: (_args, result) => {
+    const required = result.requiredMinutes;
+    const budget = result.budgetMinutes;
+    if (typeof required !== 'number' || typeof budget !== 'number') return '';
+    return `${required} of ${budget} min of material`;
+  },
+  /**
+   * The learner's own answer, which is the whole point of the chip.
+   *
+   * From the *result*, deliberately: the arguments are the question, and a transcript that
+   * recorded the question without the answer would be a record of the coach talking. A
+   * declined question reads as "none of these" rather than as a blank, because declining
+   * is an answer.
+   */
+  ask_learner: (args, result) => {
+    const question = text(args.question);
+    if (result.answered === false) return `${question} — none of these`;
+    const chosen = list(result.selected);
+    if (chosen.length === 0) return question;
+    const note = text(result.note);
+    return `${question} — ${chosen.join(', ')}${note ? ` (${note})` : ''}`;
+  },
+};

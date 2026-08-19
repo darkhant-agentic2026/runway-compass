@@ -34,6 +34,16 @@ from coach.core.principal import Principal
 PROJECT_ID_KEY = "temp:coach_project_id"
 TASK_ID_KEY = "temp:coach_task_id"
 DEFAULT_MINUTES_KEY = "temp:coach_default_minutes"
+#: Whether `complete_task_item` asks the learner before ticking a step, resolved from the
+#: project's preferences. Read by the tool's *dynamic* `require_confirmation` callable, so
+#: it has to be here rather than fetched: ADK evaluates that callable while assembling the
+#: tool call, and a Firestore read on that path would be one per gated call.
+CONFIRM_ITEMS_KEY = "temp:coach_confirm_items"
+
+#: The minute budget a research report's required list has to fit inside — the task's own
+#: estimate, falling back to the project default. `post_research_report` validates against
+#: this rather than re-reading the number out of the rendered instruction.
+RESEARCH_BUDGET_KEY = "temp:coach_research_budget"
 
 #: Per-invocation counter behind the `add_task` cap. Also `temp:`, which is what makes the
 #: cap per *run* rather than per session: docs/03-agent-design.md guards `add_task` at
@@ -102,10 +112,12 @@ def claim_task_slot(tool_context: Context) -> None:
 
 __all__ = [
     "ADDED_TASKS_KEY",
+    "CONFIRM_ITEMS_KEY",
     "DEFAULT_MINUTES_KEY",
     "MAX_TASKS_PER_RUN",
     "MAX_TASK_MINUTES_FACTOR",
     "PROJECT_ID_KEY",
+    "RESEARCH_BUDGET_KEY",
     "TASK_ID_KEY",
     "AgentContext",
     "agent_context",

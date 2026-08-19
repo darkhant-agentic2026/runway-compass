@@ -18,7 +18,7 @@ import { QueryClient } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { parseServerFrame } from '@/lib/frames';
-import { useStreamStore } from '@/stores/stream';
+import { newestTurnFor, useStreamStore } from '@/stores/stream';
 
 const TURN = 't_1';
 const SESSION = 's_1';
@@ -237,5 +237,98 @@ describe('frame parsing at the boundary', () => {
   it('ignores a malformed frame of a known type', () => {
     expect(parseServerFrame({ type: 'delta', turnId: TURN })).toBeNull();
     expect(parseServerFrame('not json at all')).toBeNull();
+  });
+});
+
+describe('a failed turn does not shadow the ones after it', () => {
+  /**
+   * The defect a 429 from Vertex found on `coach-dev`.
+   *
+   * `clear` is called from the `turn_complete` handoff and nowhere else, so a turn that
+   * ends in `turn_error` stays in the store for the life of the tab. The reader used
+   * `Object.values(turns).find(…)`, which returns the *first-inserted* match — so the
+   * failed turn sat in front of every later turn in that session: the red error stayed on
+   * screen, the next reply streamed into a buffer nothing rendered, and only a reload
+   * (which empties the store and refetches the transcript) showed the answer that had
+   * genuinely been generated.
+   *
+   * Both halves are asserted, because either one alone still leaves a broken screen.
+   */
+  const SESSION = 's_1';
+
+  beforeEach(() => {
+    useStreamStore.setState({ turns: {} });
+  });
+
+  it('a turn that fails is still readable, so the error can be shown', () => {
+    const store = useStreamStore.getState();
+    store.begin('t_1', SESSION);
+    store.fail('t_1', 3, { code: 'resource-exhausted', message: '429', retryable: true });
+
+    const live = newestTurnFor(useStreamStore.getState().turns, SESSION);
+    expect(live?.turnId).toBe('t_1');
+    expect(live?.status).toBe('error');
+    expect(live?.error?.message).toBe('429');
+  });
+
+  it('the next turn becomes the live one, error or no error', () => {
+    const store = useStreamStore.getState();
+    store.begin('t_1', SESSION);
+    store.fail('t_1', 3, { code: 'resource-exhausted', message: '429', retryable: true });
+
+    store.begin('t_2', SESSION);
+    useStreamStore.getState().appendDelta('t_2', 1, 'a new answer');
+
+    const live = newestTurnFor(useStreamStore.getState().turns, SESSION);
+    expect(live?.turnId).toBe('t_2');
+    expect(live?.text).toBe('a new answer');
+    expect(live?.status).toBe('running');
+  });
+
+  it('starting a turn retires the failed one, so errors do not accumulate', () => {
+    const store = useStreamStore.getState();
+    store.begin('t_1', SESSION);
+    store.fail('t_1', 1, { code: 'x', message: 'first', retryable: true });
+    store.begin('t_2', SESSION);
+    useStreamStore.getState().fail('t_2', 1, { code: 'x', message: 'second', retryable: true });
+    useStreamStore.getState().begin('t_3', SESSION);
+
+    expect(Object.keys(useStreamStore.getState().turns)).toEqual(['t_3']);
+  });
+
+  it('a completed turn is left for the transcript handoff to clear', () => {
+    // Dropping it here instead would race `events.refetch()` and blink the coach's last
+    // message off the screen between the buffer going and the transcript arriving.
+    const store = useStreamStore.getState();
+    store.begin('t_1', SESSION);
+    store.appendDelta('t_1', 1, 'settled text');
+    store.complete('t_1', 2);
+    store.begin('t_2', SESSION);
+
+    expect(Object.keys(useStreamStore.getState().turns)).toContain('t_1');
+    expect(newestTurnFor(useStreamStore.getState().turns, SESSION)?.turnId).toBe('t_2');
+  });
+
+  it('a failed turn in another session is left alone', () => {
+    const store = useStreamStore.getState();
+    store.begin('t_other', 's_2');
+    store.fail('t_other', 1, { code: 'x', message: 'theirs', retryable: false });
+    store.begin('t_1', SESSION);
+
+    expect(newestTurnFor(useStreamStore.getState().turns, 's_2')?.status).toBe('error');
+    expect(newestTurnFor(useStreamStore.getState().turns, SESSION)?.turnId).toBe('t_1');
+  });
+
+  it('insertion order does not decide which turn is live', () => {
+    // The mechanism behind the original bug, pinned directly: `find` returns the first
+    // match, and object key order is insertion order. `openedAt` is what makes this a
+    // question about *when a turn opened* rather than about how a `Record` is laid out.
+    const store = useStreamStore.getState();
+    store.begin('t_first', SESSION);
+    store.begin('t_second', SESSION);
+
+    const [firstKey] = Object.keys(useStreamStore.getState().turns);
+    expect(firstKey).toBe('t_first');
+    expect(newestTurnFor(useStreamStore.getState().turns, SESSION)?.turnId).toBe('t_second');
   });
 });

@@ -273,6 +273,33 @@ than later ones.
 Terraform creates each container and a placeholder first version; the real values are set
 out of band and Terraform never reads them back into the configuration.
 
+> **This step is easy to skip, and skipping it used to fail quietly.** `terraform apply`
+> succeeds, the revision boots, sign-in works, and the coach answers — because of the three
+> secrets only `youtube-api-key` gates a *feature* rather than the service. Skipping it once
+> produced research report after research report with no videos in them and nothing in the
+> logs explaining why: the placeholder is a non-empty string, so the client believed it had
+> a key, sent it to Google, and reported the resulting `400 API key not valid` as "the
+> YouTube API did not answer" — a message about the network for a problem that was entirely
+> local.
+>
+> `Settings` now recognises the placeholder and treats it as **unset**, and the service says
+> so at startup. If you are diagnosing missing videos, this is the first thing to read:
+>
+> ```bash
+> gcloud logging read \
+>   'resource.type="cloud_run_revision" AND jsonPayload.message:"Terraform placeholder"' \
+>   --project=coach-dev --limit=5 --format='value(jsonPayload.secrets)'
+> ```
+>
+> An empty result and videos still missing means the key is real but rejected — check the
+> per-call reason instead, which is now logged on every refusal:
+>
+> ```bash
+> gcloud logging read \
+>   'resource.type="cloud_run_revision" AND jsonPayload.message:"youtube is unavailable"' \
+>   --project=coach-dev --limit=5 --format='value(jsonPayload.reason)'
+> ```
+
 ```bash
 printf '%s' "$YOUTUBE_API_KEY" | gcloud secrets versions add youtube-api-key \
   --project=coach-dev --data-file=-

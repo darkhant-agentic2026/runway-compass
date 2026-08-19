@@ -42,12 +42,13 @@ import { useEffect, useRef, useState, type DragEvent } from 'react';
 import { Composer } from '@/components/session/Composer';
 import { ConfirmationPrompt } from '@/components/session/ConfirmationPrompt';
 import { ConnectionBanner } from '@/components/session/ConnectionBanner';
+import { QuestionPrompt } from '@/components/session/QuestionPrompt';
 import { Transcript } from '@/components/session/Transcript';
 import { useCancelTurn, useSessionEvents, useStartTurn } from '@/features/queries';
 import { useAttachmentUploads } from '@/features/use-uploads';
 import { pendingConfirmation, toMessages } from '@/lib/transcript';
 import { useComposerStore } from '@/stores/composer';
-import { useStreamStore } from '@/stores/stream';
+import { newestTurnFor, useStreamStore } from '@/stores/stream';
 
 /** Whether a drag carries files, as opposed to selected text or a dragged link. */
 function hasFiles(event: DragEvent): boolean {
@@ -86,7 +87,11 @@ export function SessionPane({
   const { uploadAll } = useAttachmentUploads(sessionId);
   const [dragDepth, setDragDepth] = useState(0);
 
-  const live = Object.values(turns).find((turn) => turn.sessionId === sessionId) ?? null;
+  // The *newest* turn for this session, never merely the first one found. See
+  // `newestTurnFor`: a turn that ended in `turn_error` is not cleared by anything, so a
+  // first-match lookup left a failed turn in front of every later one — red error stuck on
+  // screen, next reply streaming into a buffer nobody rendered.
+  const live = newestTurnFor(turns, sessionId);
 
   // The handoff. Refetch first, then drop the buffer.
   const handled = useRef<string | null>(null);
@@ -161,14 +166,43 @@ export function SessionPane({
         sessionId={sessionId}
       />
 
-      {pending ? (
+      {/*
+        One pending confirmation, two shapes. `ask_learner` asks a *question* through the
+        same handshake that gates `discard_task`, so what distinguishes them is the
+        payload, not the mechanism — and a payload that fails to parse falls back to the
+        buttons rather than rendering nothing.
+      */}
+      {pending?.question ? (
+        <QuestionPrompt
+          question={pending.question}
+          disabled={startTurn.isPending}
+          onAnswer={(answer) =>
+            startTurn.mutate({
+              text: '',
+              confirmation: {
+                functionCallId: pending.functionCallId,
+                // Declining is `confirmed: false`, which is what ADK's own model means by
+                // it, and `ask_learner` reads as "they answered none of these".
+                confirmed: answer !== null,
+                ...(answer
+                  ? { payload: { selected: answer.selected, note: answer.note } }
+                  : {}),
+              },
+            })
+          }
+        />
+      ) : pending ? (
         <ConfirmationPrompt
           pending={pending}
           disabled={startTurn.isPending}
-          onAnswer={(confirmed) =>
+          onAnswer={(confirmed, payload) =>
             startTurn.mutate({
               text: '',
-              confirmation: { functionCallId: pending.functionCallId, confirmed },
+              confirmation: {
+                functionCallId: pending.functionCallId,
+                confirmed,
+                ...(payload ? { payload } : {}),
+              },
             })
           }
         />

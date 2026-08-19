@@ -24,7 +24,16 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from coach.api.idempotency import IdempotencyMiddleware, ReplayedResponse
-from coach.api.routers import health, me, projects, sessions, tasks, uploads, ws
+from coach.api.routers import (
+    health,
+    me,
+    projects,
+    reports,
+    sessions,
+    tasks,
+    uploads,
+    ws,
+)
 from coach.core.config import Settings, get_settings
 from coach.core.errors import PROBLEM_CONTENT_TYPE, CoachError
 from coach.core.ids import trace_id as new_trace_id
@@ -87,8 +96,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "project": settings.google_cloud_project,
             "database": settings.firestore_database,
             "emulator": bool(settings.firestore_emulator_host),
+            # Loud on purpose. Every optional integration that silently degrades gets a
+            # line here, because the alternative is what happened to YouTube at M4: the
+            # feature was simply absent from every research report and the only way to
+            # find out was to read the source.
+            "youtube": "configured" if settings.youtube_api_key else "NOT CONFIGURED",
         },
     )
+    if settings.placeholder_secrets:
+        # `terraform apply` creates each secret with a placeholder first version; the real
+        # values are RUNBOOK §4, a human step that is easy to skip because nothing fails
+        # at boot when it is skipped. This is the line that says so.
+        logger.error(
+            "secrets still hold the Terraform placeholder and are being treated as unset",
+            extra={
+                "secrets": settings.placeholder_secrets,
+                "fix": "infra/terraform/RUNBOOK.md section 4",
+            },
+        )
+    elif not settings.youtube_api_key and not settings.is_local:
+        logger.warning(
+            "no YOUTUBE_API_KEY: research will recommend no videos",
+            extra={"fix": "infra/terraform/RUNBOOK.md section 4"},
+        )
     yield
 
     # Uvicorn runs lifespan shutdown on SIGTERM, so this is the drain hook. It runs
@@ -203,6 +233,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(me.router)
     app.include_router(projects.router)
     app.include_router(tasks.router)
+    app.include_router(reports.router)
     app.include_router(sessions.router)
     app.include_router(uploads.router)
     app.include_router(ws.router)

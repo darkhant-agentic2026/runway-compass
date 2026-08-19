@@ -6,17 +6,20 @@ docs/04-api-contract.md#sessions--turns. The one shape worth pointing at is
 > The handler creates `turns/{turnId}`, spawns a detached `asyncio.Task`, and returns. It
 > does **not** await generation. Streaming is observed over the WebSocket.
 
-`POST /api/sessions/{sid}/research` — the manual research trigger — is the other endpoint
-in that table and arrives at M4 with the research workflow it runs.
+`POST /api/sessions/{sid}/research` is the other endpoint in that table and behaves the
+same way, for the same reason: it takes the project's agent lease, opens a run in the
+ledger, starts a research *turn*, and answers 202. The client watches that turn.
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
-from coach.api.deps import CurrentUser, Sessions, Turns
+from coach.api.deps import CurrentUser, Research, Sessions, Turns
 from coach.api.idempotency import idempotency_guard
 from coach.api.schemas import (
+    ResearchRequest,
+    ResearchResponse,
     SessionEventsResponse,
     SessionEventView,
     SessionResponse,
@@ -25,6 +28,7 @@ from coach.api.schemas import (
     TurnStatusResponse,
 )
 from coach.services.models import SessionSummary
+from coach.services.turns import Confirmation
 
 router = APIRouter(prefix="/api", tags=["sessions"])
 
@@ -130,7 +134,11 @@ async def start_turn(
         text=body.text,
         attachments=[attachment.model_dump(by_alias=True) for attachment in body.attachments],
         confirmation=(
-            (body.confirmation.function_call_id, body.confirmation.confirmed)
+            Confirmation(
+                function_call_id=body.confirmation.function_call_id,
+                confirmed=body.confirmation.confirmed,
+                payload=body.confirmation.payload,
+            )
             if body.confirmation is not None
             else None
         ),
@@ -138,6 +146,36 @@ async def start_turn(
     return TurnAcceptedResponse(
         turn_id=turn.id, session_id=session_id, status=turn.status, start_seq=0
     )
+
+
+@router.post(
+    "/sessions/{session_id}/research",
+    response_model=ResearchResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(idempotency_guard)],
+)
+async def start_research(
+    session_id: str,
+    body: ResearchRequest,
+    principal: CurrentUser,
+    research: Research,
+) -> ResearchResponse:
+    """Research this task now — the manual trigger, on the shared run path.
+
+    202 like `POST /turns`, and for the same reason: the work is a detached generation
+    task that outlives the request and the socket that asked for it. A `409` means the
+    project's agent lease is held, and carries the in-flight `runId` so the client can
+    attach to that run rather than starting a duplicate
+    (docs/04-api-contract.md#post-apisessionssidresearch).
+    """
+    run = await research.start_manual(
+        principal,
+        session_id,
+        reason=body.reason,
+        budget_minutes_override=body.budget_minutes_override,
+        force=body.force,
+    )
+    return ResearchResponse(run_id=run.id, turn_id=run.turn_id, mode=run.mode)
 
 
 @router.post(

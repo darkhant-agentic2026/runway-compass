@@ -14,13 +14,24 @@
  * not. Everything else — the legal-transitions menu, the state labels, the ring — is the
  * board's own component, so the two screens cannot drift into offering different actions
  * for the same row.
+ *
+ * **And each card carries its own checklist**, because "no route of its own" has to mean
+ * "reachable from here" rather than "unreachable". A subtask holds items exactly as a leaf
+ * task does — the first one inherits the parent's — so without this the coach could plan
+ * work the learner had no way to see, let alone tick off. `GET /api/tasks/{id}` already
+ * returns `subtasks[]` with their items, so this still costs no extra request.
  */
+
+import { useState } from 'react';
 
 import { ProgressRing } from '@/components/board/ProgressRing';
 import { STATE_LABELS, transitionsFor } from '@/components/board/task-state';
 import { TaskRowActions } from '@/components/board/TaskRowActions';
+import { Checklist } from '@/components/task/Checklist';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { formatMinutes, pluralize } from '@/lib/format';
 import type { Rollup, Task, TaskState } from '@/lib/schemas';
 import { cn } from '@/lib/utils';
@@ -30,11 +41,30 @@ interface SubtaskListProps {
   /** The parent's rollup, which is what the board's parent card shows. */
   rollup: Rollup | null;
   onSetState: (taskId: string, state: TaskState, postponedUntil?: string) => void;
+  /** Tick or un-tick one of a subtask's checklist items. */
+  onToggleItem: (taskId: string, itemId: string, completed: boolean) => void;
+  itemsDisabled?: boolean;
+  /** Create one subtask under this task. */
+  onAdd: (title: string, estimatedMinutes: number) => void;
+  addDisabled?: boolean;
+  /**
+   * Rendered even with no subtasks, because adding the first one is how a task *becomes*
+   * composite — and that write moves the parent's checklist onto the new child
+   * ([02-data-model.md](02-data-model.md#task-items)), which is worth warning about.
+   */
+  hasItems: boolean;
 }
 
-export function SubtaskList({ subtasks, rollup, onSetState }: SubtaskListProps) {
-  if (subtasks.length === 0) return null;
-
+export function SubtaskList({
+  subtasks,
+  rollup,
+  onSetState,
+  onToggleItem,
+  itemsDisabled,
+  onAdd,
+  addDisabled,
+  hasItems,
+}: SubtaskListProps) {
   return (
     // `subtask-cards`, not `subtask-list`: the board's expanded parent already owns that
     // name, and a selector that matches on two screens is a test that passes on the wrong
@@ -66,6 +96,16 @@ export function SubtaskList({ subtasks, rollup, onSetState }: SubtaskListProps) 
         ) : null}
       </div>
 
+      {subtasks.length === 0 ? (
+        <p className="mt-1 text-sm text-muted-foreground">
+          {hasItems
+            ? 'Adding a subtask moves this task’s steps onto it.'
+            : 'Break this into subtasks if it is really more than one sitting.'}
+        </p>
+      ) : null}
+
+      <AddSubtask onAdd={onAdd} disabled={addDisabled ?? false} />
+
       <ul className="mt-2 space-y-2">
         {subtasks.map((subtask) => (
           <SubtaskCard
@@ -74,6 +114,8 @@ export function SubtaskList({ subtasks, rollup, onSetState }: SubtaskListProps) 
             onSetState={(state, postponedUntil) =>
               onSetState(subtask.id, state, postponedUntil)
             }
+            onToggleItem={(itemId, completed) => onToggleItem(subtask.id, itemId, completed)}
+            itemsDisabled={itemsDisabled ?? false}
           />
         ))}
       </ul>
@@ -81,12 +123,76 @@ export function SubtaskList({ subtasks, rollup, onSetState }: SubtaskListProps) 
   );
 }
 
+function AddSubtask({
+  onAdd,
+  disabled,
+}: {
+  onAdd: (title: string, estimatedMinutes: number) => void;
+  disabled: boolean;
+}) {
+  const [title, setTitle] = useState('');
+  const [minutes, setMinutes] = useState('45');
+
+  /*
+    The hand path to a subtask, and the only one since `POST /api/tasks/{id}/split` was
+    removed. It lives here rather than on the board's row menu because this is the screen a
+    composite task is worked from — and because "Split into subtasks…" produced a whole
+    breakdown from nothing, which is exactly the shape that made the tool unusable.
+  */
+  return (
+    <form
+      className="mt-2 flex flex-wrap items-end gap-2"
+      data-testid="add-subtask"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const trimmed = title.trim();
+        if (!trimmed) return;
+        onAdd(trimmed, Math.max(1, Number(minutes) || 45));
+        setTitle('');
+      }}
+    >
+      <div className="min-w-40 flex-1 space-y-1">
+        <Label htmlFor="new-subtask-title" className="text-xs text-muted-foreground">
+          New subtask
+        </Label>
+        <Input
+          id="new-subtask-title"
+          value={title}
+          disabled={disabled}
+          maxLength={300}
+          onChange={(event) => setTitle(event.target.value)}
+        />
+      </div>
+      <div className="w-24 space-y-1">
+        <Label htmlFor="new-subtask-minutes" className="text-xs text-muted-foreground">
+          Minutes
+        </Label>
+        <Input
+          id="new-subtask-minutes"
+          type="number"
+          min={1}
+          value={minutes}
+          disabled={disabled}
+          onChange={(event) => setMinutes(event.target.value)}
+        />
+      </div>
+      <Button type="submit" size="sm" variant="outline" disabled={disabled || !title.trim()}>
+        Add subtask
+      </Button>
+    </form>
+  );
+}
+
 function SubtaskCard({
   subtask,
   onSetState,
+  onToggleItem,
+  itemsDisabled,
 }: {
   subtask: Task;
   onSetState: (state: TaskState, postponedUntil?: string) => void;
+  onToggleItem: (itemId: string, completed: boolean) => void;
+  itemsDisabled: boolean;
 }) {
   // The one obvious next step, promoted out of the menu: "Start" on a fresh subtask,
   // "Complete" on the one being worked on. Taken from `transitionsFor` rather than
@@ -153,6 +259,25 @@ function SubtaskCard({
           />
         </div>
       </div>
+
+      {/*
+        The subtask's own checklist, inline. No budget meter: the meter compares a
+        checklist against the *report* that produced it, and a subtask's report is fetched
+        for the task being viewed rather than for each child — so a meter here would either
+        need a request per subtask or would quietly show the parent's number.
+      */}
+      {subtask.items.length > 0 ? (
+        <div className="mt-3 border-t pt-3">
+          <Checklist
+            items={subtask.items}
+            budgetMinutes={null}
+            disabled={itemsDisabled}
+            onToggle={onToggleItem}
+            headingId={`subtask-checklist-${subtask.id}`}
+            heading="Steps for this subtask"
+          />
+        </div>
+      ) : null}
     </li>
   );
 }

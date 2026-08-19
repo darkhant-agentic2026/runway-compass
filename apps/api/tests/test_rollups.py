@@ -100,7 +100,7 @@ def test_completed_tasks_do_not_count_as_open_minutes() -> None:
 def test_next_up_prefers_the_current_task() -> None:
     tasks = [
         _task(id="a", order="a0"),
-        _task(id="b", order="a1", state=TaskState.CURRENT),
+        _task(id="b", order="a1", state=TaskState.IN_PROGRESS),
     ]
     assert compute_next_up(tasks, at=now()) == "b"
 
@@ -191,7 +191,7 @@ async def test_editing_a_subtask_estimate_recomputes_the_parent(
 
 async def test_completing_a_subtask_recomputes_the_parent(container, alice, project) -> None:
     parent, children = await _parent_with_children(container, alice, project, [60, 90])
-    await container.tasks.set_state(alice, children[0].id, TaskState.CURRENT)
+    await container.tasks.set_state(alice, children[0].id, TaskState.IN_PROGRESS)
     await container.tasks.set_state(alice, children[0].id, TaskState.COMPLETED)
 
     refreshed = await container.task_repository.get(project.id, parent.id)
@@ -248,7 +248,7 @@ async def test_project_counts_track_the_board(container, alice, project) -> None
     assert refreshed.counts.total == 2
     assert refreshed.counts.open_minutes == 135
 
-    await container.tasks.set_state(alice, first.id, TaskState.CURRENT)
+    await container.tasks.set_state(alice, first.id, TaskState.IN_PROGRESS)
     await container.tasks.set_state(alice, first.id, TaskState.COMPLETED)
 
     refreshed = await container.project_repository.get(project.id)
@@ -257,23 +257,27 @@ async def test_project_counts_track_the_board(container, alice, project) -> None
     assert refreshed.counts.open_minutes == 90
 
 
-async def test_splitting_a_task_produces_a_rollup_in_one_transaction(
-    container, alice, project
-) -> None:
+async def test_adding_subtasks_produces_a_rollup(container, alice, project) -> None:
     """Golden-flow #2's data shape: "the parent card shows subtask count and summed
-    duration"."""
+    duration".
+
+    Three separate creates rather than one `split_task`, which was removed after M4. The
+    rollup is recomputed on every one of them (invariant 5), so the assertion is about the
+    state after the last write rather than about a single transaction doing it all.
+    """
     parent = await container.tasks.create_task(
         alice, project.id, title="Four hours of work", estimated_minutes=240
     )
-    result = await container.tasks.split_task(
-        alice,
-        parent.id,
-        [
-            {"title": "a", "estimatedMinutes": 60},
-            {"title": "b", "estimatedMinutes": 45},
-            {"title": "c", "estimatedMinutes": 45},
-        ],
-    )
+    for title, minutes in (("a", 60), ("b", 45), ("c", 45)):
+        await container.tasks.create_task(
+            alice,
+            project.id,
+            title=title,
+            estimated_minutes=minutes,
+            parent_task_id=parent.id,
+        )
+
+    result = await container.tasks.get_with_subtasks(alice, parent.id)
     assert result.rollup == Rollup(
         subtask_count=3, completed_subtasks=0, total_estimated_minutes=150
     )

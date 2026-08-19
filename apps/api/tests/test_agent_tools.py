@@ -7,6 +7,10 @@ docs/08-testing.md#agent-level-tests:
 > budget, that autonomous mode's forbidden tools are actually unavailable, and that
 > `post_research_report` writes the right documents and session event.
 
+`split_task` was removed after M4 — it made the model commit to a whole breakdown before
+discussing any of it — so the first of those is now about `add_subtask`, one child at a
+time, and the budget it has to respect is the same one.
+
 The third is M4. The first two are here, plus the guards from
 docs/03-agent-design.md#domain-tools and the `board_update` push.
 
@@ -19,7 +23,7 @@ decision to call a tool — which is the only part that would otherwise be nonde
 That is also what makes these tests about the *prompt* as much as about the tools: the
 stub reads its task budget out of the rendered instruction
 (`integrations/stub_model.py`), so a subtask sized to a project's override is evidence
-that the override reached the model, not just that `split_task` divides.
+that the override reached the model, not just that the arithmetic divides.
 """
 
 from __future__ import annotations
@@ -227,39 +231,59 @@ async def test_a_dead_socket_does_not_fail_the_tool(container) -> None:
 async def test_the_tools_are_the_catalogue_the_design_lists(container) -> None:
     """The tool surface, asserted by name.
 
-    docs/03-agent-design.md#domain-tools is the catalogue; `post_research_report` is M4
-    and the memory tools are M6, so this list grows twice more. Pinning it by name means
-    a tool that is added without a docs row, or removed by a refactor, shows up here
-    rather than as a model that quietly stops being able to do something.
+    docs/03-agent-design.md#domain-tools is the catalogue; the memory tools are M6, so
+    this list grows once more. Pinning it by name means a tool that is added without a
+    docs row, or removed by a refactor, shows up here rather than as a model that quietly
+    stops being able to do something.
     """
     names = {tool.name for tool in container.domain_tools.as_tools()}
     assert names == {
         "list_tasks",
         "add_task",
-        "split_task",
+        "add_subtask",
         "update_task",
         "set_task_state",
         "set_next_up",
         "reorder_task",
         "discard_task",
+        "add_task_items",
+        "update_task_item",
+        "reorder_task_item",
+        "move_task_items",
+        "delete_task_item",
+        "complete_task_item",
+        "ask_learner",
         "update_project_prefs",
     }
 
 
-async def test_discarding_is_the_only_tool_that_needs_confirmation(container) -> None:
-    """docs/03-agent-design.md: `discard_task` "requires user confirmation".
+async def test_exactly_three_tools_are_gated_on_the_learners_confirmation(container) -> None:
+    """docs/03-agent-design.md: `discard_task`, `complete_task_item`, and
+    `delete_task_item` "require user confirmation".
 
     The gate is ADK's `require_confirmation`, so it holds whether or not the model
     cooperates — which is the difference between a gate and an instruction. Asserted
     against the built tool rather than the constructor argument, because the flag is only
     load-bearing once `FunctionTool` is holding it.
+
+    Both directions matter, which is why this is an equality and not three `in` checks. An
+    extra gated tool makes the coach ask permission for something routine; a missing one is
+    silent — and two of these three are missing *task completion*, since the last item
+    finishing a checklist finishes the task (docs/02-data-model.md#task-items). Deleting an
+    item does it just as effectively as ticking one: remove the only outstanding step and
+    the task completes. That is why `delete_task_item` is here and `update_task_item` and
+    `reorder_task_item`, which cannot change what is outstanding, are not.
+
+    `ask_learner` is deliberately *absent*. It asks the learner a question rather than for
+    approval, so it requests its own confirmation from inside the tool body with a payload
+    carrying the question — the static flag would post ADK's generic hint and no payload.
     """
     gated = {
         tool.name
         for tool in container.domain_tools.as_tools()
         if getattr(tool, "_require_confirmation", False)
     }
-    assert gated == {"discard_task"}
+    assert gated == {"discard_task", "complete_task_item", "delete_task_item"}
 
 
 async def test_an_oversized_task_is_refused_rather_than_created(
@@ -283,12 +307,14 @@ async def test_an_oversized_task_is_refused_rather_than_created(
 async def test_a_subtask_over_the_budget_is_refused(
     client: httpx.AsyncClient, container
 ) -> None:
-    """`split_task`'s stricter guard: each subtask must fit the budget, not 3x it.
+    """`add_subtask`'s stricter guard: a subtask must fit the budget, not 3x it.
 
-    A split whose pieces are still oversized has not done the thing splitting is for, so
-    this bound is tighter than `add_task`'s on purpose (docs/03-agent-design.md).
+    A breakdown whose pieces are still oversized has not done the thing breaking up is
+    for, so this bound is tighter than `add_task`'s on purpose (docs/03-agent-design.md).
+    It carried over from `split_task`, which applied it per subtask; one child at a time
+    means it now applies per call, which is the same rule and a better error message.
     """
-    project = await _project(client, "Splitting")
+    project = await _project(client, "Breaking up")
     task = (
         await client.post(
             f"/api/projects/{project['id']}/tasks",
@@ -296,12 +322,12 @@ async def test_a_subtask_over_the_budget_is_refused(
         )
     ).json()["task"]
 
-    result = await container.domain_tools.split_task(
+    result = await container.domain_tools.add_subtask(
         task["id"],
-        [
-            {"title": "First half", "estimatedMinutes": 60},
-            {"title": "Second half", "estimatedMinutes": 60},
-        ],
+        "First half",
+        "",
+        60,
+        True,
         _FakeToolContext("u_alice", project["id"]),
     )
     assert not result["ok"]
@@ -355,13 +381,13 @@ async def test_the_coach_cannot_mark_a_task_complete(
         )
     ).json()["task"]
     context = _FakeToolContext("u_alice", project["id"])
-    await container.domain_tools.set_task_state(task["id"], "current", context)
+    await container.domain_tools.set_task_state(task["id"], "in_progress", context)
 
     refused = await container.domain_tools.set_task_state(task["id"], "completed", context)
 
     assert not refused["ok"]
     assert "learner" in refused["error"]["message"]
-    assert (await _board(client, project["id"]))[0]["state"] == "current"
+    assert (await _board(client, project["id"]))[0]["state"] == "in_progress"
 
 
 async def test_the_coach_cannot_discard_around_the_confirmation(
@@ -386,7 +412,7 @@ async def test_the_coach_cannot_discard_around_the_confirmation(
 
     assert not refused["ok"]
     assert "discard_task" in refused["error"]["message"]
-    assert (await _board(client, project["id"]))[0]["state"] == "not_started"
+    assert (await _board(client, project["id"]))[0]["state"] == "draft"
 
 
 async def test_a_tool_in_an_unlinked_session_refuses_rather_than_guesses(
@@ -434,9 +460,195 @@ class _FakeToolContext:
     reading a third field, this stops compiling rather than silently reading `None`.
     """
 
-    def __init__(self, uid: str, project_id: str | None, default_minutes: int = 45) -> None:
+    def __init__(
+        self,
+        uid: str,
+        project_id: str | None,
+        default_minutes: int = 45,
+        task_id: str | None = None,
+    ) -> None:
         self.user_id = uid
         self.state = _FakeState()
         if project_id is not None:
             self.state["temp:coach_project_id"] = project_id
+        if task_id is not None:
+            self.state["temp:coach_task_id"] = task_id
         self.state["temp:coach_default_minutes"] = default_minutes
+
+
+# --- the checklist of a task that has been broken down --------------------------------------
+
+
+async def _composite(client: httpx.AsyncClient, container) -> dict[str, Any]:
+    """A task with one subtask holding the whole checklist.
+
+    Reached the way a learner reaches it: give a task some steps, then add a subtask, which
+    inherits them (docs/02-data-model.md#task-items).
+    """
+    project = await _project(client, "Compilers")
+    parent = (
+        await client.post(
+            f"/api/projects/{project['id']}/tasks", json={"title": "Write the parser"}
+        )
+    ).json()["task"]
+    items = (
+        await client.post(
+            f"/api/tasks/{parent['id']}/items",
+            json={
+                "items": [
+                    {"shortDescription": "Read the grammar"},
+                    {"shortDescription": "Write the tokenizer"},
+                ]
+            },
+        )
+    ).json()["task"]["items"]
+    first = (
+        await client.post(
+            f"/api/projects/{project['id']}/tasks",
+            json={"title": "Tokenizing", "parentTaskId": parent["id"]},
+        )
+    ).json()["task"]
+    second = (
+        await client.post(
+            f"/api/projects/{project['id']}/tasks",
+            json={"title": "Parsing", "parentTaskId": parent["id"]},
+        )
+    ).json()["task"]
+    return {
+        "project": project,
+        "parent": parent,
+        "first": first,
+        "second": second,
+        "items": items,
+        "context": _FakeToolContext("u_alice", project["id"], task_id=parent["id"]),
+    }
+
+
+async def test_an_item_tool_can_reach_a_subtasks_checklist(
+    client: httpx.AsyncClient, container
+) -> None:
+    """The defect this fixes, and it made the coach useless on any broken-down task.
+
+    Item tools took no task id, on the reasoning that a task-scoped session is the only
+    place they are useful. But breaking a task down makes the session's task a *parent*, and
+    a parent holds no checklist — so `_write_items` refused every call with "this task has
+    subtasks", and the steps sitting on the subtask were unreachable. The coach could see
+    them (from M4's prompt change) and could not touch them.
+    """
+    fixture = await _composite(client, container)
+
+    result = await container.domain_tools.complete_task_item(
+        fixture["items"][0]["itemId"],
+        "you talked me through it",
+        fixture["context"],
+        subtask_id=fixture["first"]["id"],
+    )
+    assert result["ok"], result
+    assert [item["completed"] for item in result["items"]] == [True, False]
+
+
+async def test_an_item_tool_refuses_a_task_outside_the_conversation(
+    client: httpx.AsyncClient, container
+) -> None:
+    """The property the no-argument design was protecting, kept.
+
+    The id is bounded rather than free: this conversation's task, or one of its children.
+    An unrelated task in the same project is refused — which is what stops the argument
+    becoming a way to point a tool at whatever the model names.
+    """
+    fixture = await _composite(client, container)
+    elsewhere = (
+        await client.post(
+            f"/api/projects/{fixture['project']['id']}/tasks",
+            json={"title": "Someone else's task"},
+        )
+    ).json()["task"]
+
+    result = await container.domain_tools.add_task_items(
+        [{"shortDescription": "sneak one in"}],
+        fixture["context"],
+        subtask_id=elsewhere["id"],
+    )
+    assert not result["ok"]
+    assert "not the one this conversation is about" in result["error"]["message"]
+
+
+async def test_moving_items_between_subtasks_takes_one_call(
+    client: httpx.AsyncClient, container
+) -> None:
+    """What the learner asked for.
+
+    Redistributing a checklist used to mean deleting from one subtask and re-adding to the
+    other — which loses the ticks and the ids, and asks for approval on every removal. One
+    call, several items, nothing lost.
+    """
+    fixture = await _composite(client, container)
+
+    result = await container.domain_tools.move_task_items(
+        [fixture["items"][1]["itemId"]],
+        fixture["second"]["id"],
+        fixture["context"],
+        from_subtask_id=fixture["first"]["id"],
+    )
+
+    assert result["ok"], result
+    assert result["moved"] == 1
+    assert [i["shortDescription"] for i in result["from"]["items"]] == ["Read the grammar"]
+    assert [i["shortDescription"] for i in result["to"]["items"]] == ["Write the tokenizer"]
+
+
+async def test_moving_items_is_not_gated_on_the_learners_approval(container) -> None:
+    """Unlike `delete_task_item`, and the difference is that nothing is lost.
+
+    Deleting the last outstanding step completes a task by making work *vanish*; moving it
+    completes the source because the work is now visibly on another task. Gating it would
+    also make redistributing a ten-step checklist ten approvals — the cost that sent people
+    back to deleting in the first place.
+    """
+    gated = {
+        tool.name
+        for tool in container.domain_tools.as_tools()
+        if getattr(tool, "_require_confirmation", False)
+    }
+    assert "move_task_items" not in gated
+    assert "delete_task_item" in gated
+
+
+async def test_a_subtask_change_also_names_the_task_the_learner_has_open(
+    client: httpx.AsyncClient, container
+) -> None:
+    """The push has to reach the screen that is actually open.
+
+    The client turns each named id into an invalidation of `['task', id]`, and the task
+    workspace is keyed on the task the *conversation* is about. `move_task_items` touches
+    two subtasks and nothing else, so a frame naming only those would refresh a key nothing
+    on screen reads — the learner would watch the coach say it had moved their steps and see
+    nothing move.
+
+    Asserted on the frame rather than on the UI, because the frame is the decision: both
+    spellings look identical from a test that only checks the items ended up in the right
+    place (CLAUDE.md — pin the decision, not the result).
+    """
+    frames: list[dict[str, Any]] = []
+
+    async def sink(frame: dict[str, Any]) -> None:
+        frames.append(frame)
+
+    fixture = await _composite(client, container)
+    container.board_updates.attach("u_alice", sink)
+    try:
+        result = await container.domain_tools.move_task_items(
+            [fixture["items"][1]["itemId"]],
+            fixture["second"]["id"],
+            fixture["context"],
+            from_subtask_id=fixture["first"]["id"],
+        )
+        assert result["ok"], result
+    finally:
+        container.board_updates.detach("u_alice", sink)
+
+    named = frames[0]["taskIds"]
+    assert fixture["first"]["id"] in named
+    assert fixture["second"]["id"] in named
+    # The one the workspace is keyed on.
+    assert fixture["parent"]["id"] in named

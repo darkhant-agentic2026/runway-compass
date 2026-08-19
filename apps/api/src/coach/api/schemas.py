@@ -18,12 +18,14 @@ from coach.services.models import (
     EffectivePrefs,
     GlobalPrefs,
     GuidanceStyle,
+    ItemFeedback,
     LearnerProfile,
     Minutes,
     Plan,
     Project,
     ProjectStatus,
     ResearchDepth,
+    ResearchReport,
     SessionSummary,
     Task,
     TaskState,
@@ -90,6 +92,7 @@ class ProjectPrefsPatch(RequestModel):
     guidance_style: GuidanceStyle | None = None
     research_depth: ResearchDepth | None = None
     allow_videos: bool | None = None
+    confirm_item_completion: bool | None = None
     preferred_sources: list[str] | None = None
     avoid_sources: list[str] | None = None
 
@@ -142,15 +145,42 @@ class TaskReorder(RequestModel):
     before_task_id: str | None = None
 
 
-class SubtaskDraft(RequestModel):
-    title: str = Field(min_length=1, max_length=300)
-    description: str = ""
-    estimated_minutes: Minutes
-    needs_research: bool = True
+# `SubtaskDraft`/`TaskSplit` and `POST /api/tasks/{id}/split` were removed after M4. A
+# subtask is now created by `POST /api/projects/{id}/tasks` with a `parentTaskId`, one at a
+# time — see the note in `services/tasks.py` for why the all-at-once shape had to go.
 
 
-class TaskSplit(RequestModel):
-    subtasks: list[SubtaskDraft] = Field(min_length=2, max_length=8)
+class TaskItemDraft(RequestModel):
+    """One checklist item, as a client or a tool supplies it.
+
+    No `itemId`: it is assigned server-side, like a report item's
+    (docs/02-data-model.md#task-items). No `completed` either — an item is added as
+    outstanding work, and ticking it is a `PATCH` on the item it became.
+    """
+
+    short_description: str = Field(min_length=1, max_length=300)
+    details: str = ""
+    guided: bool = False
+    minutes: Minutes | None = None
+    url: str | None = None
+
+
+class TaskItemsAdd(RequestModel):
+    items: list[TaskItemDraft] = Field(min_length=1, max_length=30)
+
+
+class TaskItemPatch(RequestModel):
+    completed: bool | None = None
+    short_description: str | None = Field(default=None, min_length=1, max_length=300)
+    details: str | None = None
+    guided: bool | None = None
+
+
+class TaskItemReorder(RequestModel):
+    """Exactly one of the two must be given; the service enforces that."""
+
+    after_item_id: str | None = None
+    before_item_id: str | None = None
 
 
 class ProjectDerived(ResponseModel):
@@ -178,6 +208,57 @@ class TaskMutationResponse(ResponseModel):
 
 class TaskDetailResponse(ResponseModel):
     task: TaskWithSubtasks
+    #: docs/04-api-contract.md: `GET /api/tasks/{id}` returns "Task + `items[]` + subtasks
+    #: + `latestReport`". The checklist is on the task; the report is the material behind
+    #: it, and the workspace renders `optional[]` and the citations from here.
+    latest_report: ResearchReport | None = None
+
+
+class ReportListResponse(ResponseModel):
+    """`GET /api/tasks/{id}/reports` — newest first.
+
+    A list because reports accumulate rather than replacing each other
+    (docs/10-risks.md Q4); the UI renders the newest and collapses the rest.
+    """
+
+    reports: list[ResearchReport]
+
+
+class ReportItemFeedback(RequestModel):
+    """`PATCH /api/reports/{reportId}/items/{itemId}`.
+
+    Feedback and nothing else. This body used to carry `completed` as well; item completion
+    moved onto the task at M4 (docs/04-api-contract.md#tasks), and the field is *absent*
+    rather than ignored so a client still sending one gets a 422 instead of a silent
+    success. `taskId` is required because a report is addressed without its project and
+    ownership is checked through the task.
+    """
+
+    task_id: str
+    feedback: ItemFeedback | None = None
+
+
+class ReportResponse(ResponseModel):
+    report: ResearchReport
+
+
+class ResearchRequest(RequestModel):
+    reason: str = Field(default="", max_length=2000)
+    budget_minutes_override: Minutes | None = None
+    #: Re-run even when the task already has materials.
+    force: bool = False
+
+
+class ResearchResponse(ResponseModel):
+    """The 202 from `POST /api/sessions/{sid}/research`.
+
+    `turnId` is what the client subscribes to: a manual run has one, and subscribing by
+    `runId` is M5 (docs/04-api-contract.md#post-apisessionssidresearch).
+    """
+
+    run_id: str
+    turn_id: str | None
+    mode: str
 
 
 class EffectivePrefsResponse(ResponseModel):
@@ -223,12 +304,22 @@ class TurnConfirmation(RequestModel):
     `discard_task` is gated by ADK's `require_confirmation` (docs/03-agent-design.md), so
     the turn that proposes it ends with an `adk_request_confirmation` function call and
     resumes only when a matching function *response* arrives. This is that response,
-    shaped as two fields rather than as a raw ADK part: the client should not be building
-    ADK payloads, and the call id is the only thing it has to carry back.
+    shaped as fields rather than as a raw ADK part: the client should not be building ADK
+    payloads, and the call id is the only thing it has to carry back.
+
+    `payload` carries a *structured* answer, which is what makes `ask_learner` possible:
+    ADK's `ToolConfirmation` has a free-form `payload` beside `confirmed`, so a tool can
+    ask a question rather than only for approval and get the selection back through the
+    same handshake. It is `None` for the yes/no gates, whose whole answer is `confirmed`.
+
+    Untyped here on purpose. The shape belongs to the tool that asked — `ask_learner`
+    validates the selection against the options it offered, which is where the check has
+    to be anyway, since the payload has been through the client.
     """
 
     function_call_id: str
     confirmed: bool
+    payload: dict[str, Any] | None = None
 
 
 class TurnRequest(RequestModel):

@@ -195,3 +195,32 @@ describe('mermaid, and when a fence becomes a diagram', () => {
     expect(screen.queryByTestId('mermaid-diagram')).not.toBeInTheDocument();
   });
 });
+
+describe('soft breaks, for the learner’s own messages', () => {
+  /**
+   * Markdown treats a single newline as a space. Someone typing into a chat box presses
+   * Enter to break a line — and "it would collapse the line breaks they put in" was the
+   * recorded reason for not rendering their messages at all, so answering it is what makes
+   * the reversal safe rather than merely desired.
+   */
+  it('turns a single newline into a line break when asked', () => {
+    const { container } = render(<Markdown text={'first line\nsecond line'} softBreaks />);
+    expect(container.querySelectorAll('br')).toHaveLength(1);
+  });
+
+  it('leaves the coach’s text alone', () => {
+    // The coach writes markdown deliberately, so its output means what markdown says.
+    const { container } = render(<Markdown text={'first line\nsecond line'} />);
+    expect(container.querySelectorAll('br')).toHaveLength(0);
+  });
+
+  it('still renders a fenced block verbatim with soft breaks on', () => {
+    // The case the original objection was really about: a pasted traceback must not be
+    // reflowed, and `remark-breaks` must not reach inside code.
+    const { container } = render(
+      <Markdown text={'```\nTraceback\n  File "x.py"\n```'} softBreaks />,
+    );
+    expect(container.querySelector('code')?.textContent).toContain('File "x.py"');
+    expect(container.querySelectorAll('code br')).toHaveLength(0);
+  });
+});

@@ -21,6 +21,8 @@ import type {
   ProjectPrefs,
   SessionEvent,
   Task,
+  TaskDetail,
+  TaskMutation,
   TaskState,
   TaskWithSubtasks,
 } from '@/lib/schemas';
@@ -36,6 +38,12 @@ export const queryKeys = {
   tasks: (projectId: string, filters: BoardFilters) => ['tasks', projectId, filters] as const,
   task: (taskId: string) => ['task', taskId] as const,
   taskSession: (taskId: string) => ['task', taskId, 'session'] as const,
+  /**
+   * Report history. Under the `['task', id]` prefix deliberately, unlike `taskSession`:
+   * a research run adds a report, and the same invalidation that refreshes the task should
+   * refresh the list of runs behind it.
+   */
+  reports: (taskId: string) => ['task', taskId, 'reports'] as const,
   /**
    * Deliberately *not* under the `['project', id]` prefix. `board_update` and every
    * project mutation invalidate that prefix, and this key is a get-or-create POST — an
@@ -175,18 +183,12 @@ export function useSetTaskState(projectId: string, filters: BoardFilters) {
         state,
         postponedUntil: postponedUntil ?? null,
       });
-      // Promoting a task to `current` demotes whatever was current — mirror the
-      // server's invariant locally, or the board briefly shows two "Next up" rows.
-      if (state !== 'current') return patched;
-      return patched.map((parent) => ({
-        ...parent,
-        state:
-          parent.id !== taskId && parent.state === 'current' ? 'not_started' : parent.state,
-        subtasks: parent.subtasks.map((child) => ({
-          ...child,
-          state: child.id !== taskId && child.state === 'current' ? 'not_started' : child.state,
-        })),
-      }));
+      // Until M4 this also demoted whatever else was `current`, mirroring a server
+      // invariant that no longer exists: `in_progress` is not singular, and starting a
+      // task demotes nothing (docs/02-data-model.md#task-state-machine). Deleting the
+      // mirror rather than leaving it is the point — an optimistic update that models a
+      // rule the server has dropped is a UI that briefly lies and then corrects itself.
+      return patched;
     },
   );
 }
@@ -218,25 +220,24 @@ export function useSetSubtaskState(parentTaskId: string, projectId: string) {
     unknown,
     Error,
     { taskId: string; state: TaskState; postponedUntil?: string | null },
-    { previous: TaskWithSubtasks | undefined }
+    { previous: TaskDetail | undefined }
   >({
     mutationFn: ({ taskId, state, postponedUntil }) =>
       api.setTaskState(taskId, state, postponedUntil),
     async onMutate({ taskId, state, postponedUntil }) {
       await queryClient.cancelQueries({ queryKey: key, exact: true });
-      const previous = queryClient.getQueryData<TaskWithSubtasks>(key);
+      const previous = queryClient.getQueryData<TaskDetail>(key);
       if (previous) {
-        queryClient.setQueryData<TaskWithSubtasks>(key, {
+        queryClient.setQueryData<TaskDetail>(key, {
           ...previous,
-          subtasks: previous.subtasks.map((child) =>
-            child.id === taskId
-              ? { ...child, state, postponedUntil: postponedUntil ?? null }
-              : // Promoting one subtask to `current` demotes whatever was current, the
-                // same invariant the board mirrors.
-                state === 'current' && child.state === 'current'
-                ? { ...child, state: 'not_started' as const }
+          task: {
+            ...previous.task,
+            subtasks: previous.task.subtasks.map((child) =>
+              child.id === taskId
+                ? { ...child, state, postponedUntil: postponedUntil ?? null }
                 : child,
-          ),
+            ),
+          },
         });
       }
       return { previous };
@@ -248,6 +249,222 @@ export function useSetSubtaskState(parentTaskId: string, projectId: string) {
       void queryClient.invalidateQueries({ queryKey: key, exact: true });
       void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] });
       void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
+    },
+  });
+}
+
+/**
+ * Ticking, editing, and removing a checklist item.
+ *
+ * One hook for all three because they share the interesting part: the server answers with
+ * the **whole task**, since a checklist write can complete the task (invariant 6) and move
+ * the project's counts. So `onSuccess` writes the returned task into `['task', id]` rather
+ * than invalidating and waiting — the checkbox and the state badge move together, which is
+ * the point of returning the task at all.
+ *
+ * The optimistic patch covers only `completed`, and only on the item. Deriving the task's
+ * state here would mean a second implementation of `derive_state` in TypeScript, kept in
+ * step by hand, to save one round trip — and getting it subtly wrong would show the learner
+ * a task completing and then un-completing.
+ */
+export function useTaskItemMutation(taskId: string, projectId: string) {
+  const queryClient = useQueryClient();
+  const key = queryKeys.task(taskId);
+
+  return useMutation<
+    TaskMutation,
+    Error,
+    | { kind: 'toggle'; itemId: string; completed: boolean }
+    | { kind: 'delete'; itemId: string }
+    | { kind: 'add'; items: { shortDescription: string; guided?: boolean }[] },
+    { previous: TaskDetail | undefined }
+  >({
+    mutationFn: (variables) => {
+      if (variables.kind === 'toggle') {
+        return api.patchTaskItem(taskId, variables.itemId, { completed: variables.completed });
+      }
+      if (variables.kind === 'delete') return api.deleteTaskItem(taskId, variables.itemId);
+      return api.addTaskItems(taskId, variables.items, newIdempotencyKey());
+    },
+    async onMutate(variables) {
+      if (variables.kind !== 'toggle') return { previous: undefined };
+      await queryClient.cancelQueries({ queryKey: key, exact: true });
+      const previous = queryClient.getQueryData<TaskDetail>(key);
+      if (previous) {
+        queryClient.setQueryData<TaskDetail>(key, {
+          ...previous,
+          task: {
+            ...previous.task,
+            items: previous.task.items.map((item) =>
+              item.itemId === variables.itemId
+                ? { ...item, completed: variables.completed }
+                : item,
+            ),
+          },
+        });
+      }
+      return { previous };
+    },
+    onError(_error, _variables, context) {
+      if (context?.previous) queryClient.setQueryData(key, context.previous);
+    },
+    onSuccess(result) {
+      const current = queryClient.getQueryData<TaskDetail>(key);
+      if (current) {
+        queryClient.setQueryData<TaskDetail>(key, {
+          ...current,
+          task: { ...current.task, ...result.task, subtasks: current.task.subtasks },
+        });
+      }
+    },
+    onSettled() {
+      // The board shows "2 of 5 done" and the task's state badge, and the project's counts
+      // move when a task completes — both live under keys this write can change.
+      void queryClient.invalidateQueries({ queryKey: key, exact: true });
+      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
+    },
+  });
+}
+
+/**
+ * Create one subtask, from the parent's workspace.
+ *
+ * The hand path, and since `POST /api/tasks/{id}/split` was removed the only one. It
+ * invalidates the parent's detail as well as the board because the write changes *both*
+ * ends: the child appears under `subtasks[]`, and if the parent had a checklist it has just
+ * moved onto that child (docs/02-data-model.md#task-items).
+ */
+export function useCreateSubtask(parentTaskId: string, projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { title: string; estimatedMinutes: number; parentTaskId: string }) =>
+      api.createTask(projectId, body, newIdempotencyKey()),
+    onSettled() {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.task(parentTaskId),
+        exact: true,
+      });
+      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
+    },
+  });
+}
+
+/**
+ * Ticking an item on a **subtask**, from inside the parent's workspace.
+ *
+ * Separate from `useTaskItemMutation` for the same reason `useSetSubtaskState` is separate
+ * from `useSetTaskState`: the write is against a different task from the one this screen is
+ * keyed on. The response is the *subtask*, so it is patched into the parent's `subtasks[]`
+ * rather than over `task` — writing it to the wrong place would replace the parent with its
+ * child, which renders as the workspace suddenly being about something else.
+ *
+ * A subtask completing is also the parent's business: its `rollup` moves on the same write,
+ * and the ring above the cards reads that. Hence the invalidation as well as the patch.
+ */
+export function useSubtaskItemMutation(parentTaskId: string, projectId: string) {
+  const queryClient = useQueryClient();
+  const key = queryKeys.task(parentTaskId);
+
+  return useMutation<
+    TaskMutation,
+    Error,
+    { taskId: string; itemId: string; completed: boolean },
+    { previous: TaskDetail | undefined }
+  >({
+    mutationFn: ({ taskId, itemId, completed }) =>
+      api.patchTaskItem(taskId, itemId, { completed }),
+    async onMutate({ taskId, itemId, completed }) {
+      await queryClient.cancelQueries({ queryKey: key, exact: true });
+      const previous = queryClient.getQueryData<TaskDetail>(key);
+      if (previous) {
+        queryClient.setQueryData<TaskDetail>(key, {
+          ...previous,
+          task: {
+            ...previous.task,
+            subtasks: previous.task.subtasks.map((child) =>
+              child.id === taskId
+                ? {
+                    ...child,
+                    items: child.items.map((item) =>
+                      item.itemId === itemId ? { ...item, completed } : item,
+                    ),
+                  }
+                : child,
+            ),
+          },
+        });
+      }
+      return { previous };
+    },
+    onError(_error, _variables, context) {
+      if (context?.previous) queryClient.setQueryData(key, context.previous);
+    },
+    onSettled() {
+      void queryClient.invalidateQueries({ queryKey: key, exact: true });
+      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
+    },
+  });
+}
+
+/**
+ * "Research this task now".
+ *
+ * Answers 202 with a `turnId`, which the caller subscribes to — a research run is an
+ * ordinary turn, so the existing chips and streaming carry it. A `409` means the project's
+ * agent lease is held and carries the in-flight `runId` in its problem document; the caller
+ * surfaces that rather than inviting a second press.
+ */
+export function useStartResearch(taskId: string, projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sessionId, force }: { sessionId: string; force?: boolean }) =>
+      api.startResearch(sessionId, { force }, newIdempotencyKey()),
+    onSuccess(run, { sessionId }) {
+      // Exactly what `useStartTurn` does with its 202, and for the same reason: a research
+      // run *is* a turn (`services/research.py`), so registering it is what makes the
+      // tool-activity chips, the streamed summary, and the reconnect-and-resume path work
+      // here without a second implementation of any of them.
+      //
+      // Easy to leave out, and the omission is quiet: the run still completes and the
+      // report still lands, because the server does not care whether anyone is listening.
+      // What the learner sees is a button that does nothing for thirty seconds.
+      if (!run.turnId) return;
+      useStreamStore.getState().begin(run.turnId, sessionId);
+      getSocket().subscribe(run.turnId);
+    },
+    onSettled() {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.task(taskId), exact: true });
+      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] });
+    },
+  });
+}
+
+export function useReportHistory(taskId: string) {
+  return useQuery({
+    queryKey: queryKeys.reports(taskId),
+    queryFn: () => api.listReports(taskId),
+    enabled: taskId.length > 0,
+  });
+}
+
+export function useReportFeedback(taskId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      reportId,
+      itemId,
+      feedback,
+    }: {
+      reportId: string;
+      itemId: string;
+      feedback: 'up' | 'down' | null;
+    }) => api.setReportItemFeedback(reportId, itemId, taskId, feedback),
+    onSettled() {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.task(taskId), exact: true });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.reports(taskId) });
     },
   });
 }
@@ -282,23 +499,6 @@ export function useCreateTask(projectId: string) {
   return useMutation({
     mutationFn: (body: { title: string; estimatedMinutes: number; afterTaskId?: string }) =>
       api.createTask(projectId, body, newIdempotencyKey()),
-    onSuccess() {
-      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
-    },
-  });
-}
-
-export function useSplitTask(projectId: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      taskId,
-      subtasks,
-    }: {
-      taskId: string;
-      subtasks: { title: string; estimatedMinutes: number }[];
-    }) => api.splitTask(taskId, subtasks),
     onSuccess() {
       void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] });
       void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
@@ -400,7 +600,11 @@ export interface StartTurnBody {
   /** `filename` is used only by the optimistic echo; it is not sent to the server. */
   attachments?: { uploadId: string; mimeType: string; filename?: string }[];
   /** The answer to a tool that asked first. A turn may carry this and nothing else. */
-  confirmation?: { functionCallId: string; confirmed: boolean };
+  confirmation?: {
+    functionCallId: string;
+    confirmed: boolean;
+    payload?: Record<string, unknown>;
+  };
 }
 
 /**

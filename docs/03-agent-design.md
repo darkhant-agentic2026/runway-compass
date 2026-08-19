@@ -126,7 +126,8 @@ What to re-verify against the newly installed source, and re-test:
 | `GcsArtifactService(bucket_name, **kwargs)` construction, `_get_blob_name`, `types.Part` file references | Upload and multimodal path. `artifact_part_uri` reads the blob layout out of the private method deliberately, so a rename fails a test rather than a deploy | `integrations/` |
 | `InvocationContext`'s `artifact_service` and `session_service` fields, and where `Runner` builds the context | Pydantic validates both with `isinstance`. That is why the artifact service is deferred with a *provider* and not a proxy — a proxy passed every local test and failed every deployed turn | `integrations/artifacts.py`, `agents/runner.py` |
 | Tool and callback signatures | The tool catalogue below | `agents/` |
-| **`FunctionTool(require_confirmation=…)` and the `adk_request_confirmation` handshake** | `discard_task`'s gate is ADK's, not ours. The constant is restated in `services/turns.py` and again in `apps/web/src/lib/transcript.ts`, which cannot import it, and the *ordering* of the events ADK emits is what the UI reads — the request is second-from-last, not last. `ToolConfirmation` is `@experimental` | `agents/tools.py`, `services/turns.py`, `lib/transcript.ts` |
+| **`check_require_confirmation`'s calling convention** | A *callable* `require_confirmation` — `complete_task_item`'s, which reads the project's opt-out — is invoked with the **tool's own arguments**, not with a context: `_prepare_invocation_args` filters them against `FunctionTool.func`'s signature and calls `callable(**args)`. A signature that does not absorb them raises `TypeError` inside the flow, surfacing as `DynamicNodeFailError` and a failed turn rather than as anything naming the gate | `agents/tools.py` |
+| **`FunctionTool(require_confirmation=…)` and the `adk_request_confirmation` handshake** | The gates on `discard_task` and `complete_task_item` are ADK's, not ours. The constant is restated in `services/turns.py` and again in `apps/web/src/lib/transcript.ts`, which cannot import it, and the *ordering* of the events ADK emits is what the UI reads — the request is second-from-last, not last. `ToolConfirmation` is `@experimental`. From M4 a bump that broke this would silently take the click out of task completion, not merely out of discarding | `agents/tools.py`, `services/turns.py`, `lib/transcript.ts` |
 | `Context` (`ToolContext` == `CallbackContext` == `Context` in 2.7) — `user_id`, `state`, and `before_agent_callback`'s keyword | Every per-invocation fact a tool has arrives through these two fields; `state` write-through to `session.state` is what makes `{temp:…}` templating see them | `agents/context.py`, `agents/prompt.py` |
 | `inject_session_state` — the `{key}` / `{key?}` grammar and its `KeyError` | A placeholder with no writer fails while assembling the request, inside the detached generation task, on the first real turn of a deployed revision | `agents/coach_agent.py`, `tests/test_agent_prompt.py` |
 | `_convert_tool_union_to_tools` / `canonical_tools` built-in-tool wrapping | Decides whether `google_search` may sit beside function tools. If a bump lifts the Gemini restriction, the explicit `search_agent` hop becomes deletable ([M1 spike result](#m1-spike-result-resolved-against-the-installed-270-source)) | `agents/` |
@@ -240,10 +241,23 @@ Behaviour encoded in the instruction:
 - Ask Socratic questions to elicit the project goal and constraints before proposing
   tasks; do not produce a task list from a one-line prompt.
 - Respect `EffectivePrefs.defaultTaskMinutes` when sizing tasks; if a proposed task
-  exceeds it by >50 %, split it.
+  exceeds it by >50 %, break it into subtasks.
+- **Treat that number as guidance when planning a checklist, too.** It is how long the
+  learner wants one sitting to be, so a checklist that outgrows it is usually two pieces of
+  work rather than one long one. `add_task_items` and `delete_task_item` return the running
+  total against it once it is exceeded — a *fact*, not a refusal. There is deliberately no
+  guard: a 50-minute plan on a 45-minute task is a rounding difference, and the coach with
+  the learner in front of it is better placed to judge than a rule. Task-level overrides
+  arrive with the learner model at M6.
 - When the user uploads work, analyse it against the task's success criteria and respond
   in the learner's `guidanceStyle`.
 - Never claim material was read that was not fetched; cite the tool result.
+- **Work the task's items in order, and treat `guided` as the instruction it is.** On a
+  guided item, teach it — the exercise, the walkthrough, the questions. On an unguided one,
+  hand over what the item says to go and do and then stop, because the work is happening
+  somewhere the coach cannot see; ask afterwards how it went rather than narrating a page or
+  a video it never opened. Propose `complete_task_item` when an item looks done; the
+  learner's confirmation is what finishes it.
 
 Dynamic instruction is assembled per-invocation by a `before_agent_callback` that injects:
 project goal, effective prefs, current task + its subtasks, last N task outcomes, and the
@@ -264,16 +278,32 @@ Workflow it is instructed to follow:
 5. Call `post_research_report` with `required[]` sized to fit `budgetMinutes` and
    everything else in `optional[]`.
 
+**`required[]` is a plan for the task, not a bibliography, because it becomes the task's
+checklist** ([02-data-model.md](02-data-model.md#task-items)). Two things follow that the
+instruction has to say out loud. Every required item needs a `why` written in the second
+person and in the learner's own terms — it renders as the item's `shortDescription`, so a
+`why` that reads "provides necessary background" produces a checklist nobody can act on.
+And the ordering of `required[]` is the order the work happens in: reading before the
+exercise that uses it, setup before the thing being set up. The tool preserves the array's
+order rather than sorting by kind or by minutes.
+
+`research_agent` has **no board-mutating tools**. It reads the task and answers with exactly
+one `post_research_report` call; adding, splitting, and reordering tasks belong to
+`propose_tasks`, a separate step with its own bounded budget. That separation is what
+[10-risks.md](10-risks.md#r7--prompt-injection-via-fetched-pages-and-uploads) means by
+"tools that mutate state are unavailable to `research_agent` except `post_research_report`",
+and it matters most here: this is the agent with fetched web pages in its context.
+
 ### `autonomous_workflow` (SequentialAgent)
 
 Steps are individually checkpointed by the run ledger, so each is separately resumable:
 
 | # | Step | Kind | Notes |
 | --- | --- | --- | --- |
-| 1 | `select_next_task` | code | Deterministic: lowest `order` among `not_started`/`current`, skipping `completed`, `discarded`, `postponed`, and unexpired `postponed_until`. No LLM. |
+| 1 | `select_next_task` | code | Deterministic: lowest `order` among `draft`/`not_started`/`in_progress`, skipping `completed`, `discarded`, `postponed`, and unexpired `postponed_until`. No LLM. |
 | 2 | `research` | `research_agent` | Skipped if `task.needsResearch == false`. |
-| 3 | `post_report` | code | Writes `research_reports/*`, appends a `research_report_ref` event to the task's session, sets `researchStatus = done`. |
-| 4 | `propose_tasks` | LlmAgent | May emit `add_task` / `split_task` calls if research revealed missing prerequisites. Bounded: ≤ 5 new tasks per run. |
+| 3 | `post_report` | code | Writes `research_reports/*`, promotes `required[]` into the task's `items[]`, appends a `research_report_ref` event to the task's session, sets `researchStatus = done` — and promotes the task out of `draft` if the items are its first plan. |
+| 4 | `propose_tasks` | LlmAgent | May emit `add_task` / `add_subtask` calls if research revealed missing prerequisites. Bounded: ≤ 5 new tasks per run. |
 | 5 | `reprioritize` | code | Applies the agent's requested `set_next_up` / ordering via fractional index writes. |
 
 Step 1 and 5 are deliberately not LLM steps — ordering and selection are rules, and
@@ -298,14 +328,104 @@ tool cannot be pointed at someone else's project by an argument the model chose.
 | --- | --- | --- |
 | `list_tasks` | `(project_id, include_completed=False)` | owner |
 | `add_task` | `(project_id, title, description, estimated_minutes, needs_research, after_task_id=None)` | ≤ 5/run; minutes ≤ 3× default |
-| `split_task` | `(task_id, subtasks: list[SubtaskDraft])` | parent must be leaf; 2–8 subtasks; each ≤ default minutes |
 | `update_task` | `(task_id, title?, description?, estimated_minutes?)` | owner |
-| `set_task_state` | `(task_id, state, postponed_until?)` | state machine validated server-side; **`completed` and `discarded` are refused** — the first is the learner's click ([10-risks.md](10-risks.md#open-questions) Q1), the second would bypass `discard_task`'s gate |
-| `set_next_up` | `(project_id, task_id)` | transactional single-`current` invariant |
+| `set_task_state` | `(task_id, state, postponed_until?)` | state machine validated server-side; **`completed`, `discarded`, and `draft` are refused** — the first is the learner's click ([10-risks.md](10-risks.md#open-questions) Q1), the second would bypass `discard_task`'s gate, and the third is a state a task *leaves*, never one it is put into |
+| `set_next_up` | `(task_id)` | moves the task to the front of the board's top-level order. It no longer writes a state: `project.nextUpTaskId` became derived when `in_progress` replaced `current` ([02-data-model.md](02-data-model.md#task-state-machine)), so pinning something is a reorder, and "next up" and "started" stopped being the same claim |
 | `reorder_task` | `(task_id, after_task_id \| before_task_id)` | fractional index |
 | `discard_task` | `(task_id, reason)` | **requires user confirmation** in interactive mode; forbidden in autonomous mode |
+| `add_subtask` | `(task_id, title, description, estimated_minutes, needs_research)` | one level deep; ≤ default minutes, a stricter bound than `add_task`'s because a piece that still does not fit has not done the thing breaking up is for. **The first subtask inherits the parent's checklist**, because a composite task cannot hold one ([02-data-model.md](02-data-model.md#task-items)) and dropping the items would lose work the learner may have half-finished |
+| `update_task_item` | `(item_id, short_description?, details?, guided?, subtask_id?)` | leaf tasks only |
+| `reorder_task_item` | `(item_id, after_item_id \| before_item_id, subtask_id?)` | array positions, rewritten whole |
+| `move_task_items` | `(item_ids[], to_subtask_id, from_subtask_id?)` | moves several steps between a task and its subtasks in one transaction, keeping their ids and their ticks. **Not** confirmation-gated — see below |
+| `delete_task_item` | `(item_id, reason, subtask_id?)` | **requires user confirmation** — destructive, *and* removing the last outstanding step completes the task, which would otherwise be a route around `complete_task_item`'s gate |
+| `ask_learner` | `(question, options[], allow_multiple, allow_none, note_prompt)` | 2–6 options. Asks a question rather than for approval, so it posts its own confirmation carrying the question as the payload; the answer comes back as a selection. The selection is filtered against the options that were offered |
+| `complete_task_item` | `(item_id, note)` | **requires user confirmation**, on the same ADK handshake as `discard_task` — an item completing can complete the whole task ([02-data-model.md](02-data-model.md#task-items)), so the last word before that stays the learner's. Scoped to the session's own task; the tool takes no task id |
+| `add_task_items` | `(items[], subtask_id?)` | appends items. Leaf tasks only; refused on a task with subtasks. Used when the conversation turns up work the report did not anticipate |
 | `update_project_prefs` | `(default_task_minutes?, research_depth?, allow_videos?)` | one named argument per writable key — spelling them out *is* the whitelist, where a patch object would let the model invent fields |
-| `post_research_report` | `(task_id, required[], optional[], summary)` | validates `Σ required.minutes ≤ budget` |
+| `post_research_report` | `(task_id, summary, required[], optional[])` | validates `Σ required.minutes ≤ budget`, assigns `itemId`s, writes the report, and promotes `required[]` into `tasks/{id}.items[]` in one transaction |
+
+### Asking the learner something
+
+`ask_learner` is the odd one in the catalogue: it uses ADK's confirmation handshake for
+something that is not a confirmation. `ToolConfirmation` carries a free-form `payload`
+beside `confirmed`, and a tool that calls `tool_context.request_confirmation(hint, payload)`
+**from inside its own body** — rather than being declared `require_confirmation=True` —
+chooses what goes in it. So the question and its options ride out in the payload, the
+client renders controls from them, and the selection rides back in the answer's payload.
+
+The tool is therefore invoked **twice for one call**: once to ask, and once — the same call
+id, re-executed by `_RequestConfirmationLlmRequestProcessor` — to read the answer. That is
+why its body reads "have I been answered yet?" rather than being two tools with a state
+machine between them.
+
+Three consequences worth stating, because each is a thing to get wrong:
+
+- **The static flag would not do.** `FunctionTool(require_confirmation=True)` posts ADK's
+  own generic hint and no payload, which is right for a yes/no gate and carries nothing for
+  a question.
+- **A declined question is a result, not a failure.** "None of these" is frequently the
+  honest answer; the tool returns `answered: false` so the coach can act on it.
+- **The answer is not authoritative.** It has been through the client, so the selection is
+  filtered against the options the tool itself offered — a small surface, and free to close.
+
+**The gate on `complete_task_item` is a project preference, and the only one that is.**
+`confirmItemCompletion` defaults on, and `require_confirmation` is a *callable* rather than
+`True` so the setting takes effect on the next completion rather than the next process
+restart. It reads `temp:` state rather than the project document, because ADK evaluates it
+while assembling the tool call and a Firestore read there would be one per gated call; the
+prompt callback resolves the preference alongside every other.
+
+`discard_task` and `delete_task_item` stay statically gated. The preference is about the
+*friction* of confirming routine completions, and neither of those is routine or
+recoverable — a learner who silenced one did not ask for the others.
+
+The dialog offers the setting as a third button ("and stop asking in this project"),
+because the moment the friction becomes obvious is the moment you are looking at it. That
+flag rides in the confirmation's answer payload rather than being a second request, so one
+click is one round trip and the preference cannot land without the completion it was
+attached to.
+
+**`complete_task_item` is the only tool that can finish a task, and it can only do so by
+asking** — unless the learner has said otherwise for this project, which is itself a
+click. The chain is deliberate and worth stating in one place: the tool call becomes an
+`adk_request_confirmation`, the learner answers, the body writes `completed: true` on the
+item, and `TaskService` evaluates invariant 6 in that same transaction — so a task
+completing is always downstream of a click. `set_task_state` still refuses `completed`
+outright, which keeps the direct route closed while the indirect one is gated.
+
+### Which task an item tool acts on
+
+Every item tool takes an optional `subtask_id`, defaulting to the task the conversation is
+about. That argument is **bounded, not free**: the session's own task, or one of its
+children, and anything else is refused.
+
+The original design took no task id at all, on the reasoning that a task-scoped session is
+the only place these tools are useful and an argument naming a task would be a way to point
+them somewhere else. That was right about the risk and wrong about the scope. Breaking a
+task down makes the session's task a *parent*, and a parent holds no checklist — so every
+item tool stopped working the moment the coach did the thing it had just been asked to do,
+answering "this task has subtasks, and its subtasks are its plan" to calls about steps that
+were sitting on a subtask, unreachable. The bounded argument keeps the property the
+original reasoning protected while making a broken-down task's actual plan editable.
+
+`render_focus` renders each subtask **with its checklist** for the same reason: the ids
+these tools take have to be visible somewhere, and a focus section listing subtasks by
+title left the coach unable to see the plan it had just made.
+
+### Moving steps rather than deleting and re-adding
+
+`move_task_items` exists because adding the first subtask hands it the *whole* checklist —
+a task's plan is its items or its subtasks and never both — so the steps belonging to the
+second subtask start out on the first. Redistributing them had no instrument: delete and
+re-add was the only route, and it loses the item's id (and with it any feedback recorded
+against the recommendation it came from) and asks the learner to approve every removal.
+
+**It is not gated, and `delete_task_item` is.** Both can complete a task by removing its
+last outstanding step, which is the reason deletion is gated at all. The difference is
+that deletion makes work *vanish*, where a move leaves it visibly on another task — so a
+source that completes has made a true statement about where the work is. Gating it would
+also turn redistributing a ten-step checklist into ten approvals, which is the cost that
+sent the coach back to deleting in the first place.
 
 ### Memory tools
 

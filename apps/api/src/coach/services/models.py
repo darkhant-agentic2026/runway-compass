@@ -58,10 +58,21 @@ class TaskState(StrEnum):
 
     `postponed` and `postponed_until` are distinct states, not one state with an optional
     field: the first waits for the user, the second waits for a clock.
+
+    `draft` is where every task starts: on the board, with no plan yet. It leaves for
+    `not_started` when it acquires items or subtasks, which is a derivation rather than a
+    user action — see `coach.services.rollups.derive_state`.
+
+    `in_progress` replaced `current` at M4 and **is not singular**. `current` was one task
+    per project by construction; that was a claim about the learner's attention the data
+    could not keep, and starting a second task silently threw away the fact that the first
+    was half-done. What the board pins as "Next up" is now derived (`compute_next_up`)
+    rather than enforced.
     """
 
+    DRAFT = "draft"
     NOT_STARTED = "not_started"
-    CURRENT = "current"
+    IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     POSTPONED = "postponed"
     POSTPONED_UNTIL = "postponed_until"
@@ -125,6 +136,14 @@ class ProjectPrefs(DomainModel):
     guidance_style: GuidanceStyle | None = None
     research_depth: ResearchDepth | None = None
     allow_videos: bool | None = None
+    #: Whether `complete_task_item` asks the learner before ticking a step.
+    #:
+    #: On by default, because completing the last step completes the task and that is the
+    #: click docs/10-risks.md Q1 rests on. Off is for a project of short, obvious tasks,
+    #: where a dialog per step is friction rather than a safeguard — and it is a *project*
+    #: preference rather than a global one for exactly that reason: the same learner can
+    #: want the gate on a research project and off on a drill.
+    confirm_item_completion: bool | None = None
     preferred_sources: list[str] | None = None
     avoid_sources: list[str] | None = None
 
@@ -141,6 +160,7 @@ class EffectivePrefs(DomainModel):
     timezone: str
     research_depth: ResearchDepth
     allow_videos: bool
+    confirm_item_completion: bool
     preferred_sources: list[str]
     avoid_sources: list[str]
 
@@ -249,6 +269,39 @@ class Rollup(DomainModel):
     total_estimated_minutes: int = 0
 
 
+class TaskItem(DomainModel):
+    """One thing that has to happen for a leaf task to be done.
+
+    docs/02-data-model.md#task-items. The list is ordered — array position is the order the
+    work happens in — and unnumbered, because a re-run of research replaces it and "step 3
+    of 7" becoming "step 3 of 5" reads as work disappearing rather than as a better plan.
+
+    `guided` is a routing decision, not a difficulty rating: an unguided item's work happens
+    outside the conversation (read this, watch that), so the coach hands it over and waits,
+    while a guided one is the teaching the coach does *with* the learner.
+
+    `details` is asymmetric between the two and this is the field's whole point. On an
+    unguided item it is the instruction, and the UI renders it. On a guided one it is the
+    coach's teaching notes — the exercise's answer lives in there — and the UI must **not**
+    render it (docs/06-frontend.md).
+    """
+
+    item_id: str
+    short_description: str = Field(min_length=1, max_length=300)
+    details: str = ""
+    guided: bool = False
+    completed: bool = False
+    completed_at: datetime | None = None
+    #: What the item costs, carried over from the report item it was promoted from. `None`
+    #: on a hand-added item; the budget meter sums what it has.
+    minutes: Minutes | None = None
+    #: What an unguided item points at, and half of the identity a re-run matches on.
+    url: str | None = None
+    #: The report that contributed this item, or `None` for one the learner added by hand.
+    #: A hand-added item is never dropped by a re-run.
+    source_report_id: str | None = None
+
+
 class Task(DomainModel):
     id: str
     #: Denormalized for collection-group queries.
@@ -258,7 +311,7 @@ class Task(DomainModel):
     parent_task_id: str | None = None
     title: str = Field(min_length=1, max_length=300)
     description: str = ""
-    state: TaskState = TaskState.NOT_STARTED
+    state: TaskState = TaskState.DRAFT
     #: Set iff `state == postponed_until`.
     postponed_until: datetime | None = None
     estimated_minutes: Minutes = 45
@@ -270,6 +323,11 @@ class Task(DomainModel):
     needs_research: bool = True
     research_status: ResearchStatus = ResearchStatus.NONE
     latest_report_id: str | None = None
+    #: LEAF tasks only. `items` and `rollup` are the same field in two moods — a leaf's plan
+    #: is its checklist, a parent's is its subtasks — and are mutually exclusive by
+    #: construction rather than by a validator: `split_task` refuses a task that already has
+    #: items, which is the only way a leaf becomes a parent.
+    items: list[TaskItem] = Field(default_factory=list)
     rollup: Rollup | None = None
     origin: Origin = Origin.USER
     created_at: datetime | None = None
@@ -281,6 +339,171 @@ class TaskWithSubtasks(Task):
     """A parent task with its children nested, as `GET /api/projects/{id}/tasks` returns."""
 
     subtasks: list[Task] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------------------
+# Research reports
+# --------------------------------------------------------------------------------------
+
+
+class ReportItemKind(StrEnum):
+    ARTICLE = "article"
+    VIDEO = "video"
+    EXERCISE = "exercise"
+    DOC = "doc"
+    CODE_SCAFFOLD = "code_scaffold"
+
+
+#: Kinds whose work happens *in* the conversation, and which therefore promote to a guided
+#: task item. The rest are material the learner goes away and consumes. The model may
+#: override per item; this is what a report that says nothing about guidance falls back to,
+#: so that a silent report still produces a sensible checklist
+#: (docs/02-data-model.md#projectsprojectidresearch_reportsreportid).
+GUIDED_KINDS = frozenset({ReportItemKind.EXERCISE, ReportItemKind.CODE_SCAFFOLD})
+
+ItemSource = Literal["youtube", "web", "generated"]
+ItemFeedback = Literal["up", "down"]
+
+
+class ReportItem(DomainModel):
+    """One recommendation. `required[]` entries are promoted into `tasks/{id}.items[]`."""
+
+    item_id: str
+    kind: ReportItemKind
+    title: str = Field(min_length=1, max_length=300)
+    url: str | None = None
+    minutes: Minutes
+    #: Why this is needed for THIS task, in the second person and the learner's own terms.
+    #: It becomes the promoted item's `shortDescription`, which is why a `why` reading
+    #: "provides necessary background" produces a checklist nobody can act on.
+    why: str = ""
+    #: The body of an item the coach authored rather than found — the exercise itself, the
+    #: scaffold, the questions to ask. Becomes the promoted item's `details`, which for a
+    #: guided item is the coach's teaching notes and is never rendered to the learner
+    #: (docs/06-frontend.md). Empty for a link, where the title and the URL *are* the
+    #: instruction.
+    details: str = ""
+    source: ItemSource = "web"
+    meta: dict[str, str] = Field(default_factory=dict)
+    #: `None` means "take the default for this kind" — see `GUIDED_KINDS`.
+    guided: bool | None = None
+
+    @property
+    def is_guided(self) -> bool:
+        return self.kind in GUIDED_KINDS if self.guided is None else self.guided
+
+
+class Citation(DomainModel):
+    uri: str
+    title: str = ""
+
+
+class ReportProgress(DomainModel):
+    """User-owned, never written by the agent.
+
+    Holds only `feedback` from M4. `completedItemIds` used to live here and moved to
+    `tasks/{id}.items[]`: two reports for one task meant two checklists, and neither was the
+    answer to "what is left to do on this task". A thumbs-down is a judgement about *this
+    recommendation* and does belong here, because it has to stay attached to the
+    recommendation when a re-run supersedes it (docs/02-data-model.md).
+    """
+
+    feedback: dict[str, ItemFeedback] = Field(default_factory=dict)
+
+
+class ResearchReport(DomainModel):
+    """`projects/{projectId}/research_reports/{reportId}`.
+
+    Immutable once written, apart from `progress`. Reports accumulate per task rather than
+    replacing each other (docs/10-risks.md Q4); the task's checklist does not, and is
+    replaced by each run.
+    """
+
+    id: str
+    project_id: str
+    owner_uid: str
+    task_id: str
+    run_id: str | None = None
+    session_id: str | None = None
+    summary: str = ""
+    required: list[ReportItem] = Field(default_factory=list)
+    optional: list[ReportItem] = Field(default_factory=list)
+    total_required_minutes: int = 0
+    budget_minutes: int = 45
+    citations: list[Citation] = Field(default_factory=list)
+    progress: ReportProgress = Field(default_factory=ReportProgress)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+# --------------------------------------------------------------------------------------
+# Autonomous runs — the durable job ledger
+# --------------------------------------------------------------------------------------
+
+
+class RunStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    SKIPPED_OWNER_PRESENT = "skipped_owner_present"
+    CANCELLED = "cancelled"
+
+
+class StepStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class RunStep(DomainModel):
+    id: str
+    status: StepStatus = StepStatus.PENDING
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    output: dict[str, Any] | None = None
+    error: str | None = None
+
+
+class AutonomousRun(DomainModel):
+    """`autonomous_runs/{runId}`. docs/05-autonomous-runs.md#run-ledger.
+
+    **M4 writes this document; M5 schedules it.** A manual research run carries
+    `trigger: "manual"`, `mode: "inline"`, a `turnId`, and only the two steps M4 has
+    implemented — `research` and `post_report`. The board-reshaping steps (`propose_tasks`,
+    `reprioritize`) and the selection step are *absent* rather than `pending`, so that
+    `cursor` — "first non-complete step" — stays truthful and M5's executor does not
+    inherit a backlog of runs it believes it left half-finished.
+    """
+
+    id: str
+    owner_uid: str
+    project_id: str
+    task_id: str | None = None
+    trigger: Literal["scheduled", "manual"] = "manual"
+    mode: Literal["queued", "inline"] = "inline"
+    status: RunStatus = RunStatus.PENDING
+    attempts: int = 1
+    max_attempts: int = 3
+    lease_expires_at: datetime | None = None
+    instance_id: str = ""
+    steps: list[RunStep] = Field(default_factory=list)
+    usage: dict[str, int] = Field(default_factory=dict)
+    turn_id: str | None = None
+    #: Also the Firestore TTL field (30 days), touched at every step boundary.
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    error: str | None = None
+
+    @property
+    def cursor(self) -> str | None:
+        """The first non-complete step — where a resumed executor picks up."""
+        for step in self.steps:
+            if step.status is not StepStatus.COMPLETE:
+                return step.id
+        return None
 
 
 # --------------------------------------------------------------------------------------

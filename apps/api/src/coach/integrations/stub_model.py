@@ -31,9 +31,21 @@ writes as `Default task length: 120 minutes` — and:
 1. calls `add_task` for work of `min(named duration, 3 * budget)` minutes, that clamp
    being the same one `add_task`'s guard applies, so the call is accepted rather than
    refused;
-2. on the next turn, seeing the created task in the function response, calls `split_task`
-   if it does not fit the budget, into `ceil(minutes / budget)` equal subtasks;
-3. on the turn after that, answers in prose.
+2. seeing the created task in the function response, calls `add_subtask` — **one at a
+   time**, once per pass, until the subtasks cover the parent's estimate. `split_task` did
+   this in a single call and was removed: it made the model commit to every subtask before
+   discussing any of them, and one bad estimate failed the lot;
+3. once they cover it, answers in prose.
+
+## Research (M4)
+
+Golden flow #5 needs a report, so the stub also answers as `research_agent`. It recognises
+that agent by its tool set — `post_research_report` present, `add_task` absent — and emits
+one report call, with a required list sized from the **research** budget line the prompt
+carries (`Budget: 45 minutes`, written by `agents/prompt.py`'s `render_budget`). That is a
+different number from the coach's `Default task length`, and parsing it separately is what
+makes the e2e assertion meaningful: the checklist fits the *task's* estimate because the
+prompt said so, not because the test and the stub agreed on 45.
 
 That makes flow #7 a real assertion rather than a staged one: the *only* thing that
 differs between a project with a two-hour override and one on the 45-minute global
@@ -77,6 +89,35 @@ DEFAULT_BUDGET_MINUTES = 45
 #: The one prompt that makes the stub answer in markdown rather than in prose.
 _FORMATTING_PATTERN = re.compile(r"\bshow me the formatting\b", re.IGNORECASE)
 
+#: The prompt that makes the stub ask a question, so `ask_learner`'s whole handshake — the
+#: dialog, the structured answer, and the chip that records it — is reachable end to end.
+_ASK_PATTERN = re.compile(r"\bask me something\b", re.IGNORECASE)
+
+#: The prompt that makes it ask a *multi-select* question. A separate phrase rather than a
+#: flag on the first, so a test can reach either mode — and because the two modes are the
+#: thing worth being able to tell apart: the model reaches for single-choice by default, and
+#: an e2e that could only exercise that would never notice checkboxes breaking.
+_ASK_MANY_PATTERN = re.compile(r"\bask me about several\b", re.IGNORECASE)
+
+#: What it asks. Fixed, so an e2e can click a named option.
+STUB_QUESTION = "Which should we do first?"
+STUB_OPTIONS = ["The parser", "The lexer"]
+STUB_MULTI_QUESTION = "Which of these have you used before?"
+STUB_MULTI_OPTIONS = ["Generators", "Context managers", "Async iterators"]
+
+#: And the one that makes it fail, so the `turn_error` path is reachable from a test.
+#:
+#: It exists because that path had a defect no unit test could see: a turn ending in
+#: `turn_error` is never cleared from `useStreamStore`, and the pane read the *first*
+#: buffered turn for the session rather than the newest — so the error stayed on screen
+#: and every later reply streamed into a buffer nothing rendered. It took a real 429 from
+#: Vertex to find, and a stub that cannot fail is a stub that could never have found it.
+_FAILURE_PATTERN = re.compile(r"\bmake this turn fail\b", re.IGNORECASE)
+
+#: What the stub raises for that prompt. Shaped like the model error it stands in for —
+#: `services/turns.py` classifies 429 as retryable, so the UI offers "You can try again".
+STUB_FAILURE_MESSAGE = "429 RESOURCE_EXHAUSTED: stub failure requested by the prompt"
+
 #: A reply exercising every construct the transcript renders: a GFM table, an equation, a
 #: fenced code block, and a mermaid diagram (docs/06-frontend.md#markdown-in-the-transcript).
 #:
@@ -110,6 +151,11 @@ graph TD;
 #: reading the same prompt the real model would.
 _BUDGET_PATTERN = re.compile(r"Default task length:\s*(\d+)\s*minutes")
 
+#: `render_budget`'s line, which carries the *task's* estimate rather than the project
+#: default. A separate pattern rather than a reused one, because the two numbers differ and
+#: conflating them would make flow #5 assert the wrong one.
+_RESEARCH_BUDGET_PATTERN = re.compile(r"Budget:\s*(\d+)\s*minutes")
+
 #: "4 hours", "90 minutes", "2h". Whole units only: a stub that parsed "2.5 hours" would
 #: be inventing precision no assertion depends on.
 _DURATION_PATTERN = re.compile(r"(\d+)\s*(hours?|hrs?|h|minutes?|mins?|m)\b", re.IGNORECASE)
@@ -119,7 +165,9 @@ _HOUR_UNITS = frozenset({"h", "hr", "hrs", "hour", "hours"})
 #: `add_task`'s guard: "minutes <= 3x default" (docs/03-agent-design.md).
 _MAX_TASK_FACTOR = 3
 
-#: `split_task`'s: "2-8 subtasks" (docs/03-agent-design.md, `services/tasks.py`).
+#: How many subtasks the stub will add before giving up and answering. Not a product rule —
+#: `add_subtask` has no such cap — but a stub that plans from its own function responses
+#: needs a termination argument that does not depend on arithmetic working out.
 _MAX_SUBTASKS = 8
 
 #: "drop that", "discard the first one". The one instruction the stub takes that is not a
@@ -129,6 +177,19 @@ _DISCARD_PATTERN = re.compile(r"\b(discard|drop)\b", re.IGNORECASE)
 
 #: Task ids as `agents/prompt.py` renders them into the board: `(45 min, id=k_01J…)`.
 _TASK_ID_PATTERN = re.compile(r"id=([A-Za-z0-9_-]+)")
+
+#: The first *outstanding* checklist item, as `render_items` writes it:
+#: `  [ ] Read §3 (id=i_01J…, 12 min)`. A completed one is `[x]` and must not match — a
+#: coach that ticked an already-ticked step is not behaviour worth scripting, and a test
+#: driving it would spin on the same item forever.
+#:
+#: Narrower than the task pattern in a second way too: both ids are spelled `id=`, and the
+#: prefix is the only thing telling an item from a task (`coach.core.ids`).
+_ITEM_ID_PATTERN = re.compile(r"\[ \][^\n]*?\(id=(i_[A-Za-z0-9]+)")
+
+#: The prompt that makes the stub tick the first outstanding step, so the completion gate —
+#: and the project preference that silences it — are reachable end to end.
+_COMPLETE_PATTERN = re.compile(r"\bmark the first step done\b", re.IGNORECASE)
 
 
 def stub_reply(prompt: str) -> str:
@@ -143,6 +204,57 @@ def budget_minutes(instruction: str) -> int:
     """The task budget the prompt carried, or the global default if it carried none."""
     match = _BUDGET_PATTERN.search(instruction)
     return int(match.group(1)) if match else DEFAULT_BUDGET_MINUTES
+
+
+def research_budget_minutes(instruction: str) -> int:
+    """The minute budget the research prompt carried, or the global default."""
+    match = _RESEARCH_BUDGET_PATTERN.search(instruction)
+    return int(match.group(1)) if match else DEFAULT_BUDGET_MINUTES
+
+
+def research_plan(budget: int) -> dict[str, Any]:
+    """A report that fits `budget`: one thing to read, one thing to do.
+
+    Two items rather than one so that flow #5 can tick one and see the task *not* complete,
+    then tick the other and see it complete — which is the difference between testing
+    invariant 6 and testing that a checkbox writes a boolean. One guided and one unguided,
+    so the two renderings are both on screen.
+
+    The reading takes the smaller share, so the two sum to exactly `budget` and the budget
+    meter's "X of Y" is an equality.
+    """
+    reading = max(1, budget // 3)
+    return {
+        "summary": "Two things to get through: one to read, one to work through with me.",
+        "required": [
+            {
+                "kind": "article",
+                "title": "The official guide",
+                "url": "https://example.com/guide",
+                "minutes": reading,
+                "why": "Read the official guide, so you have the vocabulary for the rest",
+                "source": "web",
+            },
+            {
+                "kind": "exercise",
+                "title": "Work through it with your coach",
+                "minutes": budget - reading,
+                "why": "Work through the exercise with me, to check it actually landed",
+                "details": "Ask them to explain it back before showing them the answer.",
+                "source": "generated",
+            },
+        ],
+        "optional": [
+            {
+                "kind": "article",
+                "title": "A deeper treatment",
+                "url": "https://example.com/deeper",
+                "minutes": 30,
+                "why": "If you want to go further than this task needs",
+                "source": "web",
+            }
+        ],
+    }
 
 
 def first_task_id(instruction: str) -> str | None:
@@ -161,26 +273,18 @@ def requested_minutes(text: str) -> int | None:
     return amount * 60 if unit in _HOUR_UNITS else amount
 
 
-def split_plan(title: str, minutes: int, budget: int) -> list[dict[str, Any]]:
-    """`minutes` of work as subtasks that each fit `budget`.
+def split_sizes(minutes: int, budget: int) -> list[int]:
+    """`minutes` of work as subtask estimates that each fit `budget`.
 
-    The last one absorbs the remainder rather than every one being rounded, so the
-    subtask minutes sum to exactly the parent's — which is what makes the parent card's
+    The last one absorbs the remainder rather than every one being rounded, so the subtask
+    minutes sum to exactly the parent's — which is what makes the parent card's
     "N subtasks · X" assertion in golden flow #2 an equality rather than an approximation.
     """
     count = min(_MAX_SUBTASKS, max(2, math.ceil(minutes / budget)))
     each = minutes // count
     sizes = [each] * count
     sizes[-1] += minutes - each * count
-    return [
-        {
-            "title": f"{title} — part {index + 1}",
-            "description": "",
-            "estimatedMinutes": size,
-            "needsResearch": True,
-        }
-        for index, size in enumerate(sizes)
-    ]
+    return sizes
 
 
 class StubModel(BaseLlm):
@@ -198,6 +302,9 @@ class StubModel(BaseLlm):
     async def generate_content_async(
         self, llm_request: Any, stream: bool = False
     ) -> AsyncGenerator[LlmResponse, None]:
+        if _FAILURE_PATTERN.search(_last_user_text(llm_request)):
+            raise RuntimeError(STUB_FAILURE_MESSAGE)
+
         call = _plan_tool_call(llm_request)
         if call is not None:
             # Function calls are not streamed in pieces: a partial function call is not a
@@ -245,26 +352,46 @@ def _plan_tool_call(llm_request: Any) -> types.FunctionCall | None:
     answers no forever, which is worse: the stub re-issues `split_task` on every pass and
     the turn never ends. `_turn_responses` is the boundary between the two.
     """
-    if "add_task" not in _available_tools(llm_request):
+    tools = _available_tools(llm_request)
+    responses = _turn_responses(llm_request)
+
+    if "post_research_report" in tools:
+        # `research_agent`. One report, then prose — and nothing else, because the real one
+        # is instructed to deliver exactly one `post_research_report` call.
+        if responses:
+            return None
+        plan = research_plan(research_budget_minutes(_instruction(llm_request)))
+        return types.FunctionCall(name="post_research_report", args=plan)
+
+    if "add_task" not in tools:
         # No domain tools on this agent — the disconnect suite builds one that way, and
         # it must keep getting the plain streaming reply it asserts against.
         return None
 
     budget = budget_minutes(_instruction(llm_request))
-    responses = _turn_responses(llm_request)
-
-    if any(name == "split_task" for name, _ in responses):
-        return None
 
     created = _created_task(responses)
     if created is not None:
         task_id, minutes, title = created
-        if minutes > budget:
-            return types.FunctionCall(
-                name="split_task",
-                args={"task_id": task_id, "subtasks": split_plan(title, minutes, budget)},
-            )
-        return None
+        if minutes <= budget:
+            return None
+        sizes = split_sizes(minutes, budget)
+        # One subtask per pass, counted from *this turn's* responses rather than from
+        # anything remembered — the stub is stateless by construction, and two turns of one
+        # conversation may be served by two processes.
+        added = sum(1 for name, _ in responses if name == "add_subtask")
+        if added >= len(sizes):
+            return None
+        return types.FunctionCall(
+            name="add_subtask",
+            args={
+                "task_id": task_id,
+                "title": f"{title} — part {added + 1}",
+                "description": "",
+                "estimated_minutes": sizes[added],
+                "needs_research": True,
+            },
+        )
 
     if responses:
         # Something came back and it was not a task worth splitting — a refusal, or a
@@ -272,6 +399,39 @@ def _plan_tool_call(llm_request: Any) -> types.FunctionCall | None:
         return None
 
     text = _last_user_text(llm_request)
+
+    if _ASK_MANY_PATTERN.search(text) and "ask_learner" in tools:
+        return types.FunctionCall(
+            name="ask_learner",
+            args={
+                "question": STUB_MULTI_QUESTION,
+                "options": list(STUB_MULTI_OPTIONS),
+                "allow_multiple": True,
+                "allow_none": True,
+                "note_prompt": "",
+            },
+        )
+
+    if _ASK_PATTERN.search(text) and "ask_learner" in tools:
+        return types.FunctionCall(
+            name="ask_learner",
+            args={
+                "question": STUB_QUESTION,
+                "options": list(STUB_OPTIONS),
+                "allow_multiple": False,
+                "allow_none": True,
+                "note_prompt": "Anything else I should know?",
+            },
+        )
+
+    if _COMPLETE_PATTERN.search(text) and "complete_task_item" in tools:
+        match = _ITEM_ID_PATTERN.search(_instruction(llm_request))
+        if match is None:
+            return None
+        return types.FunctionCall(
+            name="complete_task_item",
+            args={"item_id": match.group(1), "note": "you told me you had done it"},
+        )
 
     if _DISCARD_PATTERN.search(text):
         target = first_task_id(_instruction(llm_request))
@@ -383,10 +543,17 @@ __all__ = [
     "DEFAULT_DELAY_MS",
     "DELAY_ENV_VAR",
     "DONE_REPLY",
+    "STUB_FAILURE_MESSAGE",
+    "STUB_MULTI_OPTIONS",
+    "STUB_MULTI_QUESTION",
+    "STUB_OPTIONS",
+    "STUB_QUESTION",
     "StubModel",
     "budget_minutes",
     "first_task_id",
     "requested_minutes",
-    "split_plan",
+    "research_budget_minutes",
+    "research_plan",
+    "split_sizes",
     "stub_reply",
 ]

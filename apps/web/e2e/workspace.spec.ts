@@ -213,3 +213,35 @@ test('cancelling a turn stops it and says so', async ({ signedIn: page }) => {
   // Not retryable: the user asked for this, so offering a retry would be wrong.
   await expect(page.getByRole('alert')).not.toContainText('try again');
 });
+
+test('a failed turn does not block the next one', async ({ signedIn: page }) => {
+  /*
+    Found on `coach-dev`: Vertex answered a turn with 429, the error rendered in red, and
+    the next message the learner sent never appeared. It had generated — a reload showed
+    it — but the pane was still rendering the *failed* turn, because a turn that ends in
+    `turn_error` is never cleared from `useStreamStore` and the pane read the first
+    buffered turn for the session rather than the newest.
+
+    Two changes fix it — `newestTurnFor` reads the newest buffer instead of the first, and
+    `begin` retires a failed one — and **either alone makes this spec pass**, verified by
+    reverting each in turn. So this is a regression test for the *symptom*, not evidence
+    about which mechanism carries it; `stream.test.ts` pins the two separately. What it
+    does prove is the thing no unit test can: that the pane, the composer, and the
+    transcript all move on, in a built bundle, without a reload.
+  */
+  await openWorkspace(page, 'Error recovery', 'A task that errors');
+
+  await send(page, 'make this turn fail');
+
+  const error = page.getByTestId('turn-error');
+  await expect(error).toBeVisible();
+  await expect(error).toContainText('You can try again');
+
+  // No reload, no retry button — just the next ordinary message.
+  await send(page, 'hello again');
+
+  await expect(error).toBeHidden();
+  await expect(assistantBubbles(page).last()).toHaveText(stubReply('hello again'), {
+    timeout: 30_000,
+  });
+});

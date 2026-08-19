@@ -30,6 +30,25 @@ async function addTask(page: Page, title: string, minutes = 45) {
   await expect(page.getByTestId('task-card').filter({ hasText: title })).toBeVisible();
 }
 
+/**
+ * Open a task's workspace and add subtasks to it, one at a time.
+ *
+ * The only hand path to a subtask since `POST /api/tasks/{id}/split` was removed, and it
+ * lives on the workspace rather than the board because that is the screen a composite task
+ * is worked from. Leaves the page *on* the workspace, which is where both callers want it.
+ */
+async function addSubtasks(page: Page, taskTitle: string, subtasks: [string, number][]) {
+  await page.getByTestId('open-workspace').filter({ hasText: taskTitle }).click();
+  await expect(page.getByTestId('add-subtask')).toBeVisible();
+
+  for (const [title, minutes] of subtasks) {
+    await page.getByLabel('New subtask').fill(title);
+    await page.getByLabel('Minutes').fill(String(minutes));
+    await page.getByRole('button', { name: 'Add subtask' }).click();
+    await expect(page.getByTestId('subtask-card').filter({ hasText: title })).toBeVisible();
+  }
+}
+
 test('the SPA and the API are served from one origin', async ({ signedIn: page }) => {
   // No CORS, no rewrite layer: the same host answers both (docs/01-architecture.md).
   const spa = await page.request.get('/');
@@ -87,13 +106,14 @@ test('manage tasks by hand: add, start, complete, and the default filter hides i
   await addTask(page, 'Second task', 90);
   await expect(page.getByTestId('task-card')).toHaveCount(2);
 
-  // Start it: only legal transitions are offered, so "Complete" is not there yet.
+  // Only legal transitions are offered: a task with no plan yet cannot be postponed,
+  // because deferring is reachable only from `in_progress`.
   await page.getByRole('button', { name: 'Actions for First task' }).click();
-  await expect(page.getByRole('menuitem', { name: 'Complete' })).toHaveCount(0);
+  await expect(page.getByRole('menuitem', { name: 'Postpone' })).toHaveCount(0);
   await page.getByRole('menuitem', { name: 'Start' }).click();
 
   const first = page.getByTestId('task-card').filter({ hasText: 'First task' });
-  await expect(first).toHaveAttribute('data-state', 'current');
+  await expect(first).toHaveAttribute('data-state', 'in_progress');
   await expect(first).toContainText('Next up');
 
   await page.getByRole('button', { name: 'Actions for First task' }).click();
@@ -147,15 +167,21 @@ test('reordering with the keyboard fallback survives a reload', async ({ signedI
   await expect.poll(titles).toEqual(['Alpha', 'Gamma', 'Beta']);
 });
 
-test('a split parent shows its subtask count and summed duration', async ({
+test('a composite parent shows its subtask count and summed duration', async ({
   signedIn: page,
 }) => {
-  await createProject(page, 'Splitting');
+  // Subtasks are added one at a time from the workspace now. The board's "Split into
+  // subtasks…" row action and `POST /api/tasks/{id}/split` behind it were removed after
+  // M4: one call producing a whole breakdown made the model commit to every piece before
+  // discussing any of them, and there is no sensible hand version of that either.
+  await createProject(page, 'Breaking up');
   await addTask(page, 'Big thing', 120);
+  await addSubtasks(page, 'Big thing', [
+    ['First half', 60],
+    ['Second half', 60],
+  ]);
 
-  await page.getByRole('button', { name: 'Actions for Big thing' }).click();
-  await page.getByRole('menuitem', { name: 'Split into subtasks…' }).click();
-
+  await page.getByRole('link', { name: 'Back to the board' }).click();
   const parent = page.getByTestId('task-card').filter({ hasText: 'Big thing' });
   await expect(parent.getByTestId('rollup')).toContainText('2 subtasks');
   await expect(parent.getByTestId('rollup')).toContainText('2 h');
@@ -202,14 +228,10 @@ test('a composite task shows its subtasks in the workspace, and completing one l
   // detail query the workspace reads and the board query it does not.
   await createProject(page, 'Composite');
   await addTask(page, 'Big piece', 120);
-
-  await page.getByRole('button', { name: 'Actions for Big piece' }).click();
-  await page.getByRole('menuitem', { name: 'Split into subtasks…' }).click();
-  await expect(
-    page.getByTestId('task-card').filter({ hasText: 'Big piece' }).getByTestId('rollup'),
-  ).toContainText('2 subtasks');
-
-  await page.getByTestId('open-workspace').filter({ hasText: 'Big piece' }).click();
+  await addSubtasks(page, 'Big piece', [
+    ['First half', 60],
+    ['Second half', 60],
+  ]);
 
   const cards = page.getByTestId('subtask-cards').getByTestId('subtask-card');
   await expect(cards).toHaveCount(2);

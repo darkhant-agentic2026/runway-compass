@@ -30,7 +30,6 @@ interface TaskRowActionsProps {
   canMoveDown: boolean;
   onSetState: (state: TaskState, postponedUntil?: string) => void;
   onMove: (direction: -1 | 1) => void;
-  onSplit?: () => void;
 }
 
 export function TaskRowActions({
@@ -39,7 +38,6 @@ export function TaskRowActions({
   canMoveDown,
   onSetState,
   onMove,
-  onSplit,
 }: TaskRowActionsProps) {
   const [pendingDate, setPendingDate] = useState(false);
   const options = transitionsFor(task.state);
@@ -67,13 +65,6 @@ export function TaskRowActions({
               {option.label}
             </DropdownMenuItem>
           ))}
-
-          {onSplit && task.parentTaskId === null && !task.rollup ? (
-            <>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={onSplit}>Split into subtasks…</DropdownMenuItem>
-            </>
-          ) : null}
 
           <DropdownMenuSeparator />
           {/* Keyboard fallback for drag-and-drop. */}

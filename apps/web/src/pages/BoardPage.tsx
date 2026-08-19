@@ -44,7 +44,6 @@ import {
   useProjectSession,
   useReorderTask,
   useSetTaskState,
-  useSplitTask,
 } from '@/features/queries';
 import { formatMinutes } from '@/lib/format';
 import type { TaskState } from '@/lib/schemas';
@@ -64,7 +63,6 @@ export default function BoardPage() {
   const setTaskState = useSetTaskState(projectId, filters);
   const reorder = useReorderTask(projectId, filters);
   const createTask = useCreateTask(projectId);
-  const splitTask = useSplitTask(projectId);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -172,27 +170,6 @@ export default function BoardPage() {
                       })
                     }
                     onMove={(taskId, direction) => move(taskId, index + direction)}
-                    onSplit={(taskId) =>
-                      splitTask.mutate({
-                        taskId,
-                        subtasks: [
-                          {
-                            title: `${task.title} — part 1`,
-                            estimatedMinutes: Math.max(
-                              1,
-                              Math.round(task.estimatedMinutes / 2),
-                            ),
-                          },
-                          {
-                            title: `${task.title} — part 2`,
-                            estimatedMinutes: Math.max(
-                              1,
-                              task.estimatedMinutes - Math.round(task.estimatedMinutes / 2),
-                            ),
-                          },
-                        ],
-                      })
-                    }
                   />
                 ))}
               </ul>

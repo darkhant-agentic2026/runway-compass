@@ -70,7 +70,14 @@ describe('parity with events as the server stores them', () => {
       if (expected.attachmentFilename) {
         expect(message!.attachments[0]?.filename).toBe(expected.attachmentFilename);
       }
-      expect(message!.tools).toEqual(expected.tools ?? []);
+      // `callId`, `name`, and `ok` only. Those are what the *stored event* determines,
+      // and this suite exists to pin the stored shape — the vectors are dumped by
+      // `scripts/gen_event_vectors.py`, which is Python and cannot know what
+      // `describeTool` would render. `detail` is a client-side derivation and is asserted
+      // where it is written, in `tool-labels.test.ts`.
+      expect(message!.tools.map(({ callId, name, ok }) => ({ callId, name, ok }))).toEqual(
+        expected.tools ?? [],
+      );
     });
   }
 });
@@ -303,6 +310,9 @@ describe('a tool waiting on the learner', () => {
       functionCallId: requestId,
       toolName: 'discard_task',
       args: { task_id: 'k_1', reason: 'You asked me to drop this one.' },
+      // `null` because a yes/no gate carries no question payload. Asserted rather than
+      // omitted: it is what makes `SessionPane` render buttons rather than a choice dialog.
+      question: null,
     });
   });
 
@@ -340,10 +350,15 @@ describe('a tool waiting on the learner', () => {
  * back to a session, showed a conversation in which tasks had appeared by themselves.
  */
 describe('what the coach did, after the stream is gone', () => {
-  function call(seq: number, id: string, name: string): SessionEvent {
+  function call(
+    seq: number,
+    id: string,
+    name: string,
+    args: Record<string, unknown> = {},
+  ): SessionEvent {
     return event(seq, {
       author: 'coach_agent',
-      content: { role: 'model', parts: [{ function_call: { id, name, args: {} } }] },
+      content: { role: 'model', parts: [{ function_call: { id, name, args } }] },
     });
   }
 
@@ -360,7 +375,7 @@ describe('what the coach did, after the stream is gone', () => {
   it('survives the turn it happened in', () => {
     const messages = toMessages([
       userText(1, 'give me 30 minutes of work'),
-      call(2, 'adk-1', 'add_task'),
+      call(2, 'adk-1', 'add_task', { title: 'Locks', estimated_minutes: 30 }),
       result(3, 'adk-1', 'add_task', { ok: true, task: { taskId: 'k_1' } }),
       event(4, {
         author: 'coach_agent',
@@ -373,7 +388,12 @@ describe('what the coach did, after the stream is gone', () => {
       '',
       'Done — your board is up to date.',
     ]);
-    expect(messages[1]?.tools).toEqual([{ callId: 'adk-1', name: 'add_task', ok: true }]);
+    expect(messages[1]?.tools).toEqual([
+      // The detail: the *arguments*, so a chip says which task was added and not merely
+      // that one was. `describeTool` reads arguments before results precisely so a call
+      // that is still running or was refused still has something to show.
+      { callId: 'adk-1', name: 'add_task', ok: true, detail: 'Locks (30 min)' },
+    ]);
   });
 
   it('shows a refusal as a refusal', () => {
@@ -405,7 +425,7 @@ describe('what the coach did, after the stream is gone', () => {
     // It is a question, and `ConfirmationPrompt` is its UI. A chip would say the coach
     // had done something called "adk request confirmation".
     const messages = toMessages([
-      call(1, 'adk-5', 'discard_task'),
+      call(1, 'adk-5', 'discard_task', { reason: 'no longer needed' }),
       event(2, {
         author: 'coach_agent',
         content: {
@@ -424,7 +444,9 @@ describe('what the coach did, after the stream is gone', () => {
     ]);
 
     expect(messages).toHaveLength(1);
-    expect(messages[0]?.tools).toEqual([{ callId: 'adk-5', name: 'discard_task', ok: null }]);
+    expect(messages[0]?.tools).toEqual([
+      { callId: 'adk-5', name: 'discard_task', ok: null, detail: 'no longer needed' },
+    ]);
   });
 
   it('drops the contentless event the prompt builder writes every turn', () => {

@@ -1,4 +1,4 @@
-"""Task endpoints, over HTTP: CRUD, ordering, splitting, and idempotency."""
+"""Task endpoints, over HTTP: CRUD, ordering, subtasks, and idempotency."""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ async def test_a_new_task_carries_the_documented_defaults(
 ) -> None:
     project_id = await _project(client)
     task = await _add(client, project_id, "t")
-    assert task["state"] == "not_started"
+    assert task["state"] == "draft"
     assert task["origin"] == "user"
     assert task["needsResearch"] is True
     assert task["researchStatus"] == "none"
@@ -135,20 +135,21 @@ async def test_state_changes_go_through_the_state_machine(
     project_id = await _project(client)
     task = await _add(client, project_id, "t")
 
-    illegal = await client.post(f"/api/tasks/{task['id']}/state", json={"state": "completed"})
+    # A brand-new task is `draft`, and deferring is only reachable from `in_progress`.
+    illegal = await client.post(f"/api/tasks/{task['id']}/state", json={"state": "postponed"})
     assert illegal.status_code == 409
     assert illegal.json()["type"] == "/problems/invalid-transition"
 
-    started = await client.post(f"/api/tasks/{task['id']}/state", json={"state": "current"})
+    started = await client.post(f"/api/tasks/{task['id']}/state", json={"state": "in_progress"})
     assert started.status_code == 200
-    assert started.json()["task"]["state"] == "current"
+    assert started.json()["task"]["state"] == "in_progress"
     assert started.json()["project"]["nextUpTaskId"] == task["id"]
 
 
 async def test_postponing_until_a_future_time(client: httpx.AsyncClient) -> None:
     project_id = await _project(client)
     task = await _add(client, project_id, "t")
-    await client.post(f"/api/tasks/{task['id']}/state", json={"state": "current"})
+    await client.post(f"/api/tasks/{task['id']}/state", json={"state": "in_progress"})
 
     when = (now() + timedelta(days=2)).isoformat()
     response = await client.post(
@@ -165,7 +166,7 @@ async def test_postponed_until_without_a_timestamp_is_refused(
 ) -> None:
     project_id = await _project(client)
     task = await _add(client, project_id, "t")
-    await client.post(f"/api/tasks/{task['id']}/state", json={"state": "current"})
+    await client.post(f"/api/tasks/{task['id']}/state", json={"state": "in_progress"})
     response = await client.post(
         f"/api/tasks/{task['id']}/state", json={"state": "postponed_until"}
     )
@@ -180,7 +181,7 @@ async def test_board_filters_default_to_hiding_completed_and_discarded(
     done = await _add(client, project_id, "done")
     gone = await _add(client, project_id, "gone")
 
-    await client.post(f"/api/tasks/{done['id']}/state", json={"state": "current"})
+    await client.post(f"/api/tasks/{done['id']}/state", json={"state": "in_progress"})
     await client.post(f"/api/tasks/{done['id']}/state", json={"state": "completed"})
     await client.post(f"/api/tasks/{gone['id']}/state", json={"state": "discarded"})
 
@@ -196,7 +197,7 @@ async def test_hiding_postponed_is_opt_in(client: httpx.AsyncClient) -> None:
     """docs/06-frontend.md: "Hide postponed" defaults off."""
     project_id = await _project(client)
     task = await _add(client, project_id, "t")
-    await client.post(f"/api/tasks/{task['id']}/state", json={"state": "current"})
+    await client.post(f"/api/tasks/{task['id']}/state", json={"state": "in_progress"})
     await client.post(f"/api/tasks/{task['id']}/state", json={"state": "postponed"})
 
     assert len(await _board(client, project_id)) == 1
@@ -208,16 +209,9 @@ async def test_a_hidden_parent_stays_on_the_board_while_it_has_visible_children(
 ) -> None:
     project_id = await _project(client)
     parent = await _add(client, project_id, "parent")
-    await client.post(
-        f"/api/tasks/{parent['id']}/split",
-        json={
-            "subtasks": [
-                {"title": "a", "estimatedMinutes": 30},
-                {"title": "b", "estimatedMinutes": 30},
-            ]
-        },
-    )
-    await client.post(f"/api/tasks/{parent['id']}/state", json={"state": "current"})
+    await _add(client, project_id, "a", parentTaskId=parent["id"], estimatedMinutes=30)
+    await _add(client, project_id, "b", parentTaskId=parent["id"], estimatedMinutes=30)
+    await client.post(f"/api/tasks/{parent['id']}/state", json={"state": "in_progress"})
     await client.post(f"/api/tasks/{parent['id']}/state", json={"state": "completed"})
 
     board = await _board(client, project_id)
@@ -225,80 +219,68 @@ async def test_a_hidden_parent_stays_on_the_board_while_it_has_visible_children(
     assert [s["title"] for s in board[0]["subtasks"]] == ["a", "b"]
 
 
-async def test_splitting_nests_subtasks_and_is_capped(client: httpx.AsyncClient) -> None:
+async def test_a_subtask_nests_under_its_parent(client: httpx.AsyncClient) -> None:
+    """One child at a time, through the ordinary create route.
+
+    `POST /api/tasks/{id}/split` was removed after M4 — it created the whole breakdown in
+    one call, which made the model commit to every subtask before discussing any of them.
+    A `parentTaskId` on the create is the whole of the replacement.
+    """
     project_id = await _project(client)
     parent = await _add(client, project_id, "big", estimatedMinutes=240)
 
-    too_few = await client.post(
-        f"/api/tasks/{parent['id']}/split",
-        json={"subtasks": [{"title": "only", "estimatedMinutes": 30}]},
-    )
-    assert too_few.status_code == 422
+    first = await _add(client, project_id, "a", parentTaskId=parent["id"], estimatedMinutes=60)
+    assert first["parentTaskId"] == parent["id"]
+    await _add(client, project_id, "b", parentTaskId=parent["id"], estimatedMinutes=60)
 
-    too_many = await client.post(
-        f"/api/tasks/{parent['id']}/split",
-        json={"subtasks": [{"title": f"s{i}", "estimatedMinutes": 15} for i in range(9)]},
-    )
-    assert too_many.status_code == 422
+    board = await _board(client, project_id)
+    assert board[0]["rollup"]["subtaskCount"] == 2
+    assert board[0]["rollup"]["totalEstimatedMinutes"] == 120
+    assert [child["title"] for child in board[0]["subtasks"]] == ["a", "b"]
 
-    ok = await client.post(
+
+async def test_the_split_endpoint_is_gone(client: httpx.AsyncClient) -> None:
+    """Asserted rather than assumed.
+
+    A removed route that quietly still answers is worse than one that never existed: the
+    tool was dropped for producing bad breakdowns, and a client still reaching for the
+    endpoint would keep producing them.
+    """
+    project_id = await _project(client)
+    parent = await _add(client, project_id, "big")
+
+    response = await client.post(
         f"/api/tasks/{parent['id']}/split",
-        json={
-            "subtasks": [
-                {"title": "a", "estimatedMinutes": 60},
-                {"title": "b", "estimatedMinutes": 60},
-            ]
-        },
+        json={"subtasks": [{"title": "a", "estimatedMinutes": 30}]},
     )
-    assert ok.status_code == 201
-    assert ok.json()["task"]["rollup"]["subtaskCount"] == 2
+    assert response.status_code == 405
 
 
 async def test_nesting_stops_at_one_level(client: httpx.AsyncClient) -> None:
     """ "A subtask cannot have subtasks" (docs/02-data-model.md)."""
     project_id = await _project(client)
     parent = await _add(client, project_id, "parent")
-    split = await client.post(
-        f"/api/tasks/{parent['id']}/split",
-        json={
-            "subtasks": [
-                {"title": "a", "estimatedMinutes": 30},
-                {"title": "b", "estimatedMinutes": 30},
-            ]
-        },
-    )
-    child_id = split.json()["task"]["subtasks"][0]["id"]
+    child = await _add(client, project_id, "a", parentTaskId=parent["id"])
 
     nested = await client.post(
         f"/api/projects/{project_id}/tasks",
-        json={"title": "grandchild", "parentTaskId": child_id},
+        json={"title": "grandchild", "parentTaskId": child["id"]},
     )
     assert nested.status_code == 422
 
-    resplit = await client.post(
-        f"/api/tasks/{child_id}/split",
-        json={
-            "subtasks": [
-                {"title": "x", "estimatedMinutes": 10},
-                {"title": "y", "estimatedMinutes": 10},
-            ]
-        },
-    )
-    assert resplit.status_code == 422
 
-
-async def test_splitting_twice_is_refused(client: httpx.AsyncClient) -> None:
+async def test_a_second_subtask_just_appends(client: httpx.AsyncClient) -> None:
+    """`split_task` refused a second split with a 409, because it only knew how to create a
+    whole breakdown. Adding children one at a time has no such state to be in."""
     project_id = await _project(client)
     parent = await _add(client, project_id, "parent")
-    body = {
-        "subtasks": [
-            {"title": "a", "estimatedMinutes": 30},
-            {"title": "b", "estimatedMinutes": 30},
-        ]
-    }
-    assert (await client.post(f"/api/tasks/{parent['id']}/split", json=body)).status_code == 201
-    second = await client.post(f"/api/tasks/{parent['id']}/split", json=body)
-    assert second.status_code == 409
+
+    await _add(client, project_id, "a", parentTaskId=parent["id"], estimatedMinutes=30)
+    await _add(client, project_id, "b", parentTaskId=parent["id"], estimatedMinutes=30)
+    await _add(client, project_id, "c", parentTaskId=parent["id"], estimatedMinutes=30)
+
+    board = await _board(client, project_id)
+    assert board[0]["rollup"]["subtaskCount"] == 3
 
 
 async def test_tasks_are_isolated_per_user(
@@ -318,7 +300,7 @@ async def test_tasks_are_isolated_per_user(
 
     unchanged = (await client.get(f"/api/tasks/{task['id']}")).json()["task"]
     assert unchanged["title"] == "secret"
-    assert unchanged["state"] == "not_started"
+    assert unchanged["state"] == "draft"
 
 
 async def test_a_mutation_returns_the_parent_and_project_for_optimistic_reconciliation(
@@ -327,18 +309,10 @@ async def test_a_mutation_returns_the_parent_and_project_for_optimistic_reconcil
     """docs/04-api-contract.md: enough to reconcile without a refetch."""
     project_id = await _project(client)
     parent = await _add(client, project_id, "parent")
-    split = await client.post(
-        f"/api/tasks/{parent['id']}/split",
-        json={
-            "subtasks": [
-                {"title": "a", "estimatedMinutes": 30},
-                {"title": "b", "estimatedMinutes": 60},
-            ]
-        },
-    )
-    child_id = split.json()["task"]["subtasks"][0]["id"]
+    child = await _add(client, project_id, "a", parentTaskId=parent["id"], estimatedMinutes=30)
+    await _add(client, project_id, "b", parentTaskId=parent["id"], estimatedMinutes=60)
 
-    response = await client.patch(f"/api/tasks/{child_id}", json={"estimatedMinutes": 120})
+    response = await client.patch(f"/api/tasks/{child['id']}", json={"estimatedMinutes": 120})
     body = response.json()
     assert body["task"]["estimatedMinutes"] == 120
     assert body["parent"]["id"] == parent["id"]

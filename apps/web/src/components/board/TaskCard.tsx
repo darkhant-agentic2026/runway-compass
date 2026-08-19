@@ -32,7 +32,6 @@ interface TaskCardProps {
   onToggleCollapsed: () => void;
   onSetState: (taskId: string, state: TaskState, postponedUntil?: string) => void;
   onMove: (taskId: string, direction: -1 | 1) => void;
-  onSplit: (taskId: string) => void;
 }
 
 export function TaskCard({
@@ -45,7 +44,6 @@ export function TaskCard({
   onToggleCollapsed,
   onSetState,
   onMove,
-  onSplit,
 }: TaskCardProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: task.id,
@@ -144,6 +142,22 @@ export function TaskCard({
                 {formatMinutes(task.rollup.totalEstimatedMinutes)}
               </span>
             </div>
+          ) : task.items.length > 0 ? (
+            /*
+              A leaf's checklist progress, in the same slot a parent's rollup occupies.
+              They are the same idea — how far through its plan this task is — and they
+              never both apply: `items` and `rollup` are mutually exclusive
+              (docs/02-data-model.md#task-items), which is why this is an `else if`.
+            */
+            <div className="mt-2 flex items-center gap-2" data-testid="item-progress">
+              <ProgressRing
+                completed={task.items.filter((item) => item.completed).length}
+                total={task.items.length}
+              />
+              <span className="text-sm text-muted-foreground">
+                {task.items.filter((item) => item.completed).length} of {task.items.length} done
+              </span>
+            </div>
           ) : null}
         </div>
 
@@ -153,7 +167,6 @@ export function TaskCard({
           canMoveDown={canMoveDown}
           onSetState={(state, postponedUntil) => onSetState(task.id, state, postponedUntil)}
           onMove={(direction) => onMove(task.id, direction)}
-          onSplit={() => onSplit(task.id)}
         />
       </div>
 

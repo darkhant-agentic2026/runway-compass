@@ -28,7 +28,8 @@ from typing import Any
 from google.cloud.firestore import AsyncTransaction, async_transactional
 
 from coach.core.clock import now
-from coach.core.errors import Conflict, NotFound, ValidationProblem
+from coach.core.errors import NotFound, ValidationProblem
+from coach.core.ids import item_id as new_item_id
 from coach.core.ids import task_id as new_task_id
 from coach.core.principal import Principal
 from coach.repositories.firestore import Database
@@ -37,20 +38,29 @@ from coach.repositories.tasks import TaskRepository
 from coach.services.models import (
     Origin,
     Project,
+    ResearchStatus,
     Rollup,
     Task,
+    TaskItem,
     TaskState,
     TaskWithSubtasks,
 )
 from coach.services.ordering import OrderKeyError, key_between, rebalance
 from coach.services.projects import ProjectService
-from coach.services.rollups import compute_counts, compute_next_up, compute_rollup
+from coach.services.rollups import (
+    compute_counts,
+    compute_next_up,
+    compute_rollup,
+    derive_state,
+)
 from coach.services.state_machine import validate_transition
 
-#: docs/03-agent-design.md guards `split_task` to 2-8 subtasks. The same bound applies to
-#: the manual endpoint, so a hand split and an agent split cannot produce different shapes.
-MIN_SPLIT_SUBTASKS = 2
-MAX_SPLIT_SUBTASKS = 8
+# `split_task` and its 2-8 bound lived here until M4's follow-up. It created a whole
+# breakdown in one call, which is the shape that made it unusable: the model had to commit
+# to every subtask before it had discussed any of them, and a single bad estimate failed
+# the lot. `create_task(parent_task_id=...)` — one child at a time, reachable from the tool
+# as `add_subtask` and from `POST /api/projects/{id}/tasks` — replaces it, and the
+# checklist inheritance it does is a thing `split_task` never did at all.
 
 #: Placeholder key used by `plan_insert` for the not-yet-created task.
 NEW_TASK_SLOT = ""
@@ -296,6 +306,7 @@ class TaskService:
         async def txn(transaction: AsyncTransaction) -> Task:
             project, tasks = await self._read_board(transaction, project_id)
 
+            parent: Task | None = None
             if parent_task_id is not None:
                 parent = next((t for t in tasks if t.id == parent_task_id), None)
                 if parent is None:
@@ -307,6 +318,15 @@ class TaskService:
                     )
 
             planned = plan_insert(_sorted_siblings(tasks, parent_task_id), after_task_id)
+            # A composite task cannot hold a checklist (docs/02-data-model.md#task-items),
+            # so the first subtask *inherits* the parent's. Anything else loses work: the
+            # items are the plan for exactly the piece of the task the subtask now
+            # represents, and silently dropping them would take a checklist the learner
+            # may have half-finished off the screen.
+            #
+            # "Parent has items" already implies "parent has no other children", because a
+            # task that gained a child gave its items away on that write.
+            inherited = list(parent.items) if parent is not None else []
             task = Task(
                 id=created_id,
                 project_id=project_id,
@@ -317,10 +337,17 @@ class TaskService:
                 estimated_minutes=estimated_minutes,
                 order=planned.pop(NEW_TASK_SLOT),
                 needs_research=needs_research,
+                items=inherited,
                 origin=origin,
             )
             created = await self._tasks.create(task, transaction=transaction)
             tasks.append(created)
+
+            if inherited and parent is not None:
+                await self._tasks.patch(
+                    project_id, parent.id, {"items": []}, transaction=transaction
+                )
+                _apply(tasks, parent.id, {"items": []})
 
             for sibling_id, order in planned.items():  # only set on the rebalance path
                 await self._tasks.patch(
@@ -329,7 +356,12 @@ class TaskService:
                 _apply(tasks, sibling_id, {"order": order})
 
             await self._write_derived(transaction, project, tasks)
-            return created
+            # The *derived* task, not the one built above. `_write_derived` can rewrite the
+            # new task's state in this same transaction — a child that inherited a finished
+            # checklist arrives `completed`, one that inherited any checklist arrives
+            # `not_started` — and returning the pre-derivation object would answer the
+            # create with a state the database does not have.
+            return next(t for t in tasks if t.id == created.id)
 
         async with self._project_lock(project_id):
             return await self._db.run(txn)
@@ -385,10 +417,12 @@ class TaskService:
     ) -> Task:
         """`POST /api/tasks/{id}/state`, validated against the state machine.
 
-        Invariant 1 lives here: promoting a task to `current` demotes whatever was
-        `current` to `not_started`, and `project.nextUpTaskId` moves, in one transaction.
-        Two simultaneous promotions therefore leave exactly one `current` task — Firestore
-        aborts and retries the loser, which then observes the winner and demotes it.
+        **Starting a task demotes nothing.** Until M4 this method enforced "at most one
+        `current` task per project" by moving the previous one back to `not_started`;
+        `in_progress` is not singular, so the demotion is gone and `project.nextUpTaskId`
+        is derived from the board instead (`compute_next_up`). Two simultaneous starts now
+        leave both tasks `in_progress`, and what the transaction still buys is that the
+        contended write to `projects/{id}` retries rather than losing an update.
 
         Invariant 4 is the *absence* of a check: completing a task with unfinished
         subtasks is allowed. The confirmation ("3 subtasks not done — complete anyway?")
@@ -404,10 +438,9 @@ class TaskService:
             if current is None:
                 raise NotFound(f"No task {task_id!r}.")
 
-            if current.state is state and state is not TaskState.CURRENT:
+            if current.state is state:
                 # Re-issuing the same state is a no-op rather than a 409, so a
-                # double-clicked row action cannot fail. `current` is excluded because
-                # re-promoting is how the board repairs a duplicated `current`.
+                # double-clicked row action cannot fail.
                 return current
 
             validate_transition(current.state, state, postponed_until=postponed_until)
@@ -425,19 +458,9 @@ class TaskService:
                 "completedAt": now() if state is TaskState.COMPLETED else None,
             }
 
-            # Invariant 1: at most one `current` task per project.
-            if state is TaskState.CURRENT:
-                for other in list(tasks):
-                    if other.id != task_id and other.state is TaskState.CURRENT:
-                        demotion = {"state": TaskState.NOT_STARTED.value}
-                        await self._tasks.patch(
-                            project_id, other.id, demotion, transaction=transaction
-                        )
-                        _apply(tasks, other.id, demotion)
-
             await self._tasks.patch(project_id, task_id, updates, transaction=transaction)
             updated = _apply(tasks, task_id, updates)
-            await self._write_derived(transaction, project, tasks)
+            await self._write_derived(transaction, project, tasks, state_set_explicitly=task_id)
             return updated
 
         async with self._project_lock(project_id):
@@ -485,62 +508,302 @@ class TaskService:
         async with self._project_lock(project_id):
             return await self._db.run(txn)
 
-    async def split_task(
+    async def set_research(
         self,
         principal: Principal,
         task_id: str,
-        subtasks: list[dict[str, Any]],
         *,
-        origin: Origin = Origin.USER,
-    ) -> TaskWithSubtasks:
-        """`POST /api/tasks/{id}/split` — turn a leaf task into a parent with subtasks."""
-        if not MIN_SPLIT_SUBTASKS <= len(subtasks) <= MAX_SPLIT_SUBTASKS:
-            raise ValidationProblem(
-                f"A split produces between {MIN_SPLIT_SUBTASKS} and "
-                f"{MAX_SPLIT_SUBTASKS} subtasks; got {len(subtasks)}."
-            )
-        parent = await self.resolve(principal, task_id)
-        if parent.parent_task_id is not None:
-            raise ValidationProblem(
-                "Task nesting is one level deep: split a subtask into siblings instead."
-            )
-        project_id = parent.project_id
-        new_ids = [new_task_id() for _ in subtasks]
+        status: ResearchStatus,
+        latest_report_id: str | None = None,
+    ) -> Task:
+        """Move `researchStatus`, and optionally the `latestReportId` pointer.
+
+        Goes through the board transaction rather than being a one-field patch, because
+        `researchStatus` is half of invariant 6: a task whose checklist is fully ticked
+        completes the moment research stops being outstanding, so the write that sets
+        `done` is exactly the write that can complete a task. A bare `patch` would leave
+        that task sitting finished-but-open until something unrelated touched it.
+        """
+        task = await self.resolve(principal, task_id)
+        project_id = task.project_id
+        updates: dict[str, Any] = {"researchStatus": status.value}
+        if latest_report_id is not None:
+            updates["latestReportId"] = latest_report_id
 
         @async_transactional
-        async def txn(transaction: AsyncTransaction) -> TaskWithSubtasks:
+        async def txn(transaction: AsyncTransaction) -> Task:
             project, tasks = await self._read_board(transaction, project_id)
             if not any(t.id == task_id for t in tasks):
                 raise NotFound(f"No task {task_id!r}.")
-            if any(t.parent_task_id == task_id for t in tasks):
-                raise Conflict(
-                    "This task has already been split. Add subtasks individually instead."
-                )
-
-            orders = rebalance(len(subtasks))
-            created: list[Task] = []
-            for child_id, order, draft in zip(new_ids, orders, subtasks, strict=True):
-                child = Task(
-                    id=child_id,
-                    project_id=project_id,
-                    owner_uid=principal.uid,
-                    parent_task_id=task_id,
-                    title=draft["title"],
-                    description=draft.get("description", ""),
-                    estimated_minutes=draft["estimatedMinutes"],
-                    order=order,
-                    needs_research=draft.get("needsResearch", True),
-                    origin=origin,
-                )
-                created.append(await self._tasks.create(child, transaction=transaction))
-
-            tasks.extend(created)
+            await self._tasks.patch(project_id, task_id, updates, transaction=transaction)
+            _apply(tasks, task_id, updates)
             await self._write_derived(transaction, project, tasks)
-            updated_parent = next(t for t in tasks if t.id == task_id)
-            return TaskWithSubtasks(
-                **updated_parent.model_dump(),
-                subtasks=sorted(created, key=lambda t: t.order),
+            return next(t for t in tasks if t.id == task_id)
+
+        async with self._project_lock(project_id):
+            return await self._db.run(txn)
+
+    # --- task items ----------------------------------------------------------------
+
+    async def add_items(
+        self,
+        principal: Principal,
+        task_id: str,
+        drafts: list[dict[str, Any]],
+        *,
+        source_report_id: str | None = None,
+    ) -> Task:
+        """`POST /api/tasks/{id}/items` — append to the checklist, keeping the given order.
+
+        Appending rather than replacing: `replace_items` is the research path, and a
+        conversation that turns up an extra step should not discard the checklist to add it.
+        """
+        if not drafts:
+            raise ValidationProblem("No items given to add.")
+        items = [_task_item(draft, source_report_id=source_report_id) for draft in drafts]
+        return await self._write_items(principal, task_id, lambda existing: [*existing, *items])
+
+    async def replace_items(
+        self,
+        principal: Principal,
+        task_id: str,
+        drafts: list[dict[str, Any]],
+        *,
+        source_report_id: str,
+    ) -> Task:
+        """Rewrite the checklist from a research run, preserving what the learner has done.
+
+        Two rules, both from docs/02-data-model.md#task-items, and both about not making
+        someone redo work because the coach changed its mind:
+
+        - An incoming item that matches one already on the list — same `shortDescription`
+          and same `url` — inherits its `completed` flag and its `itemId`. A re-run that
+          keeps a reading the learner has already done does not ask for it again.
+        - A hand-added item (`sourceReportId is None`) is never dropped. It is the
+          learner's own note about their own work, and a research run has no standing to
+          delete it. Hand-added items keep their relative order and follow the report's.
+        """
+        incoming = [_task_item(draft, source_report_id=source_report_id) for draft in drafts]
+
+        def rewrite(existing: list[TaskItem]) -> list[TaskItem]:
+            by_identity = {(i.short_description, i.url): i for i in existing}
+            merged: list[TaskItem] = []
+            for item in incoming:
+                previous = by_identity.get((item.short_description, item.url))
+                if previous is None:
+                    merged.append(item)
+                    continue
+                merged.append(
+                    item.model_copy(
+                        update={
+                            "item_id": previous.item_id,
+                            "completed": previous.completed,
+                            "completed_at": previous.completed_at,
+                        }
+                    )
+                )
+            kept = {i.item_id for i in merged}
+            merged.extend(
+                i for i in existing if i.source_report_id is None and i.item_id not in kept
             )
+            return merged
+
+        return await self._write_items(principal, task_id, rewrite)
+
+    async def patch_item(
+        self,
+        principal: Principal,
+        task_id: str,
+        item_id: str,
+        *,
+        completed: bool | None = None,
+        short_description: str | None = None,
+        details: str | None = None,
+        guided: bool | None = None,
+    ) -> Task:
+        """`PATCH /api/tasks/{id}/items/{itemId}` — the checkbox and the inline edit.
+
+        Returns the whole task rather than the item, because a write that completes the
+        last item also moves the task's `state` (invariant 6) and the project's `counts`.
+        """
+        candidates: dict[str, Any] = {
+            "completed": completed,
+            "short_description": short_description,
+            "details": details,
+            "guided": guided,
+        }
+        applied: dict[str, Any] = {k: v for k, v in candidates.items() if v is not None}
+        if not applied:
+            raise ValidationProblem("No item field given to change.")
+        if completed is not None:
+            applied["completed_at"] = now() if completed else None
+
+        def rewrite(existing: list[TaskItem]) -> list[TaskItem]:
+            if not any(i.item_id == item_id for i in existing):
+                raise NotFound(f"No item {item_id!r} on this task.")
+            return [
+                i.model_copy(update=applied) if i.item_id == item_id else i for i in existing
+            ]
+
+        return await self._write_items(principal, task_id, rewrite)
+
+    async def delete_item(self, principal: Principal, task_id: str, item_id: str) -> Task:
+        """`DELETE /api/tasks/{id}/items/{itemId}`."""
+
+        def rewrite(existing: list[TaskItem]) -> list[TaskItem]:
+            if not any(i.item_id == item_id for i in existing):
+                raise NotFound(f"No item {item_id!r} on this task.")
+            return [i for i in existing if i.item_id != item_id]
+
+        return await self._write_items(principal, task_id, rewrite)
+
+    async def reorder_item(
+        self,
+        principal: Principal,
+        task_id: str,
+        item_id: str,
+        *,
+        after_item_id: str | None = None,
+        before_item_id: str | None = None,
+    ) -> Task:
+        """`POST /api/tasks/{id}/items/{itemId}/reorder`.
+
+        Items have no fractional index: the array *is* the order, and the whole list is
+        rewritten. That is the right trade at this size — a checklist is a handful of
+        entries read and written as one document field, where tasks are a collection whose
+        reordering has to avoid renumbering a board.
+        """
+        if (after_item_id is None) == (before_item_id is None):
+            raise ValidationProblem("Give exactly one of afterItemId and beforeItemId.")
+
+        def rewrite(existing: list[TaskItem]) -> list[TaskItem]:
+            moving = next((i for i in existing if i.item_id == item_id), None)
+            if moving is None:
+                raise NotFound(f"No item {item_id!r} on this task.")
+            anchor_id = after_item_id or before_item_id
+            rest = [i for i in existing if i.item_id != item_id]
+            positions = [i for i, item in enumerate(rest) if item.item_id == anchor_id]
+            if not positions:
+                raise ValidationProblem(f"No item {anchor_id!r} to place this next to.")
+            index = positions[0] + 1 if after_item_id is not None else positions[0]
+            return [*rest[:index], moving, *rest[index:]]
+
+        return await self._write_items(principal, task_id, rewrite)
+
+    async def move_items(
+        self,
+        principal: Principal,
+        *,
+        from_task_id: str,
+        to_task_id: str,
+        item_ids: list[str],
+    ) -> tuple[Task, Task]:
+        """Move checklist items from one task to another, in one transaction.
+
+        The gap this fills: breaking a task down hands the *whole* checklist to the first
+        subtask (docs/02-data-model.md#task-items), and redistributing it afterwards had no
+        instrument at all. Deleting and re-adding was the only route, which loses the item's
+        id — and with it any feedback recorded against the recommendation it came from — and
+        asks the learner to approve every removal.
+
+        **Ids and completion survive the move**, which is the whole point: an item the
+        learner has already done stays done, and a report's `progress.feedback` keeps
+        pointing at something real.
+
+        Order follows `item_ids` rather than the source's order, so the caller decides where
+        in the sequence the moved work belongs; they are appended to the destination.
+
+        Both tasks are written in one transaction because the derived state of *both* moves:
+        a source whose last outstanding item leaves is finished, and a `draft` destination
+        that gains its first item is no longer plan-less. Two writes would publish a moment
+        where the work existed on neither task or on both.
+        """
+        if not item_ids:
+            raise ValidationProblem("No items given to move.")
+        if from_task_id == to_task_id:
+            raise ValidationProblem("Those are the same task.")
+
+        source = await self.resolve(principal, from_task_id)
+        project_id = source.project_id
+
+        @async_transactional
+        async def txn(transaction: AsyncTransaction) -> tuple[Task, Task]:
+            project, tasks = await self._read_board(transaction, project_id)
+            origin = next((t for t in tasks if t.id == from_task_id), None)
+            target = next((t for t in tasks if t.id == to_task_id), None)
+            if origin is None:
+                raise NotFound(f"No task {from_task_id!r}.")
+            if target is None:
+                raise NotFound(f"No task {to_task_id!r} in this project.")
+            if any(t.parent_task_id == to_task_id for t in tasks):
+                raise ValidationProblem(
+                    "That task has subtasks, and its subtasks are its plan. Move the items "
+                    "onto one of them instead."
+                )
+
+            by_id = {item.item_id: item for item in origin.items}
+            missing = [item_id for item_id in item_ids if item_id not in by_id]
+            if missing:
+                raise NotFound(f"{missing[0]!r} is not a step on {origin.title!r}.")
+
+            moving = [by_id[item_id] for item_id in item_ids]
+            remaining = [item for item in origin.items if item.item_id not in set(item_ids)]
+
+            for task_id, items in (
+                (from_task_id, remaining),
+                (to_task_id, [*target.items, *moving]),
+            ):
+                document = [item.to_document() for item in items]
+                await self._tasks.patch(
+                    project_id, task_id, {"items": document}, transaction=transaction
+                )
+                _apply(tasks, task_id, {"items": document})
+
+            await self._write_derived(transaction, project, tasks)
+            return (
+                next(t for t in tasks if t.id == from_task_id),
+                next(t for t in tasks if t.id == to_task_id),
+            )
+
+        async with self._project_lock(project_id):
+            return await self._db.run(txn)
+
+    async def _write_items(
+        self,
+        principal: Principal,
+        task_id: str,
+        rewrite: Any,
+    ) -> Task:
+        """Apply `rewrite` to a leaf task's checklist, transactionally.
+
+        Every item path funnels through here so that the refusal on a parent, the derived
+        state (invariant 6), and the project's `counts` are decided in one place rather
+        than five. `rewrite` runs *inside* the transaction, against the list as the
+        transaction read it, so a concurrent tick and edit cannot lose each other.
+        """
+        task = await self.resolve(principal, task_id)
+        project_id = task.project_id
+
+        @async_transactional
+        async def txn(transaction: AsyncTransaction) -> Task:
+            project, tasks = await self._read_board(transaction, project_id)
+            current = next((t for t in tasks if t.id == task_id), None)
+            if current is None:
+                raise NotFound(f"No task {task_id!r}.")
+            if any(t.parent_task_id == task_id for t in tasks):
+                raise ValidationProblem(
+                    "This task has subtasks, and its subtasks are its plan. Add items to "
+                    "the subtasks instead."
+                )
+
+            items: list[TaskItem] = rewrite(list(current.items))
+            document = [item.to_document() for item in items]
+            await self._tasks.patch(
+                project_id, task_id, {"items": document}, transaction=transaction
+            )
+            _apply(tasks, task_id, {"items": document})
+            await self._write_derived(transaction, project, tasks)
+            return next(t for t in tasks if t.id == task_id)
 
         async with self._project_lock(project_id):
             return await self._db.run(txn)
@@ -562,14 +825,54 @@ class TaskService:
         return project, tasks
 
     async def _write_derived(
-        self, transaction: AsyncTransaction, project: Project, tasks: list[Task]
+        self,
+        transaction: AsyncTransaction,
+        project: Project,
+        tasks: list[Task],
+        *,
+        state_set_explicitly: str | None = None,
     ) -> None:
-        """Recompute rollups, project counts, and `nextUpTaskId` from the post-change board.
+        """Recompute derived state, rollups, counts, and `nextUpTaskId` from the board.
 
-        Called by every mutation, inside the same transaction, so invariant 5 holds
-        whatever the entry point was. Only documents whose derived values actually
+        Called by every mutation, inside the same transaction, so invariants 1, 5, and 6
+        hold whatever the entry point was. Only documents whose derived values actually
         changed are written.
+
+        **The order of the three passes is load-bearing.** States are derived first,
+        because a subtask that auto-completes changes its parent's `rollup` and a task that
+        auto-completes changes the project's `counts` — running rollups first would publish
+        numbers describing the board as it was a moment ago, and nothing would recompute
+        them until the next unrelated write.
+
+        `state_set_explicitly` names a task whose state the caller has just written by hand,
+        and exempts it from the derivation *for this transaction only*. Without it, invariant
+        6 and the `reopen` action fight: reopening a task whose checklist is fully ticked
+        would land on `not_started`, be re-derived to `completed` in the same transaction,
+        and the button would do nothing at all — visibly, repeatably, with no error. The
+        exemption is per-transaction rather than a stored flag because the learner's next
+        checklist write is exactly when the derivation should take over again.
         """
+
+        def children_of(task_id: str) -> list[Task]:
+            return [t for t in tasks if t.parent_task_id == task_id]
+
+        for task in list(tasks):
+            if task.id == state_set_explicitly:
+                continue
+            desired_state = derive_state(task, children_of(task.id))
+            if desired_state is task.state:
+                continue
+            transition: dict[str, Any] = {"state": desired_state.value}
+            if desired_state is TaskState.COMPLETED:
+                transition["completedAt"] = now()
+            elif task.state is TaskState.COMPLETED:
+                transition["completedAt"] = None
+            await self._tasks.patch(project.id, task.id, transition, transaction=transaction)
+            _apply(tasks, task.id, transition)
+
+        # Recomputed against the post-derivation list, not the one captured above: a
+        # subtask that just auto-completed has to be counted as completed in its parent's
+        # rollup, in this same transaction.
         by_parent: dict[str, list[Task]] = {}
         for task in tasks:
             if task.parent_task_id is not None:
@@ -597,9 +900,29 @@ class TaskService:
             await self._projects.patch(project.id, updates, transaction=transaction)
 
 
+def _task_item(draft: dict[str, Any], *, source_report_id: str | None) -> TaskItem:
+    """One checklist item from a wire-shaped or tool-shaped draft.
+
+    `itemId` is honoured when the caller supplies one — `post_research_report` passes the
+    report item's id through so a recommendation and its checklist entry share an identity
+    (`coach.core.ids.item_id`) — and minted otherwise.
+    """
+    short = str(draft.get("shortDescription") or draft.get("short_description") or "").strip()
+    if not short:
+        raise ValidationProblem("Every checklist item needs a short description.")
+    return TaskItem(
+        item_id=str(draft.get("itemId") or draft.get("item_id") or "") or new_item_id(),
+        short_description=short,
+        details=str(draft.get("details") or ""),
+        guided=bool(draft.get("guided", False)),
+        completed=bool(draft.get("completed", False)),
+        minutes=draft.get("minutes"),
+        url=draft.get("url") or None,
+        source_report_id=source_report_id,
+    )
+
+
 __all__ = [
-    "MAX_SPLIT_SUBTASKS",
-    "MIN_SPLIT_SUBTASKS",
     "TaskService",
     "plan_insert",
     "plan_move",

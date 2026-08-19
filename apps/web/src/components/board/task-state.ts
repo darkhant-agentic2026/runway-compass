@@ -12,7 +12,15 @@
 import type { TaskState } from '@/lib/schemas';
 
 export type Transition =
-  'start' | 'complete' | 'defer' | 'defer_until' | 'reopen' | 'restore' | 'discard';
+  | 'plan'
+  | 'start'
+  | 'complete'
+  | 'defer'
+  | 'defer_until'
+  | 'reopen'
+  | 'resume'
+  | 'restore'
+  | 'discard';
 
 export interface TransitionOption {
   transition: Transition;
@@ -24,8 +32,19 @@ export interface TransitionOption {
 }
 
 const BY_STATE: Record<TaskState, TransitionOption[]> = {
-  not_started: [{ transition: 'start', target: 'current', label: 'Start' }],
-  current: [
+  // `draft` carries every action `not_started` has. It means "no plan yet", not "locked":
+  // a board that refused to let someone begin work until an LLM had written them a
+  // checklist would be worse than the one that existed before M4
+  // (docs/02-data-model.md#task-state-machine).
+  draft: [
+    { transition: 'start', target: 'in_progress', label: 'Start' },
+    { transition: 'complete', target: 'completed', label: 'Complete' },
+  ],
+  not_started: [
+    { transition: 'start', target: 'in_progress', label: 'Start' },
+    { transition: 'complete', target: 'completed', label: 'Complete' },
+  ],
+  in_progress: [
     { transition: 'complete', target: 'completed', label: 'Complete' },
     { transition: 'defer', target: 'postponed', label: 'Postpone' },
     {
@@ -52,11 +71,15 @@ export function transitionsFor(state: TaskState): TransitionOption[] {
 }
 
 export const STATE_LABELS: Record<TaskState, string> = {
+  // "No plan yet" rather than "Draft": the state is about what the task has, not about
+  // how finished its wording is, and a learner reading "Draft" would reasonably think the
+  // title was provisional.
+  draft: 'No plan yet',
   not_started: 'Not started',
   // Not "Next up": that phrase belongs to the pin badge on the card
   // (docs/06-frontend.md), and having both say it makes the row read as if two different
   // things were being claimed.
-  current: 'Started',
+  in_progress: 'In progress',
   completed: 'Completed',
   postponed: 'Postponed',
   postponed_until: 'Postponed until',
