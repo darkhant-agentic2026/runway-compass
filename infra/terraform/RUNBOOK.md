@@ -831,6 +831,86 @@ still the first thing to check.
 
 ---
 
+## 10. Closing the M5 exit criterion (HUMAN)
+
+**Not yet run.** M5's deployed-only surface is the widest since M2, because the whole
+milestone is a chain of Google services that do not exist locally.
+
+| Unproven until this step | Why no test covers it |
+| --- | --- |
+| OIDC verification on `/internal/tick` and `/internal/runs/{id}/execute` | `ENV=local` skips it by design, which is what makes the tick reachable from `dev.sh` and the e2e at all (`api/routers/internal.py`). `tests/test_internal_oidc_guard.py` proves the guard is *armed* for a deployed `ENV`; only a real Cloud Scheduler token proves it *admits* the right caller |
+| Cloud Scheduler actually invoking the tick | Nothing local has a scheduler. A wrong audience or a wrong service account is a `401` that only this step sees |
+| The Cloud Tasks enqueue | Locally the queue is `InProcessQueue`. Minting an OIDC token onto a task needs credentials that differ in *kind* from a local one — the third row of [the M2 table](../../docs/09-roadmap.md#what-a-green-local-run-does-not-prove), and the row that named Cloud Tasks at M5 by name |
+| `TASKS_TARGET_URL` being the bare service URL | It is both the enqueue target's prefix and the OIDC audience both endpoints verify. A path there produces a `404` from the executor *and* a `401` from the tick, which look like two unrelated bugs |
+| The two new Firestore indexes | The emulator answers a two-field collection-group query without one and Firestore returns `FAILED_PRECONDITION` on the first deployed call |
+
+Needs `terraform apply` as well as a deploy — two of those rows are Terraform, and
+[the deploy workflow does not run Terraform by design](../../docs/07-infra-deploy.md#ci-does-not-run-terraform).
+
+### 10.1 Before the criterion
+
+RUNBOOK §4's `youtube-api-key` is **still unseeded** and has been since M4. A scheduled
+run will produce the same video-less report a manual one does. Seed it first, or the first
+thing this section proves is a defect that was already known.
+
+### 10.2 The criterion itself
+
+1. Sign in, create a project, add two tasks.
+2. On the second task, press **"Have my coach prepare this"**. The button becomes
+   "Starts soon — cancel", and the board card gains a "Starts soon" badge.
+3. **Do not wait for the scheduler.** Trigger the tick by hand so the failure, if there is
+   one, is attributable:
+
+   ```bash
+   gcloud scheduler jobs run coach-tick --location=us-central1 --project=coach-dev
+   ```
+
+   Then read what it did:
+
+   ```bash
+   gcloud logging read \
+     'resource.type="cloud_run_revision" AND jsonPayload.message="tick complete"' \
+     --project=coach-dev --limit=1 --format='value(jsonPayload)'
+   ```
+
+   A `401` here is the OIDC path: check `ALLOWED_SCHEDULER_SA` against the account the job
+   uses, and check that the job's `audience` is the bare service URL rather than a path
+   under it.
+4. **Watch the board without reloading it.** The checklist appears and the researched task
+   moves to the top. This is the cross-instance `board_update` relay
+   (`repositories/board_events.py`) rather than M3's in-process hub — the run executes
+   wherever Cloud Tasks landed it, which is very likely not the instance holding the
+   socket. A board that only fills in after F5 means the relay is not running, and the
+   poller logs `board_update relay read failed` when it is failing rather than absent.
+5. The **"Updated by your coach"** banner lists what changed. Press **Undo**; the order
+   goes back exactly and the line stays on screen, struck through.
+6. Check the ledger for a `FAILED_PRECONDITION`, which is what a missing index looks like
+   from the outside:
+
+   ```bash
+   gcloud logging read \
+     'resource.type="cloud_run_revision" AND severity>=ERROR' \
+     --project=coach-dev --limit=5 --format='value(jsonPayload.exception)'
+   ```
+7. **The presence guard, deployed.** Open a task workspace in a *different* project and
+   leave it open. Run the tick again. That project must not get a run — `skipped` in the
+   tick's log line carries `owner_present` — while a project you are not looking at does.
+8. **And the override.** From that same open workspace, press "Have my coach prepare this"
+   and run the tick once more. This one *must* run, presence notwithstanding: that is the
+   half of the guard M5 changed
+   ([docs/09-roadmap.md](../../docs/09-roadmap.md#the-presence-guard-applies-to-auto-scheduled-work-only--decided-at-the-start-of-m5)).
+
+If a run fails, its ledger row carries the failing step and its error:
+
+```bash
+gcloud firestore documents list autonomous_runs --project=coach-dev --limit=5
+```
+
+`cursor` names where a retry will resume, and a run stuck `running` with a
+`leaseExpiresAt` in the past is the row the next tick's recovery pass picks up.
+
+---
+
 ## Teardown (dev only)
 
 ```bash

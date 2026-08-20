@@ -6,6 +6,7 @@ collection query and one security boundary (docs/02-data-model.md).
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from google.cloud.firestore import AsyncTransaction, AsyncWriteBatch
@@ -13,7 +14,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 
 from coach.core.clock import now
 from coach.repositories.firestore import PROJECTS, TASKS, Database
-from coach.services.models import Task, TaskState
+from coach.services.models import ResearchStatus, Task, TaskState
 
 
 def _to_task(doc: Any) -> Task:
@@ -88,6 +89,46 @@ class TaskRepository:
         async for doc in query.stream():
             return _to_task(doc)
         return None
+
+    async def list_requested_research(self, limit: int = 50) -> list[Task]:
+        """Every task the learner has queued research on, oldest request first.
+
+        The autonomous tick's *first* query, across every owner — which is what makes it a
+        collection group. Two indexed fields (`researchStatus ASC, researchRequestedAt
+        ASC`), so it needs the composite in docs/02-data-model.md#indexes; the emulator
+        answers it without one and Firestore does not, which is the first row of
+        docs/09-roadmap.md#what-a-green-local-run-does-not-prove.
+
+        The task's *state* is filtered by the caller in Python rather than by a third
+        `where`, on the same reasoning as `find_intake_session_id`: a wider index for a
+        list already bounded by how many requests can be outstanding at once.
+
+        Ownership is not checked here — `repositories/` never filters by owner implicitly.
+        The scheduler resolves each task's owner from the document it just read.
+        """
+        query = (
+            self._db.client.collection_group(TASKS)
+            .where(filter=FieldFilter("researchStatus", "==", ResearchStatus.PENDING.value))
+            .order_by("researchRequestedAt")
+            .limit(limit)
+        )
+        return [_to_task(doc) async for doc in query.stream()]
+
+    async def list_expired_postponements(self, at: datetime, limit: int = 200) -> list[Task]:
+        """Tasks whose `postponedUntil` has passed, for the tick's sweep.
+
+        Collection group across every owner, two indexed fields (`state ASC,
+        postponedUntil ASC`) — the index docs/02-data-model.md has carried since M1 for
+        exactly this caller, which until now did not exist.
+        """
+        query = (
+            self._db.client.collection_group(TASKS)
+            .where(filter=FieldFilter("state", "==", TaskState.POSTPONED_UNTIL.value))
+            .where(filter=FieldFilter("postponedUntil", "<=", at))
+            .order_by("postponedUntil")
+            .limit(limit)
+        )
+        return [_to_task(doc) async for doc in query.stream()]
 
     # `find_current` lived here until M4. It existed so `TaskService` could observe a
     # duplicated `current` task in order to repair it; `in_progress` is not singular, so

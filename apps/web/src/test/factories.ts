@@ -26,6 +26,7 @@ export function makeTask(overrides: Partial<Task> = {}): Task {
     sessionId: null,
     needsResearch: true,
     researchStatus: 'none',
+    researchRequestedAt: null,
     latestReportId: null,
     items: [],
     rollup: null,

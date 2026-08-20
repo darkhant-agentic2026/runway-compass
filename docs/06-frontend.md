@@ -131,6 +131,12 @@ A single module owns the socket:
 - **A `draft` card reads as "no plan yet", not as blocked.** The badge is muted and the card
   offers "Research this task" alongside the ordinary Start action, because `draft` is a
   state the learner may work straight out of ([02-data-model.md](02-data-model.md#task-state-machine)).
+- **A task with research queued shows a "Starts soon" badge**, in the same slot as the
+  "materials ready" indicator and reading from `researchStatus == "pending"`. The board is
+  where a learner queues several tasks in a row and then wants to see what is waiting, so
+  the indicator has to be here and not only on the screen that set it. It is a badge rather
+  than a control: queueing and cancelling both live in the workspace, where the rest of the
+  research affordances are.
 - **Parent cards show `rollup.subtaskCount` and `rollup.totalEstimatedMinutes`** ("4
   subtasks · 2 h 30 m") with a progress ring for `completedSubtasks`. Expanding reveals
   subtasks inline.
@@ -206,6 +212,27 @@ Left — **task detail**:
 - "Research this task now" button → `POST /api/sessions/{sid}/research`, with progress from
   the turn's tool chips. On a `draft` task this is the screen's primary action; once
   materials exist it moves into the report block's header as "Research again."
+- **Beside it, "Have my coach prepare this"** → `POST /api/tasks/{id}/research-request`.
+  The same research, queued instead of watched: the learner marks the task, closes the tab,
+  and the next tick runs it headless with priority over auto-scheduled work
+  ([05-autonomous-runs.md](05-autonomous-runs.md#two-kinds-of-work-and-the-only-difference-between-them)).
+  Two buttons for one outcome is a real cost, and it is paid deliberately — the queued path
+  is the one intended to become the *only* path once the autonomous agent has been shown to
+  work unattended, and the inline button is what keeps the feature usable while that is
+  being established.
+
+  Once queued, the control becomes **"Starts soon — cancel"** →
+  `DELETE /api/tasks/{id}/research-request`. The cancel affordance exists because the
+  alternative is a mis-queued task that cannot be recalled until it has spent a run and a
+  quota slot, and it disappears the moment `researchStatus` leaves `pending` — by then a
+  run holds the task and the honest control is the turn's cancel, not this one.
+
+  Both buttons are hidden on a composite task, on the same reasoning as the inline one: its
+  subtasks are its plan, and each is researched on its own.
+- **A failed run reads as an offer, not an error.** `researchStatus == "failed"` renders
+  "Your coach couldn't prepare this — try again", which re-queues. The retry is a press
+  rather than an automatic re-enqueue precisely so that a task the research agent cannot
+  handle costs one run per decision the learner makes, instead of one per tick.
 
 Right — **session chat**:
 - Streamed markdown, rendered ([below](#markdown-in-the-transcript)); tool activity as inline status chips

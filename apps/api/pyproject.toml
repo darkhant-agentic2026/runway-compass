@@ -30,6 +30,14 @@ dependencies = [
     "firebase-admin==7.5.0",
     "httpx==0.28.1",
     "python-ulid==4.0.1",
+    # The autonomous-run queue (docs/05-autonomous-runs.md#trigger-chain). Added at M5.
+    #
+    # **It pins protobuf below 7.** Installing it moved the resolved protobuf from 7.35.1
+    # to 6.33.6 for the whole environment, which is a change to a package every Google
+    # client in the process serializes through — noted here because the constraint is
+    # invisible from this line and 2.20.0 is currently the newest release, so there is no
+    # version of this dependency that lifts it.
+    "google-cloud-tasks==2.20.0",
 ]
 
 [dependency-groups]

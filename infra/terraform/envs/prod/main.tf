@@ -225,8 +225,13 @@ module "cloud_run" {
     ARTIFACT_BUCKET               = module.storage.artifact_bucket
     UPLOAD_BUCKET                 = module.storage.upload_bucket
     TASKS_QUEUE                   = module.scheduler_tasks.queue_id
-    TASKS_TARGET_URL              = "${var.service_url_hint}/internal/runs"
-    TASKS_INVOKER_SA              = module.identity.tasks_service_account_email
+    # The **service** URL, not a path under it. The app appends
+    # `/internal/runs/{runId}/execute` itself, and — the reason it has to be the bare
+    # origin — it is also the OIDC *audience* both internal endpoints verify against.
+    # Cloud Scheduler mints its token for `var.service_url`, so a path here would mean
+    # two audiences for one check and the tick would be rejected as forged.
+    TASKS_TARGET_URL = var.service_url_hint
+    TASKS_INVOKER_SA = module.identity.tasks_service_account_email
     # Two DIFFERENT service accounts call /internal/*. Collapsing these into one variable
     # would mean either Cloud Scheduler could invoke the executor or the reverse.
     ALLOWED_SCHEDULER_SA = module.identity.scheduler_service_account_email

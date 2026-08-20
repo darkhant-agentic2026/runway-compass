@@ -14,14 +14,15 @@ ledger.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
-from google.cloud.firestore import AsyncTransaction, async_transactional
+from google.cloud.firestore import AsyncTransaction, Query, async_transactional
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from coach.core.clock import now
 from coach.repositories.firestore import AUTONOMOUS_RUNS, PROJECTS, Database
-from coach.services.models import AutonomousRun
+from coach.services.models import AutonomousRun, RunStatus
 
 #: docs/05-autonomous-runs.md: "renewed every 60 s by the executing task with a 5-minute
 #: TTL". A crashed instance's lease simply expires, which is why nothing needs to detect
@@ -30,6 +31,10 @@ LEASE_TTL = timedelta(minutes=5)
 
 LOCKS = "locks"
 AGENT_LOCK = "agent"
+
+
+def _to_run(doc: Any) -> AutonomousRun:
+    return AutonomousRun.model_validate({**(doc.to_dict() or {}), "id": doc.id})
 
 
 class LeaseHeld(RuntimeError):
@@ -64,7 +69,7 @@ class RunRepository:
         snapshot = await self._doc(run_id).get()
         if not snapshot.exists:
             return None
-        return AutonomousRun.model_validate({**(snapshot.to_dict() or {}), "id": snapshot.id})
+        return _to_run(snapshot)
 
     async def create(self, run: AutonomousRun) -> AutonomousRun:
         timestamp = now()
@@ -74,6 +79,100 @@ class RunRepository:
 
     async def patch(self, run_id: str, patch: dict[str, Any]) -> None:
         await self._doc(run_id).update({**patch, "updatedAt": now()})
+
+    async def list_for_project(self, project_id: str, limit: int = 20) -> list[AutonomousRun]:
+        """Recent runs for one project, newest first — the "Updated by your coach" banner.
+
+        Two indexed fields (`projectId ASC, createdAt DESC`), so it needs the composite in
+        docs/02-data-model.md#indexes. Ownership is asserted by the caller against the run's
+        own `ownerUid`, as everywhere else in `repositories/`.
+        """
+        query = (
+            self._db.client.collection(AUTONOMOUS_RUNS)
+            .where(filter=FieldFilter("projectId", "==", project_id))
+            .order_by("createdAt", direction=Query.DESCENDING)
+            .limit(limit)
+        )
+        return [_to_run(doc) async for doc in query.stream()]
+
+    async def list_stuck(self, at: datetime, limit: int = 50) -> list[AutonomousRun]:
+        """Runs whose executing instance died: `running` with an expired lease.
+
+        Invariant 1 — "interrupted work is finished before new work is started" — is this
+        query plus `list_retryable` below. Backed by `status ASC, leaseExpiresAt ASC`,
+        which docs/02-data-model.md has carried since M1 for exactly this caller.
+
+        Returns **every** stuck run, including ones that have burned their attempts; the
+        caller decides which to re-enqueue and which to bury. Splitting that here would put
+        the poison-pill policy in a repository.
+        """
+        query = (
+            self._db.client.collection(AUTONOMOUS_RUNS)
+            .where(filter=FieldFilter("status", "==", RunStatus.RUNNING.value))
+            .where(filter=FieldFilter("leaseExpiresAt", "<", at))
+            .order_by("leaseExpiresAt")
+            .limit(limit)
+        )
+        return [_to_run(doc) async for doc in query.stream()]
+
+    async def list_retryable(self, limit: int = 50) -> list[AutonomousRun]:
+        """`failed` runs with attempts left.
+
+        One equality filter, so no composite: `attempts < maxAttempts` is compared in
+        Python. A range filter on a second field would need an index for a list already
+        bounded by how many runs can fail between two ticks, and `maxAttempts` is per-run
+        rather than a constant the query could inline.
+        """
+        query = (
+            self._db.client.collection(AUTONOMOUS_RUNS)
+            .where(filter=FieldFilter("status", "==", RunStatus.FAILED.value))
+            .limit(limit)
+        )
+        return [
+            run
+            async for run in (_to_run(doc) async for doc in query.stream())
+            if run.attempts < run.max_attempts and run.mode == "queued"
+        ]
+
+    async def lease_holder(self, project_id: str) -> str | None:
+        """Which run holds the project's lease, if any is live.
+
+        A *read*, for the tick's guard. The tick decides whether to enqueue; taking the
+        lease is the executor's job, minutes later — and taking it here would mean holding
+        it across a queue.
+        """
+        snapshot = await self._lock(project_id).get()
+        if not snapshot.exists:
+            return None
+        held = snapshot.to_dict() or {}
+        expires = held.get("expiresAt")
+        if expires is None or expires <= now():
+            return None
+        return str(held.get("holder", "")).removeprefix("run:") or None
+
+    async def renew_lease(self, project_id: str, run_id: str) -> bool:
+        """Push the lease's expiry out, if it is still ours.
+
+        Returns whether we still hold it. A `False` is a real answer rather than an error:
+        the executing task has lost its lease — its instance stalled long enough for the
+        TTL to pass and somebody else to take it — and what it should do about that is stop,
+        which is a decision for the caller and not for a repository.
+        """
+        reference = self._lock(project_id)
+        held = {"still_ours": False}
+
+        @async_transactional
+        async def txn(transaction: AsyncTransaction) -> None:
+            snapshot = await reference.get(transaction=transaction)
+            if not snapshot.exists:
+                return
+            if (snapshot.to_dict() or {}).get("holder") != f"run:{run_id}":
+                return
+            held["still_ours"] = True
+            transaction.update(reference, {"expiresAt": now() + LEASE_TTL})
+
+        await self._db.run(txn)
+        return held["still_ours"]
 
     async def acquire_lease(self, project_id: str, run_id: str, instance_id: str) -> None:
         """Take the project's agent lease, or raise `LeaseHeld`.

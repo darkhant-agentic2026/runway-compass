@@ -1140,6 +1140,48 @@ class DomainTools:
             FunctionTool(self.update_project_prefs),
         ]
 
+    def as_autonomous_tools(self) -> list[FunctionTool]:
+        """The reduced set an unattended run may use.
+
+        docs/03-agent-design.md#safety-rails-on-autonomy and
+        docs/05-autonomous-runs.md#what-the-run-is-allowed-to-change:
+
+        > Allowed: `add_task` (≤ 5), `add_subtask`, `reorder_task`, `set_next_up`,
+        > `post_research_report`, read-only tools.
+        > Forbidden: `discard_task`, `set_task_state` to `completed`,
+        > `update_learner_profile`, `update_project_prefs`, anything touching another
+        > project.
+
+        Built by **enumerating what is allowed**, not by removing what is not. A subtractive
+        list is one that silently re-admits every tool added afterwards: the next
+        destructive tool this class grows would be autonomous by default, and nothing would
+        report it.
+
+        The confirmation-gated tools are absent for a second, independent reason — there is
+        nobody to answer. `discard_task`, `delete_task_item`, `complete_task_item`, and
+        `ask_learner` all end the invocation waiting for a human who, by construction, is
+        not there; including them would turn a run into a turn that stops halfway and
+        leaves a question in a transcript nobody is reading.
+
+        `set_task_state` is here, and its own guard is what keeps it safe: the tool already
+        refuses `completed`, `discarded`, and `draft` for every caller
+        (docs/09-roadmap.md#status-after-m4), so "to `completed`" needs no second check on
+        this path.
+
+        `post_research_report` is not in this list because it belongs to `ResearchTools`,
+        which the research step reaches through its own agent.
+        """
+        return [
+            FunctionTool(self.list_tasks),
+            FunctionTool(self.add_task),
+            FunctionTool(self.add_subtask),
+            FunctionTool(self.update_task),
+            FunctionTool(self.set_task_state),
+            FunctionTool(self.set_next_up),
+            FunctionTool(self.reorder_task),
+            FunctionTool(self.add_task_items),
+        ]
+
 
 #: The flag the dialog's third button sets in its answer payload.
 #:

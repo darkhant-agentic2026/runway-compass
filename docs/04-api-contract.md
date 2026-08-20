@@ -86,6 +86,8 @@ or a row of user data.
 | `POST` | `/api/tasks/{id}/state` | `{ state, postponedUntil? }` — validated against state machine |
 | `POST` | `/api/tasks/{id}/reorder` | `{ afterTaskId } \| { beforeTaskId }` |
 | `GET` | `/api/tasks/{id}/reports` | Research reports for the task, newest first |
+| `POST` | `/api/tasks/{id}/research-request` | **Queue research** for the next tick to run headless — sets `researchStatus: "pending"` and `researchRequestedAt: now` (below) |
+| `DELETE` | `/api/tasks/{id}/research-request` | Cancel a queued request while it is still `pending`; returns the task |
 | `POST` | `/api/tasks/{id}/items` | Append items by hand — `{ items: [{ shortDescription, details?, guided? }] }` |
 | `PATCH` | `/api/tasks/{id}/items/{itemId}` | `{ completed?, shortDescription?, details?, guided? }` — the checkbox and the inline edit |
 | `POST` | `/api/tasks/{id}/items/{itemId}/reorder` | `{ afterItemId } \| { beforeItemId }` — array positions, rewritten whole |
@@ -113,6 +115,44 @@ exclusive ([02-data-model.md](02-data-model.md#task-items)).
 All mutating endpoints accept `Idempotency-Key`. Reorder and state changes return the
 full updated task (plus the affected parent) so the client can reconcile optimistically
 without a refetch.
+
+#### `POST` / `DELETE /api/tasks/{id}/research-request`
+
+```jsonc
+// POST and DELETE both take no body and both answer with the full updated task,
+// as every other task mutation does
+{ "task": { "…": "…", "researchStatus": "pending", "researchRequestedAt": "2026-08-20T…" } }
+```
+
+No `budgetMinutesOverride` here, unlike the inline trigger: a queued run resolves the
+budget when it executes, from the task and the project's effective prefs at that moment,
+and carrying an override would mean a fourth research field on the task document to hold it
+until the tick arrives.
+
+The learner's **queued, headless** alternative to `POST /api/sessions/{sid}/research`. That
+one runs research inline in a turn the caller watches stream; this one marks the task and
+returns, and the next `/internal/tick` executes it in the background with priority over
+auto-scheduled work — the presence guard, the cooldown, `autonomousEnabled`, and quiet hours
+are all skipped for it
+([05-autonomous-runs.md](05-autonomous-runs.md#two-kinds-of-work-and-the-only-difference-between-them)).
+
+Behaviour:
+- Refuses a task with subtasks (`409`) — a composite task's plan is its subtasks, and each
+  is researched on its own, which is the same rule the inline trigger already applies.
+- Refuses a `discarded` task (`409`). A `completed` one is allowed: queueing research on it
+  does not reopen it, and a learner who wants more material on something they finished is
+  making a coherent request.
+- **Idempotent by shape.** `POST` on a task already `pending` is a `200` that leaves the
+  original `researchRequestedAt` intact rather than refreshing it, so a double-click cannot
+  send a task to the back of its own queue. `DELETE` on a task that is not `pending` is a
+  `200` with the task unchanged — the queue is empty either way, which is what the caller
+  asked for.
+- `DELETE` does **not** stop a run that has already started. Once the tick picks the task
+  up, `researchStatus` is `in_progress` and the request is gone; stopping it is the turn's
+  cancel. The UI reflects this by dropping the cancel affordance the moment the status
+  leaves `pending`.
+- Both verbs push `board_update` with the task's id, because the queued badge renders on
+  the board card as well as in the workspace ([06-frontend.md](06-frontend.md#task-board-projectsprojectid)).
 
 ### Sessions & turns
 

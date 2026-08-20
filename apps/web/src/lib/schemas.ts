@@ -77,6 +77,14 @@ export const taskSchema = z.object({
   sessionId: z.string().nullable().default(null),
   needsResearch: z.boolean().default(true),
   researchStatus: researchStatusSchema.default('none'),
+  /**
+   * When the learner queued research by hand, or `null`. Set iff `researchStatus` is
+   * `pending`, and the pair is what the scheduler treats as priority work
+   * (docs/05-autonomous-runs.md#two-kinds-of-work-and-the-only-difference-between-them).
+   * The UI reads `researchStatus === 'pending'` for the "Starts soon" badge; this is here
+   * for ordering and for saying *when* they asked.
+   */
+  researchRequestedAt: z.string().nullable().default(null),
   latestReportId: z.string().nullable().default(null),
   /** Leaf tasks only; mutually exclusive with `rollup`. */
   items: z.array(taskItemSchema).default([]),
@@ -269,6 +277,57 @@ export const taskDetailSchema = z.object({
   latestReport: researchReportSchema.nullable().default(null),
 });
 export type TaskDetail = z.infer<typeof taskDetailSchema>;
+
+// --- autonomous runs -------------------------------------------------------------------
+// docs/05-autonomous-runs.md#run-ledger. The banner reads `changes[]` and `undoneAt`; the
+// run detail reads `steps[]`. Parsed loosely on purpose where the server owns the
+// vocabulary — `status` and `step.id` are strings rather than enums here, because a run
+// gaining a sixth step should not make an older tab fail to parse the ledger it is
+// rendering. The UI switches on the values it knows and shows the rest as-is.
+
+export const runStepSchema = z.object({
+  id: z.string(),
+  status: z.string(),
+  startedAt: z.string().nullable().default(null),
+  endedAt: z.string().nullable().default(null),
+  output: z.record(z.string(), z.unknown()).nullable().default(null),
+  error: z.string().nullable().default(null),
+});
+export type RunStep = z.infer<typeof runStepSchema>;
+
+export const runChangeSchema = z.object({
+  kind: z.string(),
+  taskId: z.string(),
+  previousOrder: z.string().nullable().default(null),
+});
+export type RunChange = z.infer<typeof runChangeSchema>;
+
+export const autonomousRunSchema = z.object({
+  id: z.string(),
+  ownerUid: z.string(),
+  projectId: z.string(),
+  taskId: z.string().nullable().default(null),
+  trigger: z.string(),
+  mode: z.string(),
+  status: z.string(),
+  attempts: z.number().int().default(1),
+  maxAttempts: z.number().int().default(3),
+  steps: z.array(runStepSchema).default([]),
+  turnId: z.string().nullable().default(null),
+  changes: z.array(runChangeSchema).default([]),
+  undoneAt: z.string().nullable().default(null),
+  createdAt: z.string().nullable().default(null),
+  updatedAt: z.string().nullable().default(null),
+  error: z.string().nullable().default(null),
+});
+export type AutonomousRun = z.infer<typeof autonomousRunSchema>;
+
+export const runResponseSchema = z.object({ run: autonomousRunSchema });
+export const runListSchema = z.object({ runs: z.array(autonomousRunSchema) });
+export const runUndoSchema = z.object({
+  run: autonomousRunSchema,
+  taskIds: z.array(z.string()).default([]),
+});
 
 // --- sessions & turns ------------------------------------------------------------------
 

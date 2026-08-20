@@ -345,7 +345,22 @@ Golden flows:
 7. **Preference adaptation** — set project task duration to 2 h; new agent-created tasks
    respect it while another project still uses the 45-minute global default.
 8. **Presence guard** — with a client connected to project A, a tick creates no run for A
-   but does for project B.
+   but does for project B. Then, **from that same connected client**, queue research on a
+   task in A with "Have my coach prepare this": the next tick runs it, presence
+   notwithstanding, and the "Starts soon" badge is replaced by the report. The second half
+   is the whole point of the first — a guard that cannot be overridden by an explicit
+   request is a guard that refuses the case where intent is clearest
+   ([05-autonomous-runs.md](05-autonomous-runs.md#two-kinds-of-work-and-the-only-difference-between-them)).
+
+   **Assert the run that was *not* created, not just the one that was.** The negative half
+   of this flow is the one that rots silently: a scheduler bug that queues everything makes
+   project B's assertion pass and only project A's fail, and a scheduler bug that queues
+   nothing does the reverse. Both halves have to be in the same test for either to mean
+   anything.
+9. **Requested research jumps the queue** — with several projects holding auto-scheduled
+   work and one holding a task the learner queued, a single tick executes the requested one
+   first. Asserted on the ledger rather than on the screen: the ordering is a scheduler
+   property, and a UI that renders both eventually cannot distinguish the orders.
 
 ## CI wiring
 

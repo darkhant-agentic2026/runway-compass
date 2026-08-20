@@ -508,6 +508,38 @@ class TaskService:
         async with self._project_lock(project_id):
             return await self._db.run(txn)
 
+    async def restore_order(self, principal: Principal, task_id: str, order: str) -> Task:
+        """Write an exact fractional index. The undo path, and only that.
+
+        `reorder` cannot express this: it takes a *neighbour* and computes a key between
+        two others, which is the right instrument when a human or a model says "put this
+        after that", and the wrong one when the answer is already known. A run recorded the
+        key the task held before it moved it (docs/05-autonomous-runs.md), and putting that
+        key back is what makes undo exact rather than approximate — a recomputed key would
+        land the task in the right *position* relative to whatever the board looks like now,
+        which is not the same thing as where it was.
+
+        It goes through the board transaction anyway, because `nextUpTaskId` is derived
+        from the order and moving a task moves the pin.
+        """
+        task = await self.resolve(principal, task_id)
+        project_id = task.project_id
+
+        @async_transactional
+        async def txn(transaction: AsyncTransaction) -> Task:
+            project, tasks = await self._read_board(transaction, project_id)
+            if not any(t.id == task_id for t in tasks):
+                raise NotFound(f"No task {task_id!r}.")
+            await self._tasks.patch(
+                project_id, task_id, {"order": order}, transaction=transaction
+            )
+            _apply(tasks, task_id, {"order": order})
+            await self._write_derived(transaction, project, tasks)
+            return next(t for t in tasks if t.id == task_id)
+
+        async with self._project_lock(project_id):
+            return await self._db.run(txn)
+
     async def set_research(
         self,
         principal: Principal,
@@ -523,12 +555,106 @@ class TaskService:
         completes the moment research stops being outstanding, so the write that sets
         `done` is exactly the write that can complete a task. A bare `patch` would leave
         that task sitting finished-but-open until something unrelated touched it.
+
+        A status that is not `pending` also clears `researchRequestedAt`: the two are only
+        ever meaningful together (docs/02-data-model.md), and a stale timestamp on a
+        `done` task would read as a request that had never been served.
+        """
+        updates: dict[str, Any] = {"researchStatus": status.value}
+        if status is not ResearchStatus.PENDING:
+            updates["researchRequestedAt"] = None
+        if latest_report_id is not None:
+            updates["latestReportId"] = latest_report_id
+        return await self._write_research(principal, task_id, updates)
+
+    async def request_research(self, principal: Principal, task_id: str) -> Task:
+        """`POST /api/tasks/{id}/research-request` — queue research for the next tick.
+
+        The learner's headless alternative to the inline trigger. It writes the pair
+        docs/05-autonomous-runs.md splits scheduled work on: `researchStatus: pending`
+        *and* `researchRequestedAt`, which together mean "this one was asked for" — so the
+        scheduler runs it ahead of auto-scheduled work and without consulting presence,
+        the cooldown, `autonomousEnabled`, or quiet hours.
+
+        **Re-queueing an already-pending task keeps the original timestamp.** The
+        alternative is that a double-click sends a task to the back of its own queue,
+        which is a bug that only shows up under a backlog.
+
+        Raises:
+            ValidationProblem: on a composite task — its subtasks are its plan and each is
+                researched on its own, the same rule the inline trigger applies — or on a
+                discarded one.
+        """
+        task = await self.resolve(principal, task_id)
+        if task.research_status is ResearchStatus.PENDING:
+            return task
+        if task.state is TaskState.DISCARDED:
+            raise ValidationProblem("This task is discarded. Restore it before researching it.")
+        children = _sorted_siblings(await self._tasks.list_all(task.project_id), task.id)
+        if children:
+            raise ValidationProblem(
+                "This task has been split, and its subtasks are its plan. Queue research "
+                "on the subtasks instead."
+            )
+        return await self._write_research(
+            principal,
+            task_id,
+            {
+                "researchStatus": ResearchStatus.PENDING.value,
+                "researchRequestedAt": now(),
+            },
+        )
+
+    async def cancel_research_request(self, principal: Principal, task_id: str) -> Task:
+        """`DELETE /api/tasks/{id}/research-request`.
+
+        A no-op unless the task is still `pending`: once a run has picked it up the status
+        is `in_progress` and the request is gone, and the honest way to stop it is the
+        turn's cancel. Answering `200` with the unchanged task rather than a `409` is
+        deliberate — the caller asked for an empty queue and the queue is empty.
+        """
+        task = await self.resolve(principal, task_id)
+        if task.research_status is not ResearchStatus.PENDING:
+            return task
+        return await self._write_research(
+            principal,
+            task_id,
+            {
+                "researchStatus": ResearchStatus.NONE.value,
+                "researchRequestedAt": None,
+            },
+        )
+
+    async def claim_research_request(self, principal: Principal, task_id: str) -> Task:
+        """Move a queued task to `in_progress` and clear the request, as a run starts.
+
+        Both halves in one write, and both at the *start* rather than the end
+        (docs/05-autonomous-runs.md#when-the-request-flag-is-cleared): leaving the flag up
+        while the run executes means the next tick re-offers work already handed out, and
+        clearing it only on success means a task the research agent cannot handle is
+        re-queued forever.
+        """
+        return await self._write_research(
+            principal,
+            task_id,
+            {
+                "researchStatus": ResearchStatus.IN_PROGRESS.value,
+                "researchRequestedAt": None,
+            },
+        )
+
+    async def _write_research(
+        self, principal: Principal, task_id: str, updates: dict[str, Any]
+    ) -> Task:
+        """`set_research`'s board transaction, for a caller with its own field set.
+
+        Shared with `set_research` for the reason that method exists at all:
+        `researchStatus` is half of invariant 6, so any write that moves it is a write that
+        can complete a task, and it has to go through the derivation rather than being a
+        bare field patch.
         """
         task = await self.resolve(principal, task_id)
         project_id = task.project_id
-        updates: dict[str, Any] = {"researchStatus": status.value}
-        if latest_report_id is not None:
-            updates["latestReportId"] = latest_report_id
 
         @async_transactional
         async def txn(transaction: AsyncTransaction) -> Task:

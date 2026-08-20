@@ -42,6 +42,7 @@ def socket_for(container, alice: Principal):
                 broker=container.broker,
                 presence=container.presence_repository,
                 board_updates=container.board_updates,
+                runs=container.runs,
             )
             self.tasks.append(asyncio.create_task(session.run()))
             return websocket
@@ -255,6 +256,7 @@ async def test_resume_cross_instance_delivers_the_remainder(
         broker=instance_b.broker,
         presence=instance_b.presence_repository,
         board_updates=instance_b.board_updates,
+        runs=instance_b.runs,
     )
     pump = asyncio.create_task(session_b.run())
 

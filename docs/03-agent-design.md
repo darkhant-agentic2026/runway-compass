@@ -300,7 +300,7 @@ Steps are individually checkpointed by the run ledger, so each is separately res
 
 | # | Step | Kind | Notes |
 | --- | --- | --- | --- |
-| 1 | `select_next_task` | code | Deterministic: lowest `order` among `draft`/`not_started`/`in_progress`, skipping `completed`, `discarded`, `postponed`, and unexpired `postponed_until`. No LLM. |
+| 1 | `select_next_task` | code | Deterministic: a task the learner **queued** (`researchStatus == "pending"`) if there is one, oldest `researchRequestedAt` first; otherwise the lowest `order` among `draft`/`not_started`/`in_progress`, skipping `completed`, `discarded`, `postponed`, and unexpired `postponed_until`. No LLM. A run that took the project *because* something was requested has to research that thing ([05-autonomous-runs.md](05-autonomous-runs.md#candidate-selection-and-guards)). |
 | 2 | `research` | `research_agent` | Skipped if `task.needsResearch == false`. |
 | 3 | `post_report` | code | Writes `research_reports/*`, promotes `required[]` into the task's `items[]`, appends a `research_report_ref` event to the task's session, sets `researchStatus = done` — and promotes the task out of `draft` if the items are its first plan. |
 | 4 | `propose_tasks` | LlmAgent | May emit `add_task` / `add_subtask` calls if research revealed missing prerequisites. Bounded: ≤ 5 new tasks per run. |

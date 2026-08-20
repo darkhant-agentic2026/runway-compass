@@ -51,6 +51,16 @@ export const queryKeys = {
    */
   projectSession: (projectId: string) => ['project-session', projectId] as const,
   sessionEvents: (sessionId: string) => ['session', sessionId, 'events'] as const,
+  /**
+   * Recent autonomous runs, behind the "Updated by your coach" banner.
+   *
+   * *Under* the `['project', id]` prefix, unlike `projectSession`, and that is the whole
+   * reason the banner appears without a reload: `board_update` invalidates that prefix, so
+   * the push a run sends when it changes the board also refreshes the list of what it did.
+   * Keyed the other way, the banner would only ever be seen by someone who reloaded.
+   */
+  projectRuns: (projectId: string) => ['project', projectId, 'runs'] as const,
+  run: (runId: string) => ['run', runId] as const,
 };
 
 export function createQueryClient(): QueryClient {
@@ -438,6 +448,76 @@ export function useStartResearch(taskId: string, projectId: string) {
     onSettled() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.task(taskId), exact: true });
       void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] });
+    },
+  });
+}
+
+/**
+ * "Have my coach prepare this" — queue research for the next tick instead of watching it.
+ *
+ * The queued, headless half of the research pair
+ * (docs/06-frontend.md#task-workspace-projectsprojectidtaskstaskid). It answers with the
+ * whole task, so the cache is *set* rather than only invalidated: the "Starts soon" badge
+ * has to appear on the press, and a refetch round trip is long enough for a second click.
+ *
+ * `queued` picks the verb. One mutation rather than two because the control is one toggle,
+ * and splitting it would let a component call the wrong half of a pair whose whole job is
+ * to be each other's inverse.
+ */
+export function useResearchRequest(taskId: string, projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ queued }: { queued: boolean }) =>
+      queued
+        ? api.requestResearch(taskId, newIdempotencyKey())
+        : api.cancelResearchRequest(taskId),
+    onSuccess(mutation) {
+      queryClient.setQueryData(queryKeys.task(taskId), (previous: TaskDetail | undefined) =>
+        previous ? { ...previous, task: { ...previous.task, ...mutation.task } } : previous,
+      );
+    },
+    onSettled() {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.task(taskId), exact: true });
+      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] });
+    },
+  });
+}
+
+/**
+ * Recent runs for the project. Drives the "Updated by your coach" banner.
+ *
+ * No polling: a run that changes the board pushes `board_update`, which invalidates the
+ * `['project', id]` prefix this key sits under. A timer would be a second mechanism for
+ * something the socket already reports, and would keep running on a board nothing is
+ * happening to.
+ */
+export function useProjectRuns(projectId: string) {
+  return useQuery({
+    queryKey: queryKeys.projectRuns(projectId),
+    queryFn: () => api.listProjectRuns(projectId),
+    enabled: projectId.length > 0,
+  });
+}
+
+/**
+ * The banner's one-click undo (docs/05-autonomous-runs.md#what-the-run-is-allowed-to-change).
+ *
+ * Invalidates by the ids the *server* says it touched rather than by the run's `changes`:
+ * undo tolerates a task that has already gone, so what it did touch is a strictly smaller
+ * list than what the run changed.
+ */
+export function useUndoRun(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (runId: string) => api.undoRun(runId, newIdempotencyKey()),
+    onSuccess(result) {
+      for (const taskId of result.taskIds) {
+        void queryClient.invalidateQueries({ queryKey: ['task', taskId], exact: true });
+      }
+    },
+    onSettled() {
+      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
     },
   });
 }

@@ -25,6 +25,7 @@ from google.adk.tools.tool_context import ToolContext
 
 from coach.agents.context import (
     RESEARCH_BUDGET_KEY,
+    RUN_ID_KEY,
     AgentContext,
     agent_context,
 )
@@ -222,6 +223,12 @@ class ResearchTools:
         budget = int(
             tool_context.state.get(RESEARCH_BUDGET_KEY) or context.default_task_minutes
         )
+        # `report_{runId}` is what makes the `research` step idempotent: a step that posted
+        # its report and then failed writing the closing prose is retried by Cloud Tasks,
+        # and the retry has to *overwrite* rather than leave the learner with two reports
+        # for one run (docs/05-autonomous-runs.md#execution-semantics). An interactive or
+        # manual run has no run id in state and keeps a minted one.
+        run_id = str(tool_context.state.get(RUN_ID_KEY) or "") or None
         report, task = await self._reports.post_report(
             context.principal,
             context.task_id,
@@ -229,6 +236,8 @@ class ResearchTools:
             required=required,
             optional=optional,
             budget_minutes=budget,
+            run_id=run_id,
+            report_id=f"report_{run_id}" if run_id else None,
             session_id=getattr(tool_context, "session_id", None),
         )
         await self._hub.publish(

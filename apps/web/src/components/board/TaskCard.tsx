@@ -129,6 +129,28 @@ export function TaskCard({
                 <span data-testid="materials-ready">Materials ready</span>
               </>
             ) : null}
+            {/*
+              Research the learner queued by hand, waiting for the next tick
+              (docs/06-frontend.md#task-board-projectsprojectid). In the same slot as
+              "Materials ready" because they are two points on one lifecycle and never
+              both true.
+
+              A badge rather than a control: queueing and cancelling both live in the
+              workspace, and the board is where a learner who queued several tasks wants
+              to see what is waiting — not a second place to change it.
+            */}
+            {task.researchStatus === 'pending' ? (
+              <>
+                <span aria-hidden="true">·</span>
+                <span data-testid="research-queued">Starts soon</span>
+              </>
+            ) : null}
+            {task.researchStatus === 'in_progress' ? (
+              <>
+                <span aria-hidden="true">·</span>
+                <span data-testid="research-running">Your coach is preparing this</span>
+              </>
+            ) : null}
           </div>
 
           {task.rollup && task.rollup.subtaskCount > 0 ? (

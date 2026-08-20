@@ -146,6 +146,47 @@ resource "google_firestore_index" "runs_stuck" {
   }
 }
 
+# "Requested research queue" — the tick's first query, across every owner. Added at M5 in
+# the same change as `TaskRepository.list_requested_research`, for the reason the reports
+# index above records: the emulator answers a two-field collection-group query without an
+# index and Firestore returns FAILED_PRECONDITION on the first deployed call.
+#
+# The task's *state* is filtered in Python rather than as a third field, so the index stays
+# narrow — the list it orders is bounded by how many research requests can be outstanding.
+resource "google_firestore_index" "tasks_requested_research" {
+  project     = var.project_id
+  database    = google_firestore_database.this.name
+  collection  = "tasks"
+  query_scope = "COLLECTION_GROUP"
+
+  fields {
+    field_path = "researchStatus"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "researchRequestedAt"
+    order      = "ASCENDING"
+  }
+}
+
+# "Project's runs, newest first" — backs `GET /api/projects/{id}/runs` and the "Updated by
+# your coach" banner.
+resource "google_firestore_index" "runs_by_project" {
+  project     = var.project_id
+  database    = google_firestore_database.this.name
+  collection  = "autonomous_runs"
+  query_scope = "COLLECTION"
+
+  fields {
+    field_path = "projectId"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "createdAt"
+    order      = "DESCENDING"
+  }
+}
+
 # --- Single-field index overrides -------------------------------------------------------
 # Automatic single-field indexes are COLLECTION-scoped only, so a collection-group query
 # on one field needs an explicit override. `google_firestore_index` requires at least two

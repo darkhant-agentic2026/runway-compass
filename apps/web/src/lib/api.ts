@@ -23,6 +23,9 @@ import {
   reportListSchema,
   reportResponseSchema,
   researchAcceptedSchema,
+  runListSchema,
+  runResponseSchema,
+  runUndoSchema,
   sessionEventsSchema,
   sessionResponseSchema,
   sessionSummarySchema,
@@ -288,6 +291,38 @@ export const api = {
     request(`/api/sessions/${sessionId}/research`, researchAcceptedSchema, {
       method: 'POST',
       body: { reason: body.reason ?? '', force: body.force ?? false },
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    }),
+
+  /**
+   * Queue research for the next tick to run headless, with priority over auto-scheduled
+   * work — the learner's alternative to watching `startResearch` stream
+   * (docs/04-api-contract.md#post--delete-apitasksidresearch-request).
+   *
+   * Idempotent by shape: queueing a task that is already `pending` keeps the original
+   * timestamp, so a double-click cannot send it to the back of its own queue.
+   */
+  requestResearch: (taskId: string, idempotencyKey?: string) =>
+    request(`/api/tasks/${taskId}/research-request`, taskMutationSchema, {
+      method: 'POST',
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    }),
+
+  /** Cancel a queued request. A no-op once a run has picked the task up. */
+  cancelResearchRequest: (taskId: string) =>
+    request(`/api/tasks/${taskId}/research-request`, taskMutationSchema, { method: 'DELETE' }),
+
+  // --- autonomous runs ------------------------------------------------------------------
+
+  getRun: (runId: string) =>
+    request(`/api/runs/${runId}`, runResponseSchema).then((r) => r.run),
+
+  listProjectRuns: (projectId: string) =>
+    request(`/api/projects/${projectId}/runs`, runListSchema).then((r) => r.runs),
+
+  undoRun: (runId: string, idempotencyKey?: string) =>
+    request(`/api/runs/${runId}/undo`, runUndoSchema, {
+      method: 'POST',
       ...(idempotencyKey ? { idempotencyKey } : {}),
     }),
 

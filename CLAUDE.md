@@ -196,9 +196,9 @@ Five working habits follow, and none belongs in `docs/`:
 
 ## Reporting a deployed failure
 
-`docs/07-infra-deploy.md` covers the deploy itself; `infra/terraform/RUNBOOK.md` §8 and §9
-are the manual verifications for M2 and M3, and a milestone gets one when it has a surface
-no local test can reach. What is worth knowing when something fails there:
+`docs/07-infra-deploy.md` covers the deploy itself; `infra/terraform/RUNBOOK.md` §8, §9,
+and §10 are the manual verifications for M2, M3, and M5, and a milestone gets one when it
+has a surface no local test can reach. What is worth knowing when something fails there:
 
 - Ask for the **server-side traceback**, not the browser's status code. Logs are JSON with
   the traceback under `jsonPayload.exception`, so `gcloud run services logs read | grep` is

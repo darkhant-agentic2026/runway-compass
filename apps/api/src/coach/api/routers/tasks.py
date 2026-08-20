@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, status
 
-from coach.api.deps import CurrentUser, Reports, Tasks
+from coach.api.deps import ContainerDep, CurrentUser, Reports, Tasks
 from coach.api.idempotency import idempotency_guard
 from coach.api.schemas import (
     ProjectDerived,
@@ -121,6 +121,46 @@ async def reorder_task(
         task_id,
         after_task_id=body.after_task_id,
         before_task_id=body.before_task_id,
+    )
+    return await _mutation_response(tasks, task)
+
+
+# --- requested research ------------------------------------------------------------------
+# docs/04-api-contract.md#post--delete-apitasksidresearch-request. The queued, headless
+# alternative to `POST /api/sessions/{sid}/research`: that one runs inline in a turn the
+# caller watches, this one marks the task and lets the next `/internal/tick` execute it
+# with priority over auto-scheduled work.
+#
+# Both verbs answer with the full task, like every other task mutation, and both push
+# `board_update` because the "Starts soon" badge renders on the board card too.
+
+
+@router.post(
+    "/tasks/{task_id}/research-request",
+    response_model=TaskMutationResponse,
+    dependencies=[Depends(idempotency_guard)],
+)
+async def request_research(
+    task_id: str, principal: CurrentUser, tasks: Tasks, container: ContainerDep
+) -> TaskMutationResponse:
+    task = await tasks.request_research(principal, task_id)
+    await container.board_updates.publish(
+        principal.uid, project_id=task.project_id, task_ids=[task.id], origin="user"
+    )
+    return await _mutation_response(tasks, task)
+
+
+@router.delete(
+    "/tasks/{task_id}/research-request",
+    response_model=TaskMutationResponse,
+    dependencies=[Depends(idempotency_guard)],
+)
+async def cancel_research_request(
+    task_id: str, principal: CurrentUser, tasks: Tasks, container: ContainerDep
+) -> TaskMutationResponse:
+    task = await tasks.cancel_research_request(principal, task_id)
+    await container.board_updates.publish(
+        principal.uid, project_id=task.project_id, task_ids=[task.id], origin="user"
     )
     return await _mutation_response(tasks, task)
 

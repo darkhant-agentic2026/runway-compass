@@ -378,7 +378,7 @@ with a missing-shared-object error rather than at install time.
 | --- | --- |
 | `./scripts/dev.sh up` | `gcloud beta emulators firestore start`, API with `--reload`, Vite dev server |
 | `./scripts/dev.sh seed` | Seeds a demo user, project, and 8 tasks |
-| `./scripts/dev.sh tick [--loop 60s]` | Calls `/internal/tick` locally (OIDC bypassed when `ENV=local`) |
+| `./scripts/dev.sh tick [--loop 60s]` | Calls `/internal/tick` on the API `dev.sh up` is already serving (OIDC bypassed when `ENV=local`) |
 | `./scripts/dev.sh test [api\|web\|e2e]` | Test subsets |
 | `./scripts/dev.sh lint` | `ruff check --fix`, `ruff format`, `mypy`, `eslint --fix`, `prettier --write`, `tsc`, `terraform fmt` |
 
@@ -510,7 +510,7 @@ ADK_FIRESTORE_ROOT_COLLECTION=adk-session     # pinned explicitly, not left to t
 ARTIFACT_BUCKET=…
 UPLOAD_BUCKET=…
 TASKS_QUEUE=projects/…/locations/…/queues/autonomous-runs
-TASKS_TARGET_URL=https://…/internal/runs
+TASKS_TARGET_URL=https://…                    # the SERVICE url, not a path under it — see below
 TASKS_INVOKER_SA=coach-tasks-sa@….iam.gserviceaccount.com   # OIDC identity minted onto each task
 YOUTUBE_API_KEY=sm://youtube-api-key
 ALLOWED_SCHEDULER_SA=coach-scheduler-sa@….iam.gserviceaccount.com
@@ -522,6 +522,13 @@ OAUTH_CLIENT_ID=….apps.googleusercontent.com  # Identity Platform Google provi
 accounts, so OIDC verification needs both allow-listed separately
 ([04-api-contract.md](04-api-contract.md#authentication)). Collapsing them into one variable
 would mean either Cloud Scheduler could invoke the executor or the reverse.
+
+**`TASKS_TARGET_URL` is the bare service URL**, and it is doing two jobs: the app appends
+`/internal/runs/{runId}/execute` to it when enqueueing, and it is the OIDC **audience**
+both internal endpoints verify against. Cloud Scheduler mints its token for the service
+URL, so a path here would mean two audiences for one check — and the failure is two
+symptoms that look unrelated: a `404` from the executor (the path doubled) and a `401` on
+the tick (the audience did not match).
 
 `Settings` rejects a non-`local` `ENV` combined with `FIRESTORE_EMULATOR_HOST` — a
 fail-fast guard against a deployed revision silently pointing at nothing.

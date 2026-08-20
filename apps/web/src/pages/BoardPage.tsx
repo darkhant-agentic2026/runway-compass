@@ -31,6 +31,7 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import { BoardFilters } from '@/components/board/BoardFilters';
+import { CoachUpdateBanner } from '@/components/board/CoachUpdateBanner';
 import { TaskCard } from '@/components/board/TaskCard';
 import { SessionPane } from '@/components/session/SessionPane';
 import { Button } from '@/components/ui/button';
@@ -41,13 +42,24 @@ import {
   useCreateTask,
   useEffectivePrefs,
   useProject,
+  useProjectRuns,
   useProjectSession,
   useReorderTask,
   useSetTaskState,
+  useUndoRun,
 } from '@/features/queries';
 import { formatMinutes } from '@/lib/format';
-import type { TaskState } from '@/lib/schemas';
+import type { AutonomousRun, TaskState } from '@/lib/schemas';
 import { useBoardUiStore } from '@/stores/boardUi';
+
+/**
+ * A frozen module-level constant, never `?? []` inline.
+ *
+ * `runs.data` is undefined until the query settles, and a fresh literal in its place is a
+ * new value on every render — which React reports as minified error #185, in a built
+ * bundle only (docs/06-frontend.md, `NO_ATTACHMENTS` in `stores/composer.ts`).
+ */
+const EMPTY_RUNS: AutonomousRun[] = [];
 
 export default function BoardPage() {
   const { projectId = '' } = useParams();
@@ -63,6 +75,8 @@ export default function BoardPage() {
   const setTaskState = useSetTaskState(projectId, filters);
   const reorder = useReorderTask(projectId, filters);
   const createTask = useCreateTask(projectId);
+  const runs = useProjectRuns(projectId);
+  const undoRun = useUndoRun(projectId);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -121,6 +135,18 @@ export default function BoardPage() {
             </p>
           ) : null}
         </header>
+
+        {/*
+          What the coach did while the learner was away, above the filters and below the
+          project's own numbers — the first thing to read on a board that moved on its own.
+          It renders nothing when no run changed anything, which is the common case.
+        */}
+        <CoachUpdateBanner
+          runs={runs.data ?? EMPTY_RUNS}
+          tasks={tasks}
+          undoing={undoRun.isPending}
+          onUndo={(runId) => undoRun.mutate(runId)}
+        />
 
         <BoardFilters
           filters={filters}

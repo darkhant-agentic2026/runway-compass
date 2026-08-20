@@ -177,19 +177,45 @@ cmd_seed() {
 }
 
 cmd_tick() {
-  # /internal/tick and the autonomous run ledger land at M5. The endpoint does not exist
-  # yet, so say so plainly rather than curl-ing a 404 and letting it look like a bug.
-  warn "'/internal/tick' arrives at M5 with the autonomous run ledger
-  (docs/05-autonomous-runs.md, docs/09-roadmap.md#m5--autonomy-15-weeks).
-  This command is wired up and will call it once the endpoint exists."
+  # Cloud Scheduler's job, done by hand. `/internal/tick` accepts an unauthenticated call
+  # when ENV=local (coach/api/routers/internal.py), so no token is minted here — and with
+  # ENV=local the tick's enqueue is an in-process task rather than Cloud Tasks, which is
+  # what makes the whole autonomous path exercisable on a laptop
+  # (docs/05-autonomous-runs.md#local-development).
+  #
+  # It calls the API `dev.sh up` is already serving rather than starting one: a second
+  # process would have its own in-process queue, so the runs this tick schedules would
+  # execute somewhere nothing is watching.
   local url="http://127.0.0.1:$API_PORT/internal/tick"
+  if ! curl -sf -o /dev/null "http://127.0.0.1:$API_PORT/livez"; then
+    fail "Nothing is serving on 127.0.0.1:$API_PORT. Start the stack with './scripts/dev.sh up' first."
+  fi
+
   if [ "${1:-}" = "--loop" ]; then
     local interval="${2:-60s}"
-    bold "Would call $url every $interval"
-  else
-    bold "Would call $url once"
+    bold "Calling $url every $interval — Ctrl-C to stop"
+    while true; do
+      _tick_once "$url"
+      sleep "${interval%s}"
+    done
   fi
-  return 0
+  _tick_once "$url"
+}
+
+_tick_once() {
+  local url="$1"
+  local body
+  if ! body="$(curl -sS -X POST -H 'Content-Type: application/json' "$url")"; then
+    warn "tick failed"
+    return 1
+  fi
+  # Pretty-printed when python is around, raw otherwise: the body is the tick's whole
+  # report — what it swept, recovered, scheduled, and why it skipped the rest.
+  if have python3; then
+    printf '%s' "$body" | python3 -m json.tool 2>/dev/null || printf '%s\n' "$body"
+  else
+    printf '%s\n' "$body"
+  fi
 }
 
 cmd_test() {

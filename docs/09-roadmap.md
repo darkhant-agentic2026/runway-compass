@@ -478,12 +478,121 @@ the feature rather than at the budget.
 - Project agent lease; presence tracking and the double-checked owner-present guard.
 - `autonomous_workflow` SequentialAgent with the reduced tool set; `select_next_task` and
   `reprioritize` as deterministic code steps.
+- **Requested research**: `POST`/`DELETE /api/tasks/{id}/research-request`, the
+  `researchStatus: "pending"` + `researchRequestedAt` pair, the priority queue at the front
+  of the tick, and the "Have my coach prepare this" / "Starts soon — cancel" control beside
+  the existing inline trigger. Decided at the start of the milestone; see below.
 - "Updated by your coach" banner with per-run undo; postponement sweep.
 - Local `dev.sh tick` path with the in-process `JobQueue`.
 
 **Exit:** Playwright flows #6 and #8 pass; killing the process mid-run and re-ticking
-resumes without re-running the research step; a project with its owner online is never
-touched.
+resumes without re-running the research step; **a project with its owner online is never
+touched by auto-scheduled research, while research the learner queued by hand runs anyway
+and runs first**.
+
+### The presence guard applies to auto-scheduled work only — decided at the start of M5
+
+The original exit criterion was "a project with its owner online is never touched", and
+that is now too strong in one direction and too weak in another. The two kinds of
+background work it lumped together are split by
+[05-autonomous-runs.md](05-autonomous-runs.md#two-kinds-of-work-and-the-only-difference-between-them):
+
+- **Auto-scheduled** research — the work the coach signed up for when it created a task
+  with `needsResearch: true` — is what the guard is for. Reshaping the board under a
+  learner who is reading it is the failure, and being present is a good proxy for it.
+- **Requested** research — the learner pressed a button — runs regardless of presence, and
+  jumps the queue ahead of every auto-scheduled candidate. The guard would otherwise refuse
+  the one case where intent is explicit: a learner presses "prepare this", stays on the
+  page because they want to see it happen, and their being there is exactly what stops it.
+
+A requested run also skips the 6-hour cooldown, `autonomousEnabled`, and quiet hours, for
+the same reason in each case — all three are defaults about *unprompted* work. It still
+takes the project lease and still counts against the daily quota, which are mutual
+exclusion and a cost ceiling rather than policy about who asked.
+
+**The queued path is where research is going.** The intent is for headless execution to
+become the default and the inline `POST /api/sessions/{sid}/research` button to retire,
+once the autonomous research agent has been shown to be robust running unattended. That
+proof is deliberately postponed until the core M5 functionality is in place, so both paths
+ship in this milestone and the inline one stays the primary action. Anything built here
+should assume the queued path outlives the inline one.
+
+---
+
+## Status after M5
+
+What follows is the carry-over a later milestone needs, recorded here because it is not
+derivable from the code. **Not yet deployed** — the hand verification on `coach-dev` is the
+first item in the deferred table below, and every prior milestone's first deployed run
+surfaced something a green local gate had not.
+
+**Met locally.** Golden flows #6, #8, and #9 pass on all four Playwright projects alongside
+every earlier spec. Killing a run mid-flight and re-ticking resumes without re-running the
+research step — asserted by *counting model invocations* across the two executions rather
+than by reading the ledger, because a ledger that says `research` is complete while the
+agent ran twice would pass the weaker assertion and fail the bill. Auto-scheduled research
+is skipped while the owner is present; research the learner queued runs anyway and runs
+first.
+
+**The requested-research change, decided at the start of the milestone**, is specified in
+[05-autonomous-runs.md](05-autonomous-runs.md#two-kinds-of-work-and-the-only-difference-between-them)
+and argued [above](#the-presence-guard-applies-to-auto-scheduled-work-only--decided-at-the-start-of-m5).
+The queued path is the one intended to outlive the inline button.
+
+**Deliberately deferred, and the milestone that needs it:**
+
+| Item | Needed by | Note |
+| --- | --- | --- |
+| **Hand verification on `coach-dev`** | **now** | Nothing here has run against Cloud Scheduler, Cloud Tasks, or a real OIDC token. The three things a local run cannot reach are the OIDC verification on both `/internal/*` endpoints, the Cloud Tasks enqueue (whose credentials differ in *kind* from a local one — the third row of [the M2 table](#what-a-green-local-run-does-not-prove)), and the two new Firestore indexes |
+| **Seed `youtube-api-key`** (RUNBOOK §4) | **still now** | Carried from M4 and still not done. A scheduled run produces the same video-less report a manual one does |
+| `propose_tasks` adds nothing under the stub | M6 | The stub answers the propose prompt in prose, so the *tool* path in that step is exercised only by `test_autonomous_tools.py`'s enumeration. The banner's "added …" wording is unit-tested; nothing end-to-end has seen a background run create a task |
+| Nightly evalsets, live-API tests, real-auth test | M6 | Still as recorded after M1 |
+| Content **scanning** on finalize | M7 | Still as recorded after M2 |
+| `prod` environment, `terraform destroy` | before release | Still as recorded after M1 |
+
+**Endpoints in the API contract still unimplemented**: `PATCH /api/me/learner-profile`'s
+Settings UI (M6) and `DELETE /api/me` (M7). Everything under runs landed here.
+
+**Decisions made during implementation** that the design documents did not fix:
+
+| Decision | Why | Where |
+| --- | --- | --- |
+| A run step waits on an `asyncio.Event`, never on the generation task | `TurnService.start` must not grow an `await` on generation — that is the disconnect guarantee stated as an absence. The executor passes an `on_finished` callback that sets an event and waits for *that*, so a Cloud Tasks delivery that times out leaves inference running rather than killing it | `services/executor.py` |
+| The run id reaches `post_research_report` as `state_delta`, not through the prompt callback | ADK applies `state_delta` to the user event *before* the root node runs, so `agents/prompt.py` must never give `RUN_ID_KEY` a default — its `state.update(defaults)` would erase it, and the symptom would be a duplicate report after a retry | `agents/context.py`, `services/turns.py` |
+| `propose_tasks` is a **separate agent**, not the coach with a different message | The reduced tool set is the safety rail, and a rail expressed as an instruction is an honour system. It also drops every confirmation-gated tool for an independent reason: there is nobody to answer | `agents/autonomous_agent.py`, `agents/tools.py` |
+| The autonomous tool set is built by **enumerating what is allowed** | A subtractive list silently re-admits every tool added afterwards, so the next destructive tool would be autonomous by default and nothing would report it | `agents/tools.py` |
+| `board_update` crosses instances by **polling a per-user document** | `on_snapshot` is sync-only, exactly as for the M2 resume path. One point read per connected user every 3 s, and each frame carries the instance that wrote it so the publisher's own poller skips it | `repositories/board_events.py`, `ws/hub.py` |
+| Undo **discards** a created task rather than deleting it | Discarding is the board's own word for "not work I am doing", it is reversible from the UI, and it keeps any conversation about that task reachable | `services/runs.py` |
+| `TaskService.restore_order` writes an exact fractional key | `reorder` takes a *neighbour* and computes a key between two others. A recomputed key lands the task in the right position relative to the board as it is *now*, which is not where it was | `services/tasks.py` |
+| `start == end` is an empty quiet-hours window | The only way to turn quiet hours off — there is no separate flag — and the way a test asks for a scheduler that does not depend on the hour it is run | `services/scheduler.py` |
+| A tick that recovers a run excludes that project from scheduling | A crashed run's lease has expired *by definition*, so the lease guard reads the project as idle and the tick would queue a second run to race the first. Invariant 1 is "interrupted work is finished **before** new work is started" | `services/scheduler.py` |
+| The quota is counted when a run is **created**, not when it succeeds | A failed run has still spent the model calls the quota exists to bound, and a counter of successes would let a broken project retry all day | `repositories/usage.py` |
+| `PATCH /api/me/prefs` re-validates the merged prefs | `model_copy(update=…)` assigns without validating, so a nested patch left a plain `dict` where `QuietHours` belongs. Right in Firestore, wrong in the reply | `services/users.py` |
+| `TASKS_TARGET_URL` is the **service** URL, not a path under it | It is also the OIDC audience both internal endpoints verify, and Cloud Scheduler mints its token for the bare service URL — so a path there would mean two audiences for one check and the tick would read as forged | `infra/terraform/envs/*/main.tf` |
+
+### Four more rows for the table above
+
+Three of these were found by **running the e2e suite repeatedly**, which is the habit
+CLAUDE.md asks for and which paid for itself here: the first run was green, and the defects
+appeared on the third, the fourth, and under full-suite load. The fourth was found by the
+backend suite failing *because of the time of day*.
+
+| Trap | How it presents | Where it will recur |
+| --- | --- | --- |
+| **A guard evaluated against the wall clock makes a suite pass or fail by the hour** | Every auto-scheduled assertion in `test_scheduler.py` failed on its first run, at 00:44 UTC, inside the *default* 23:00–07:00 quiet window. It read as a broken guard and was a working one | Anything reading a real clock: quiet hours, the cooldown, `postponedUntil`. Pin the input in the fixture — `start == end` here — rather than hoping the suite runs in daylight |
+| **"Running with an expired lease" stays true of a crashed run forever** | `list_stuck` re-enqueued a run once per tick for the life of the ledger row, each time paying for whatever step its cursor was on. Invisible until the third consecutive e2e run, as a wall of `Aborted: Transaction lock timeout` on writes with no connection to any run | Any recovery query whose predicate is a *state* rather than an attempt count. The poison-pill bound belongs beside the query, and the run has to be *buried* rather than merely skipped or it is rediscovered forever |
+| **A local stand-in without the production rate limit is not the production path** | Cloud Tasks caps `max_concurrent_dispatches` at 5; `InProcessQueue` started every run the tick scheduled at once. Ten concurrent research turns against one emulator surfaced as lock timeouts on an ordinary `POST /tasks` the browser had just made | Every double behind a `Protocol`. "The same code path" is only true of the code — a limit the real thing enforces has to be enforced by the stand-in, or the local run is a different system that happens to compile |
+| **A fairness key that is never written starves the queue behind it** | Candidates are ordered `lastAutonomousRunAt ASC`, nulls first — and a project that is always *skipped* never gets one, so it holds the head of the order permanently. A hundred quiet-hours projects filled the window and the test's own new project was never examined; the tick reported a hundred skips and nothing else | Any cursor ordered by a field only the *success* path writes. Scanning past the skips fixes it (`TICK_CANDIDATE_SCAN`); the general shape is that a window sized to the cap assumes every candidate is viable |
+
+**A fifth thing, which is a test-design trap rather than a defect.** Flow #8 asserted
+`scheduled.length === 1` — a property of the *whole database*, which the e2e shares with
+every other spec running concurrently. An assertion about a global endpoint has to be
+filtered to the caller's own rows, or it is an assertion about what the rest of the suite
+happens to be doing. The same test also raced the presence heartbeat: waiting for the
+workspace heading is not waiting for the socket to have told the server anything, and
+`framesent` is not the frame having been *handled*. It now waits for the effect — a tick
+that reports the skip — with the project's work parked so the barrier cannot cause what it
+is waiting to observe.
 
 ---
 

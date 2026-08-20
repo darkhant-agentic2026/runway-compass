@@ -17,6 +17,7 @@ from google.adk.models.base_llm import BaseLlm
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import BaseSessionService
 
+from coach.agents.autonomous_agent import build_autonomous_agent
 from coach.agents.coach_agent import build_coach_agent
 from coach.agents.prompt import PromptBuilder
 from coach.agents.research_agent import build_research_agent
@@ -61,12 +62,14 @@ class RunnerFactory:
         self._model: BaseLlm | None = None
         self._runner: Runner | None = None
         self._research: Runner | None = None
+        self._autonomous: Runner | None = None
 
     def set_model(self, model: BaseLlm | None) -> None:
         """Install a model, discarding any cached runner. See the module docstring."""
         self._model = model
         self._runner = None
         self._research = None
+        self._autonomous = None
 
     def runner(self) -> Runner:
         if self._runner is None:
@@ -107,6 +110,28 @@ class RunnerFactory:
                 artifact_service=self._artifacts(),
             )
         return self._research
+
+    def autonomous_runner(self) -> Runner:
+        """The `propose_tasks` runner — the background pass over the board.
+
+        Third runner, same everything but the agent, for the same reason `research_runner`
+        is the second: the tool set is the safety rail
+        (docs/03-agent-design.md#safety-rails-on-autonomy), and a rail expressed as an
+        agent cannot be talked out of. `DomainTools.as_autonomous_tools()` is the
+        enumeration; nothing here decides it.
+        """
+        if self._autonomous is None:
+            self._autonomous = Runner(
+                app_name=APP_NAME,
+                agent=build_autonomous_agent(
+                    self._build_model(),
+                    tools=self._tools.as_autonomous_tools(),
+                    before_agent_callback=self._prompt,
+                ),
+                session_service=self._session_service,
+                artifact_service=self._artifacts(),
+            )
+        return self._autonomous
 
     def _build_model(self) -> BaseLlm:
         return self._model or build_model(self._settings)
