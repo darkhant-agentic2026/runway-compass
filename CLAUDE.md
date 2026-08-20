@@ -193,6 +193,14 @@ Five working habits follow, and none belongs in `docs/`:
   twice. Instrument the app if the cause is not visible from outside — a temporary
   `console.log` plus `page.on('console')` answered in one run what two rounds of reasoning
   got wrong. Rebuild the image after editing the app; the e2e stack serves a built SPA.
+  **A long-lived stack degrades under sustained load and starts looking like a product
+  bug.** Two heavy runs back to back against the same `docker-compose.e2e.yml` containers
+  turned every single webkit spec red at the identical first interaction, with the API
+  logging `Failed to commit transaction in 5 attempts` — Firestore emulator contention, not
+  a regression. A `docker compose down -v` + `up --build -d --wait` fixed it outright. A
+  failure that is identical across *every* spec at the *same* step is the signature to look
+  for; a manually started stack that has been running for a while is a suspect before the
+  code is.
 
 ## Reporting a deployed failure
 
@@ -210,6 +218,14 @@ has a surface no local test can reach. What is worth knowing when something fail
   Two M2 diagnoses went the wrong way on this: a 403 naming an IAM method that was really an
   OAuth scope, and a probe that 404'd for every input because the method it called did not
   exist — which read as "no models are available".
+- **`gcloud firestore documents list|describe` is not in every SDK version.** It errors
+  "Invalid choice" rather than degrading. `infra/terraform/RUNBOOK.md` reads Firestore over
+  the REST API instead for this reason — `curl -H "Authorization: Bearer $(gcloud auth
+  print-access-token)" https://firestore.googleapis.com/v1/projects/$PROJECT/databases/(default)/documents/<collection>`
+  for a top-level collection. A subcollection (`tasks`, nested under `projects/{id}/tasks`)
+  isn't reachable that way at all — list every project's tasks with a collection-group
+  `POST .../documents:runQuery` and body `{"structuredQuery": {"from": [{"collectionId":
+  "tasks", "allDescendants": true}]}}`.
 
 ## Commands
 

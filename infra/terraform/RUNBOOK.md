@@ -762,9 +762,14 @@ Whatever happened, plus these — they are what I would need to diagnose anythin
 gcloud run services logs read coach-api --region=us-central1 --limit=200 \
   | grep -iE 'error|traceback|exception|refused|denied' || echo "no errors logged"
 
-# The turn documents this session wrote (status must be `complete`, not `running`)
-gcloud firestore documents list --collection-ids=turns --limit=5 2>/dev/null \
-  || echo "list unsupported on this gcloud; skip"
+# The turn documents this session wrote (status must be `complete`, not `running`).
+# The Firestore REST API, not `gcloud firestore documents` — the gcloud subcommand is
+# missing on some SDK versions and fails with "Invalid choice" instead of degrading.
+PROJECT=$(gcloud config get-value project)
+TOKEN=$(gcloud auth print-access-token)
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "https://firestore.googleapis.com/v1/projects/$PROJECT/databases/(default)/documents/turns?pageSize=5" \
+  | python3 -m json.tool
 ```
 
 Known things that will bite, so you can tell a real failure from a configuration one:
@@ -833,8 +838,22 @@ still the first thing to check.
 
 ## 10. Closing the M5 exit criterion (HUMAN)
 
-**Not yet run.** M5's deployed-only surface is the widest since M2, because the whole
-milestone is a chain of Google services that do not exist locally.
+**Run and closed on `coach-dev`.** M5's deployed-only surface was the widest since M2,
+because the whole milestone is a chain of Google services that do not exist locally, and
+it found two defects that no local run could have — both fixed and re-verified deployed;
+see [docs/09-roadmap.md](../../docs/09-roadmap.md#two-more-rows-found-by-the-hand-verification-rather-than-the-e2e-suite):
+
+- Recovery patched a run's ledger row to `pending` *before* the enqueue that write
+  depended on had succeeded, so a Cloud Tasks dedup collision (the task name did not
+  include the attempt number, so a retry collided with its own previous attempt for up
+  to an hour) left an orphaned row no later tick would ever retry.
+- A **requested** run against a task the coach itself had marked `needsResearch: false`
+  skipped research and failed at `post_report` on all three attempts — reachable only
+  once the fix above let a run's attempts actually play out instead of dying orphaned on
+  the first.
+
+The table below is kept for what each row exercises, useful background for the next
+deployed-only milestone (M7).
 
 | Unproven until this step | Why no test covers it |
 | --- | --- |
@@ -849,9 +868,9 @@ Needs `terraform apply` as well as a deploy — two of those rows are Terraform,
 
 ### 10.1 Before the criterion
 
-RUNBOOK §4's `youtube-api-key` is **still unseeded** and has been since M4. A scheduled
-run will produce the same video-less report a manual one does. Seed it first, or the first
-thing this section proves is a defect that was already known.
+RUNBOOK §4's `youtube-api-key` is now seeded. A scheduled run's report includes a
+duration-checked YouTube recommendation, confirmed on `coach-dev` — closing the row M4
+left open.
 
 ### 10.2 The criterion itself
 
@@ -900,10 +919,15 @@ thing this section proves is a defect that was already known.
    half of the guard M5 changed
    ([docs/09-roadmap.md](../../docs/09-roadmap.md#the-presence-guard-applies-to-auto-scheduled-work-only--decided-at-the-start-of-m5)).
 
-If a run fails, its ledger row carries the failing step and its error:
+If a run fails, its ledger row carries the failing step and its error — read over the
+Firestore REST API rather than `gcloud firestore documents`, which is missing on some SDK
+versions:
 
 ```bash
-gcloud firestore documents list autonomous_runs --project=coach-dev --limit=5
+TOKEN=$(gcloud auth print-access-token)
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "https://firestore.googleapis.com/v1/projects/coach-dev/databases/(default)/documents/autonomous_runs?pageSize=5" \
+  | python3 -m json.tool
 ```
 
 `cursor` names where a retry will resume, and a run stuck `running` with a

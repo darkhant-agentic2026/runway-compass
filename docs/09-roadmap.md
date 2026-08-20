@@ -522,17 +522,37 @@ should assume the queued path outlives the inline one.
 ## Status after M5
 
 What follows is the carry-over a later milestone needs, recorded here because it is not
-derivable from the code. **Not yet deployed** — the hand verification on `coach-dev` is the
-first item in the deferred table below, and every prior milestone's first deployed run
-surfaced something a green local gate had not.
+derivable from the code. **Complete and deployed to `coach-dev`.**
 
-**Met locally.** Golden flows #6, #8, and #9 pass on all four Playwright projects alongside
-every earlier spec. Killing a run mid-flight and re-ticking resumes without re-running the
-research step — asserted by *counting model invocations* across the two executions rather
-than by reading the ledger, because a ledger that says `research` is complete while the
-agent ran twice would pass the weaker assertion and fail the bill. Auto-scheduled research
-is skipped while the owner is present; research the learner queued runs anyway and runs
-first.
+**The hand verification found two defects, both in the half of the system a local run
+cannot reach at all — Cloud Scheduler driving real Cloud Tasks against a real model —
+and both are now fixed, tested, and re-verified deployed.** `_recover` patched a run's
+ledger row to `pending` *before* calling `enqueue_run`; when the enqueue then threw —
+Cloud Tasks' own dedup, because the task name was keyed on `run_id` alone and collided
+with the run's own previous attempt for up to an hour — that patch had already
+committed, and the row was an orphan neither recovery query would ever find again.
+Fixed by keying the task name on `run_id` **and** `attempts`, and by reverting the
+ledger patch if the enqueue that was supposed to follow it fails. The second was only
+reachable once the first was fixed: a **requested** run against a task the coach itself
+had marked `needsResearch: false` (a `propose_tasks`-authored subtask) skipped research
+and failed at `post_report`, identically on all three attempts, because `_research`
+did not except `trigger: "requested"` from the `needsResearch` skip the way
+`select_next_task` already does. Both are rows in the trap table below.
+
+**Met locally and confirmed deployed.** Golden flows #6, #8, and #9 pass on all four
+Playwright projects alongside every earlier spec. Killing a run mid-flight and
+re-ticking resumes without re-running the research step — asserted by *counting model
+invocations* across the two executions rather than by reading the ledger, because a
+ledger that says `research` is complete while the agent ran twice would pass the weaker
+assertion and fail the bill. Auto-scheduled research is skipped while the owner is
+present; research the learner queued runs anyway and runs first. On `coach-dev`,
+against a real Cloud Scheduler tick, Cloud Tasks delivery, and Gemini: autonomous
+research completes end to end and a recommended YouTube video lands in a task's
+checklist — closing the one row M4 left unconfirmed (RUNBOOK §4's `youtube-api-key` is
+now seeded). A production run's `propose_tasks` step has also been observed creating a
+task (`origin: "agent"` on the task document), which is the first end-to-end evidence
+for the row below about the stub not exercising that tool path — the *stub* limitation
+for the local suite still stands, and still wants the M6 evalset.
 
 **The requested-research change, decided at the start of the milestone**, is specified in
 [05-autonomous-runs.md](05-autonomous-runs.md#two-kinds-of-work-and-the-only-difference-between-them)
@@ -543,9 +563,7 @@ The queued path is the one intended to outlive the inline button.
 
 | Item | Needed by | Note |
 | --- | --- | --- |
-| **Hand verification on `coach-dev`** | **now** | Nothing here has run against Cloud Scheduler, Cloud Tasks, or a real OIDC token. The three things a local run cannot reach are the OIDC verification on both `/internal/*` endpoints, the Cloud Tasks enqueue (whose credentials differ in *kind* from a local one — the third row of [the M2 table](#what-a-green-local-run-does-not-prove)), and the two new Firestore indexes |
-| **Seed `youtube-api-key`** (RUNBOOK §4) | **still now** | Carried from M4 and still not done. A scheduled run produces the same video-less report a manual one does |
-| `propose_tasks` adds nothing under the stub | M6 | The stub answers the propose prompt in prose, so the *tool* path in that step is exercised only by `test_autonomous_tools.py`'s enumeration. The banner's "added …" wording is unit-tested; nothing end-to-end has seen a background run create a task |
+| `propose_tasks`'s **tool path** under the stub | M6 | Locally, the stub answers the propose prompt in prose, so `test_autonomous_tools.py`'s enumeration is still the only local coverage of that tool. Deployed, against a real model, the path has now been observed working (see above); what M6's evalset adds is *quality*, not existence |
 | Nightly evalsets, live-API tests, real-auth test | M6 | Still as recorded after M1 |
 | Content **scanning** on finalize | M7 | Still as recorded after M2 |
 | `prod` environment, `terraform destroy` | before release | Still as recorded after M1 |
@@ -593,6 +611,18 @@ workspace heading is not waiting for the socket to have told the server anything
 `framesent` is not the frame having been *handled*. It now waits for the effect — a tick
 that reports the skip — with the project's work parked so the barrier cannot cause what it
 is waiting to observe.
+
+### Two more rows, found by the hand verification rather than the e2e suite
+
+Both are RUNBOOK §10 defects: the first appeared only against real Cloud Tasks (its dedup
+window is not a thing `InProcessQueue` has), and the second only appeared once the first
+was fixed and a run's three attempts could actually play out instead of dying orphaned on
+the first.
+
+| Trap | How it presents | Where it will recur |
+| --- | --- | --- |
+| **A ledger patch committed before the write it was made *for* is an orphan if that write fails** | `_recover` patched a run to `pending` and incremented `attempts` *before* calling `enqueue_run`. Cloud Tasks' dedup threw `ALREADY_EXISTS` — the task name was keyed on `run_id` alone, so a retry collided with its own previous attempt's name for up to an hour — and the patch had already committed. Neither recovery query matches `pending` (`list_stuck` wants `running`, `list_retryable` wants `failed`), so the row was an orphan no future tick would touch, on a queue double that never fails locally | Any two-step sequence where the first step's state only makes sense once the second succeeds. Either order the write to depend on the call succeeding, or revert it if the call fails — `_recover` and `_schedule` (`services/scheduler.py`) both do the latter now |
+| **A guard meant for unprompted work can silently swallow a prompted one** | `_research` skipped whenever `needsResearch` was false, with no exception for `trigger: "requested"` — even though `select_next_task` resolves a requested task's research unconditionally (this doc's own line: "a run that took the project because something was requested has to research that thing"). A learner pressing "prepare this" on a `propose_tasks`-authored subtask got a run that could never succeed, identically on all three attempts, and nothing local ever selects a task this way (`wants_auto_research` requires `needsResearch: true`, so only a *requested* run can reach it) | Any per-step guard added after the four owner-facing guards (presence, cooldown, `autonomousEnabled`, quiet hours) that does not ask whether it, too, is a default about *unprompted* work that a prompted run should bypass |
 
 ---
 
