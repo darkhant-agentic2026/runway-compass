@@ -236,6 +236,38 @@ async def test_a_requested_run_executes_with_the_owner_present(
     )
 
 
+async def test_a_requested_run_still_researches_a_task_the_coach_marked_needs_no_research(
+    client: httpx.AsyncClient, container, alice, scheduler: SchedulerService, stub_model
+) -> None:
+    """The RUNBOOK's #10 tick run: every attempt failed with "the research turn produced
+    no report", on a task `propose_tasks` had authored with `needsResearch: false`.
+
+    `select_next_task` resolves a requested task unconditionally — "a run that took the
+    project because something was requested has to research that thing"
+    (docs/03-agent-design.md, step 1) — but `_research` used to skip whenever
+    `needsResearch` was false with no exception for that, so a learner pressing "prepare
+    this" on such a task got a run that could never succeed no matter how many of its
+    three attempts it burned. `research` must actually run, not skip, and `post_report`
+    must not treat that skip as a failure.
+    """
+    board = await _board(client)
+    task = board["tasks"][0]
+    await client.patch(f"/api/tasks/{task['id']}", json={"needsResearch": False})
+    await client.post(f"/api/tasks/{task['id']}/research-request")
+    run_id = (await scheduler.tick()).scheduled[0]
+
+    run = await container.executor.execute(run_id)
+
+    assert run is not None
+    assert run.status is RunStatus.COMPLETE
+    steps = {step.id: step for step in run.steps}
+    assert steps["research"].status is StepStatus.COMPLETE
+    assert steps["post_report"].status is StepStatus.COMPLETE
+    assert (await container.tasks.resolve(alice, task["id"])).research_status is (
+        ResearchStatus.DONE
+    )
+
+
 # --- the request flag --------------------------------------------------------------------
 
 

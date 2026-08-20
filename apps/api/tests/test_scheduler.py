@@ -21,7 +21,7 @@ from typing import Any
 import httpx
 import pytest
 
-from autonomy_doubles import RecordingQueue
+from autonomy_doubles import FailingQueue, RecordingQueue
 from coach.core.clock import now
 from coach.core.principal import Principal
 from coach.repositories.usage import local_day
@@ -53,6 +53,20 @@ async def no_quiet_hours(client: httpx.AsyncClient) -> None:
 
 @pytest.fixture
 def scheduler(container, queue: RecordingQueue) -> SchedulerService:
+    return SchedulerService(
+        tasks=container.tasks,
+        task_repository=container.task_repository,
+        projects=container.project_repository,
+        users=container.user_repository,
+        runs=container.run_repository,
+        presence=container.presence_repository,
+        usage=container.usage_repository,
+        queue=queue,
+    )
+
+
+def _scheduler(container, queue: Any) -> SchedulerService:
+    """Same wiring as the `scheduler` fixture, for tests that need a queue that fails."""
     return SchedulerService(
         tasks=container.tasks,
         task_repository=container.task_repository,
@@ -415,3 +429,71 @@ async def test_a_failed_run_with_attempts_left_is_retried_and_one_without_is_not
 
     await container.run_repository.patch(created, {"status": "failed", "attempts": 3})
     assert (await scheduler.tick()).recovered == []
+
+
+async def test_a_recovery_enqueue_failure_reverts_the_run_instead_of_orphaning_it(
+    client: httpx.AsyncClient, container, scheduler: SchedulerService
+) -> None:
+    """The bug the RUNBOOK's tick job hit in production, reproduced without Cloud Tasks.
+
+    `_recover` used to patch a run to `pending` and increment `attempts` *before* calling
+    `enqueue_run`. When the enqueue then failed — an `ALREADY_EXISTS` from a task name that
+    collided with the run's previous attempt — that patch had already committed. Neither
+    recovery query matches `pending` (`list_stuck` wants `running`, `list_retryable` wants
+    `failed`), so the row was an orphan no future tick would ever touch: exactly what "the
+    research fails" looks like from a stuck project.
+    """
+    project = await _project(client)
+    task = await _task(client, project["id"])
+    created = (await scheduler.tick()).scheduled[0]
+    await container.run_repository.patch(created, {"status": "failed", "attempts": 1})
+    # `select_next_task` already ran for this run before it died, which is what a real
+    # `failed`-with-attempts-left row looks like — and it is what keeps `_schedule` from
+    # treating the project as fresh, idle work and handing out a second, unrelated run
+    # alongside the one being recovered.
+    await container.task_repository.patch(
+        project["id"], task["id"], {"researchStatus": "in_progress"}
+    )
+    failing = _scheduler(container, FailingQueue())
+
+    result = await failing.tick()
+
+    assert result.recovered == []
+    run = await container.run_repository.get(created)
+    assert run is not None
+    # Reverted to exactly what this tick found, not left at the half-applied `pending`.
+    assert run.status is RunStatus.FAILED
+    assert run.attempts == 1
+
+    # And a later tick, with a queue that works, can still find and recover it — the row
+    # was not orphaned.
+    assert (await scheduler.tick()).recovered == [created]
+
+
+async def test_a_scheduling_enqueue_failure_fails_the_run_rather_than_orphaning_or_aborting(
+    client: httpx.AsyncClient, container
+) -> None:
+    """`_schedule`'s `enqueue_run` call had no `try`/`except` at all: a failure propagated
+    out of the whole tick, so it both lost the run it was enqueuing (created `pending`,
+    with no lease and no query that would ever find it again) and — because the candidates
+    are a single `for` loop — skipped every other candidate the tick had already chosen.
+    """
+    first = await _project(client, "Async Python")
+    await _task(client, first["id"])
+    second = await _project(client, "Distributed Systems")
+    await _task(client, second["id"])
+    failing = _scheduler(container, FailingQueue())
+
+    result = await failing.tick()
+
+    assert result.scheduled == []
+    for project in (first, second):
+        matches = await container.run_repository.list_for_project(project["id"])
+        assert len(matches) == 1
+        run = matches[0]
+        # `failed` with attempts still below the ceiling is what `list_retryable` matches,
+        # so the next tick offers it again instead of it sitting unscheduled forever.
+        assert run.status is RunStatus.FAILED
+        assert run.attempts < run.max_attempts
+    # Both projects got a run despite `FailingQueue` refusing every enqueue: one
+    # candidate's failure did not abort the rest of this tick's `for` loop.

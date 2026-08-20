@@ -292,8 +292,13 @@ class RunExecutor:
         """
         task_id = _task_id_of(steps, run)
         task = await self._tasks.resolve(principal, task_id)
-        if not task.needs_research:
-            # docs/03-agent-design.md: "Skipped if `task.needsResearch == false`."
+        if _skip_research(task, run):
+            # docs/03-agent-design.md: "Skipped if `task.needsResearch == false`" — except
+            # for a run that took the project *because* this task was requested, which
+            # "has to research that thing" regardless (same table, step 1). Otherwise a
+            # learner pressing "prepare this" on a task the coach itself marked
+            # `needsResearch: false` gets a run that can never succeed: select_next_task
+            # resolves the request unconditionally, but this guard would skip it anyway.
             return _SKIPPED
         session = await self._sessions.get_or_create_for_task(principal, task_id)
         turn = await self._run_turn(
@@ -314,7 +319,7 @@ class RunExecutor:
 
     async def _post_report(
         self, principal: Principal, run: AutonomousRun, steps: dict[str, RunStep]
-    ) -> dict[str, object]:
+    ) -> dict[str, object] | object:
         """Settle what the research turn's tool wrote, and say so on the board.
 
         The *writing* is `post_research_report`'s, inside the turn — this step is the
@@ -325,9 +330,15 @@ class RunExecutor:
         gives: on the happy path the tool has already set `done` *and* written the
         checklist, in the transaction that promoted the task out of `draft`, and a second
         writer for one field is the one with the least information.
+
+        Re-derives the same skip `_research` used rather than trusting that step's recorded
+        status: `_run_steps` never refreshes its local `steps` copy after a skip (only after
+        a completion), so reading it back here would be reading stale data.
         """
         task_id = _task_id_of(steps, run)
         task = await self._tasks.resolve(principal, task_id)
+        if _skip_research(task, run):
+            return _SKIPPED
         if task.research_status is not ResearchStatus.DONE:
             await self._tasks.set_research(principal, task_id, status=ResearchStatus.FAILED)
             raise StepFailed("the research turn produced no report")
@@ -613,6 +624,16 @@ class StepFailed(RuntimeError):
 
 class NothingToDo(RuntimeError):
     """The run has no work. Not a failure — see the step loop."""
+
+
+def _skip_research(task: Task, run: AutonomousRun) -> bool:
+    """`task.needsResearch == false` skips research — unless the run exists *because*
+    this task was requested, which `select_next_task` resolves unconditionally
+    (docs/03-agent-design.md's step-1 row: "has to research that thing"). Manual research
+    (`services/research.py`) never consults `needsResearch` at all; a requested queued run
+    is meant to behave the same way.
+    """
+    return not task.needs_research and run.trigger != "requested"
 
 
 def _selected_task_id(run: AutonomousRun) -> str | None:

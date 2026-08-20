@@ -25,9 +25,24 @@ class RecordingQueue:
 
     def __init__(self) -> None:
         self.enqueued: list[str] = []
+        self.attempts: dict[str, int] = {}
 
-    async def enqueue_run(self, run_id: str) -> None:
+    async def enqueue_run(self, run_id: str, *, attempts: int) -> None:
         self.enqueued.append(run_id)
+        self.attempts[run_id] = attempts
+
+
+class FailingQueue:
+    """A `JobQueue` that always refuses — Cloud Tasks quota, IAM, or the `ALREADY_EXISTS`
+    collision the RUNBOOK's tick job hit in production.
+
+    What matters about *how* it fails is that `SchedulerService` must not leave a ledger
+    row that no future tick's `list_stuck`/`list_retryable` can find, and must not let one
+    candidate's failure abort every other candidate still waiting in the same tick.
+    """
+
+    async def enqueue_run(self, run_id: str, *, attempts: int) -> None:
+        raise RuntimeError(f"queue refused run {run_id} attempt {attempts}")
 
 
 class CountingStubModel(StubModel):
@@ -57,4 +72,4 @@ class CountingStubModel(StubModel):
             yield response
 
 
-__all__ = ["CountingStubModel", "RecordingQueue"]
+__all__ = ["CountingStubModel", "FailingQueue", "RecordingQueue"]

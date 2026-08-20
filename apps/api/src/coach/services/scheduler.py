@@ -264,29 +264,52 @@ class SchedulerService:
         for run in [*live, *retryable][:TICK_RECOVERY_CAP]:
             if run.id in recovered:
                 continue
+            next_attempt = run.attempts + 1
             try:
                 await self._runs.patch(
                     run.id,
                     {
                         "status": RunStatus.PENDING.value,
-                        "attempts": run.attempts + 1,
+                        "attempts": next_attempt,
                         "error": None,
-                    },
-                )
-                await self._queue.enqueue_run(run.id)
-                recovered.append(run.id)
-                busy.add(run.project_id)
-                logger.info(
-                    "interrupted run re-enqueued",
-                    extra={
-                        "run_id": run.id,
-                        "cursor": run.cursor,
-                        "attempts": run.attempts + 1,
-                        "was": run.status.value,
                     },
                 )
             except Exception:
                 logger.exception("run recovery failed", extra={"run_id": run.id})
+                continue
+            try:
+                await self._queue.enqueue_run(run.id, attempts=next_attempt)
+            except Exception:
+                # The patch above already committed `pending`, and neither recovery query
+                # matches that status (`list_stuck` wants `running`, `list_retryable` wants
+                # `failed`), so a row left here is an orphan no future tick will ever find.
+                # Put it back exactly where this tick found it so the next tick's
+                # `list_stuck`/`list_retryable` sees it again.
+                logger.exception(
+                    "run recovery enqueue failed; reverting to previous status",
+                    extra={"run_id": run.id, "status": run.status.value},
+                )
+                with contextlib.suppress(Exception):
+                    await self._runs.patch(
+                        run.id,
+                        {
+                            "status": run.status.value,
+                            "attempts": run.attempts,
+                            "error": run.error,
+                        },
+                    )
+                continue
+            recovered.append(run.id)
+            busy.add(run.project_id)
+            logger.info(
+                "interrupted run re-enqueued",
+                extra={
+                    "run_id": run.id,
+                    "cursor": run.cursor,
+                    "attempts": next_attempt,
+                    "was": run.status.value,
+                },
+            )
         return recovered, busy
 
     # --- 3. scheduling --------------------------------------------------------------
@@ -301,7 +324,25 @@ class SchedulerService:
                     "could not create run", extra={"project_id": candidate.project.id}
                 )
                 continue
-            await self._queue.enqueue_run(run.id)
+            try:
+                await self._queue.enqueue_run(run.id, attempts=run.attempts)
+            except Exception:
+                # The ledger row already exists as `pending` with no lease behind it —
+                # `list_stuck` only matches `running` — so left alone it is an orphan no
+                # future tick will touch. Fail it in place instead, which
+                # `list_retryable` *does* match, so recovery offers it again next tick
+                # rather than losing it and rather than this one exception aborting every
+                # other candidate still waiting in this loop.
+                logger.exception("could not enqueue run", extra={"run_id": run.id})
+                with contextlib.suppress(Exception):
+                    await self._runs.patch(
+                        run.id,
+                        {
+                            "status": RunStatus.FAILED.value,
+                            "error": "the run could not be enqueued",
+                        },
+                    )
+                continue
             result.scheduled.append(run.id)
             logger.info(
                 "run scheduled",

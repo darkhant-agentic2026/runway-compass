@@ -48,7 +48,7 @@ EXECUTE_PATH = "/internal/runs/{run_id}/execute"
 class JobQueue(Protocol):
     """Hand one run to whatever will execute it."""
 
-    async def enqueue_run(self, run_id: str) -> None: ...
+    async def enqueue_run(self, run_id: str, *, attempts: int) -> None: ...
 
 
 class CloudTasksQueue:
@@ -68,7 +68,7 @@ class CloudTasksQueue:
             self._client = tasks_v2.CloudTasksAsyncClient()
         return self._client
 
-    async def enqueue_run(self, run_id: str) -> None:
+    async def enqueue_run(self, run_id: str, *, attempts: int) -> None:
         from google.cloud import tasks_v2
 
         settings = self._settings
@@ -97,11 +97,15 @@ class CloudTasksQueue:
                     audience=settings.tasks_target_url,
                 ),
             ),
-            # Deduplication by name. Cloud Tasks keeps a completed task's name for about
-            # an hour, so a tick that runs twice — a Cloud Scheduler retry, say — cannot
-            # queue the same run twice within that window. Belt and braces beside the
-            # ledger's own idempotency, and free.
-            name=f"{settings.tasks_queue}/tasks/{run_id}",
+            # Deduplication by name, scoped to *this attempt*. Cloud Tasks keeps a
+            # completed task's name for about an hour, so a tick that runs twice — a Cloud
+            # Scheduler retry, say — cannot queue the same attempt twice within that
+            # window. `attempts` has to be part of the name rather than just `run_id`:
+            # recovery increments `attempts` and reuses the same `run_id` for every retry
+            # of a run, so a name keyed on `run_id` alone collides with the *previous*
+            # attempt's now-stale name and makes every retry within the hour fail with
+            # `ALREADY_EXISTS` — indistinguishable, from here, from a real duplicate.
+            name=f"{settings.tasks_queue}/tasks/{run_id}-{attempts}",
         )
         await self._resolve().create_task(
             request=tasks_v2.CreateTaskRequest(parent=settings.tasks_queue, task=task)
@@ -147,8 +151,8 @@ class InProcessQueue:
         self._tasks: set[asyncio.Task[None]] = set()
         self._slots = asyncio.Semaphore(max_concurrent)
 
-    async def enqueue_run(self, run_id: str) -> None:
-        task = asyncio.create_task(self._run(run_id), name=f"local-run:{run_id}")
+    async def enqueue_run(self, run_id: str, *, attempts: int) -> None:
+        task = asyncio.create_task(self._run(run_id), name=f"local-run:{run_id}-{attempts}")
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
