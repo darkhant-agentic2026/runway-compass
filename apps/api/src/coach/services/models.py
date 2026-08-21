@@ -179,7 +179,7 @@ class TechnologyBelief(DomainModel):
 class LearnerProfile(DomainModel):
     """Agent-maintained, user-editable beliefs about the learner.
 
-    Written only by the `update_learner_profile` tool (M6) and by the Settings UI —
+    Written only by the `update_learner_profile` tool (M7) and by the Settings UI —
     never by free-form model output.
     """
 

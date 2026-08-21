@@ -227,7 +227,7 @@ def render_outcomes(board: list[TaskWithSubtasks]) -> str:
 def render_learner(profile: LearnerProfile) -> str:
     """The `learnerProfile` summary.
 
-    Empty until M6 fills it, which is why this says so explicitly rather than rendering an
+    Empty until M7 fills it, which is why this says so explicitly rather than rendering an
     empty section: a blank heading reads to a model as "nothing is known and that is
     surprising", and an absent one is a placeholder that raises.
     """

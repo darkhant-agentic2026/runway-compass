@@ -7,7 +7,7 @@ so the instruction grows by deletion of those markers rather than by rewrite.
 `thinking_level=high`, per the agent graph: this is the Socratic conversation, which is
 the expensive-thinking half of the system rather than the mechanical one.
 
-**Domain tools arrive at M3.** Memory tools (M6) and `AgentTool(research_agent)` (M4) are
+**Domain tools arrive at M3.** Memory tools (M7) and `AgentTool(research_agent)` (M4) are
 still to come. The list grows deliberately, not incidentally: `LlmAgent.canonical_tools`
 treats `len(tools) > 1` as the trigger for built-in-tool wrapping
 (docs/03-agent-design.md#m1-spike-result-resolved-against-the-installed-270-source), so

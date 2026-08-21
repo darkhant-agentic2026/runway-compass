@@ -3,7 +3,7 @@
 docs/02-data-model.md#collection-map reserves this collection and
 docs/05-autonomous-runs.md#candidate-selection-and-guards names the one field M5 uses:
 `autonomousRuns`, checked against `plan.limits.autonomousRunsPerDay`. The rest of the
-counters (tokens, turns) belong to M7's quota pass and are deliberately not invented here.
+counters (tokens, turns) belong to M8's quota pass and are deliberately not invented here.
 
 **The document id encodes the day, so there is no expiry job and no query.** A counter
 keyed `{uid}_{2026-08-20}` is one point read on the guard path and one `Increment` on the

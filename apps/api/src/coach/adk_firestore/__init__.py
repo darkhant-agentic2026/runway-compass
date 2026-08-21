@@ -4,8 +4,8 @@ docs/03-agent-design.md. `google-adk` is pinned at `2.7.0` and the coupling here
 the shipped classes' *internals*, not merely to `BaseSessionService` — read the bump
 checklist in that document before touching the version.
 
-`CoachMemoryService` arrives at M6 with the learner model
-(docs/09-roadmap.md#m6--learner-model-and-adaptation-1-week); M2 needs only the session
+`CoachMemoryService` arrives at M7 with the learner model
+(docs/09-roadmap.md#m7--learner-model-and-adaptation-1-week); M2 needs only the session
 service.
 """
 

@@ -2,7 +2,7 @@
  * Global settings — `/settings`.
  *
  * docs/06-frontend.md: "Global prefs, appearance (theme) + 'What your coach knows about
- * you' (learner profile, editable)". The learner-profile editor is an M6 deliverable and
+ * you' (learner profile, editable)". The learner-profile editor is an M7 deliverable and
  * is shown read-only here, so the section exists and is obviously not yet interactive
  * rather than being silently absent.
  */
@@ -153,7 +153,7 @@ export default function SettingsPage() {
         <CardContent className="space-y-2 text-sm text-muted-foreground">
           <p>
             The coach builds this picture as you work together. Editing it arrives with the
-            learner model (M6); nothing writes to it yet.
+            learner model (M7); nothing writes to it yet.
           </p>
           <p>
             Version {me.data?.learnerProfile.version ?? 0}

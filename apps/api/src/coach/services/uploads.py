@@ -32,7 +32,7 @@ works all day and then starts silently resolving to nothing — a coach that has
 a screenshot it discussed yesterday.
 
 **Not yet done: "scans".** The contract lists content scanning in this step and nothing
-here scans. Deferred to M7's "Security review: … upload handling", and recorded in
+here scans. Deferred to M9's "Security review: … upload handling", and recorded in
 docs/09-roadmap.md rather than left as an unremarked gap.
 """
 

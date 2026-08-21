@@ -62,7 +62,7 @@ the eight design choices everything else follows from.
 | [06-frontend.md](docs/06-frontend.md) | Routes, state split, board and workspace UI, theming |
 | [07-infra-deploy.md](docs/07-infra-deploy.md) | Terraform, Cloud Run config, CI/CD, local dev |
 | [08-testing.md](docs/08-testing.md) | Test strategy, contract suites, golden e2e flows |
-| [09-roadmap.md](docs/09-roadmap.md) | Milestones M0–M7 with exit criteria |
+| [09-roadmap.md](docs/09-roadmap.md) | Milestones M0–M9 with exit criteria |
 | [10-risks.md](docs/10-risks.md) | Risks, mitigations, open questions |
 
 ## Getting started
@@ -81,12 +81,14 @@ steps each environment needs before its first `terraform apply`.
 
 ## Next step
 
-**M6** in [the roadmap](docs/09-roadmap.md#m6--learner-model-and-adaptation-1-week):
-learner model and adaptation. Splitting the one coach agent into a project coach (intake,
-no item tools) and a task teacher (owns the checklist, `add_subtask`); `CoachMemoryService`
-and session-close summarization into a versioned learner profile; prompt construction that
-visibly changes guidance style and verbosity from it; the "What your coach knows about you"
-settings screen.
+**M6** in
+[the roadmap](docs/09-roadmap.md#m6--splitting-the-coach-into-a-project-coach-and-a-task-teacher-05-week):
+splitting the one coach agent into a project coach (intake, no item tools) and a task
+teacher (owns the checklist, `add_subtask`). The rest of the learner-model work —
+`CoachMemoryService`, session-close summarization into a versioned learner profile, prompt
+construction that visibly changes guidance style and verbosity from it, and the "What your
+coach knows about you" settings screen — follows at
+[M7](docs/09-roadmap.md#m7--learner-model-and-adaptation-1-week).
 
 Read [Status after M5](docs/09-roadmap.md#status-after-m5) first, and then the trap tables
 it points at — earlier milestones' failure modes recur, and M5's own two rows

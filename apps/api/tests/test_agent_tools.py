@@ -231,7 +231,7 @@ async def test_a_dead_socket_does_not_fail_the_tool(container) -> None:
 async def test_the_tools_are_the_catalogue_the_design_lists(container) -> None:
     """The tool surface, asserted by name.
 
-    docs/03-agent-design.md#domain-tools is the catalogue; the memory tools are M6, so
+    docs/03-agent-design.md#domain-tools is the catalogue; the memory tools are M7, so
     this list grows once more. Pinning it by name means a tool that is added without a
     docs row, or removed by a refactor, shows up here rather than as a model that quietly
     stops being able to do something.

@@ -1,6 +1,6 @@
 # Roadmap
 
-Eight milestones. Each has a demoable outcome and explicit exit criteria. Sizes assume one
+Ten milestones. Each has a demoable outcome and explicit exit criteria. Sizes assume one
 focused developer; treat them as sequencing signal, not commitments.
 
 ---
@@ -46,7 +46,7 @@ agent bugs are later distinguishable from data bugs.
 - Global + project preferences with `resolve_prefs` and the settings screens.
 - Theme switching (light/dark/system) with the no-flash inline script
   ([06-frontend.md](06-frontend.md#theme-light-dark-system)). It lands here rather than at
-  M7 because the inline script and `color-scheme` handling are cheap now and awkward to
+  M9 because the inline script and `color-scheme` handling are cheap now and awkward to
   retrofit once every screen exists — and because building the remaining screens against
   both themes is far cheaper than auditing them into a second theme later.
 - **Spike (timeboxed, 1 day): confirm, against the pinned ADK version, whether the built-in
@@ -79,14 +79,14 @@ WebKit-clean before M2 starts, which is the point of installing it early.
 | --- | --- | --- |
 | `min_instances` back to **1** in `envs/dev/dev.tfvars` | **M2** | Currently 0 to save idle cost. From M2 a scaled-to-zero instance can be reaped mid-generation, which is the failure the disconnect guarantee exists to prevent |
 | Nightly **Terraform plan** drift check | soon | CI cannot run `plan` — the deploy workflow has no state-bucket access by design ([07-infra-deploy.md](07-infra-deploy.md#ci-does-not-run-terraform)). Nothing currently detects infrastructure drift |
-| Nightly evalsets, live-API tests, real-auth test | M4–M6 | Specified in [08-testing.md](08-testing.md#ci-wiring), none implemented |
+| Nightly evalsets, live-API tests, real-auth test | M4–M7 | Specified in [08-testing.md](08-testing.md#ci-wiring), none implemented |
 | `prod` environment | before any release | No GCP project, no GitHub Environment. Note that environment protection rules need a paid plan on private repos ([RUNBOOK](../infra/terraform/RUNBOOK.md)) |
 | `terraform destroy` / from-scratch reproducibility | before relying on it | M0's other exit criterion, never exercised. `google_identity_platform_config` likely cannot be deleted, so a re-apply would need the import again |
 
 **Endpoints in the API contract that are not implemented yet**, all by milestone rather
 than oversight: the intake session created by `POST /api/projects` (M2), everything under
 sessions, turns, uploads, and runs (M2–M5), `PATCH /api/me/learner-profile`'s Settings UI
-(M6), and `DELETE /api/me` (M7).
+(M7), and `DELETE /api/me` (M9).
 
 **Decisions made during implementation** that the design documents did not fix, each
 commented where it lives: the fractional index uses base-62 keys rather than a literal
@@ -146,16 +146,16 @@ model**; those rows are stale and were not migrated. Both are in the table below
 
 | Item | Needed by | Note |
 | --- | --- | --- |
-| Content **scanning** on `POST /api/uploads/{id}/finalize` | **M7** | The contract lists it in that step and nothing scans. An accepted MIME type and a size cap are the only checks on uploaded bytes |
+| Content **scanning** on `POST /api/uploads/{id}/finalize` | **M9** | The contract lists it in that step and nothing scans. An accepted MIME type and a size cap are the only checks on uploaded bytes |
 | `subscribe` by `runId` | **M5** | The frame is accepted and answered with an explicit error until the run ledger exists |
 | Tool-activity chips on **resume** | M3+ | Chips render from the live stream but are not checkpointed, so a resumed client rebuilds them from the finalized transcript rather than the stream |
 | Composite indexes for the `turns` queries | **M5** | `list_running_for_instance` and `expire_stale` were written ahead of a caller, needed indexes that do not exist, and were deleted. The ledger sweep should add each query *with* its index and its row in the index table |
-| Nightly evalsets, live-API tests, real-auth test | M4–M6 | Still as recorded after M1 |
+| Nightly evalsets, live-API tests, real-auth test | M4–M7 | Still as recorded after M1 |
 | `prod` environment, `terraform destroy` | before release | Still as recorded after M1. `envs/prod` also has a commented `vertex_location` needing its own decision |
 
 **Endpoints in the API contract still unimplemented**, by milestone rather than oversight:
 `POST /api/sessions/{sid}/research` and everything under reports (M4), runs (M5),
-`PATCH /api/me/learner-profile`'s Settings UI (M6), and `DELETE /api/me` (M7).
+`PATCH /api/me/learner-profile`'s Settings UI (M7), and `DELETE /api/me` (M9).
 
 **Decisions made during implementation** that the design documents did not fix:
 
@@ -281,11 +281,11 @@ the full local gate and both already rows in the table below:
 | Autonomous mode's **reduced tool set** | **M5** | [03-agent-design.md](03-agent-design.md#safety-rails-on-autonomy) forbids `discard_task`, `update_learner_profile`, and `update_project_prefs` in background work. There is no autonomous agent yet, so there is nothing to reduce; `propose_tasks` builds its subset there, from the same `DomainTools` |
 | `origin: "agent"` badging is on tasks, not on **runs** | **M5** | Every agent write records `origin`, which the board badges. `runId` and the per-run undo the "Updated by your coach" banner needs arrive with the ledger |
 | `list_tasks` as the model's **only** board read | — | The prompt carries the board too, so the tool is a refresh rather than the source. Cheap, and it saves a tool round trip on the first turn; revisit if prompt size becomes the constraint |
-| Everything still open after M2 | as recorded | Content scanning (M7), `subscribe` by `runId` (M5), `turns` composite indexes (M5), nightly evalsets (M4–M6), `prod` and `terraform destroy` |
+| Everything still open after M2 | as recorded | Content scanning (M9), `subscribe` by `runId` (M5), `turns` composite indexes (M5), nightly evalsets (M4–M7), `prod` and `terraform destroy` |
 
 **Endpoints in the API contract still unimplemented**: `POST /api/sessions/{sid}/research`
 and everything under reports (M4), runs (M5), `PATCH /api/me/learner-profile`'s Settings
-UI (M6), and `DELETE /api/me` (M7).
+UI (M7), and `DELETE /api/me` (M9).
 
 **Open questions Q1–Q3** ([10-risks.md](10-risks.md#open-questions)) were due at this
 milestone and are settled, each taking its default. Q4 is due at M4.
@@ -410,15 +410,15 @@ parameterising guards on an undecided number.
 | --- | --- | --- |
 | **Seed `youtube-api-key`** (RUNBOOK §4) and re-verify videos | **now** | `terraform apply` ran; the secret still holds the placeholder, which is why no report has recommended a video. The service now says so at `ERROR` on startup instead of degrading in silence |
 | Re-run the **hand verification** for videos specifically | **now** | The rest of M4 was verified on `coach-dev`; the YouTube path never succeeded there, so nothing has yet exercised `search.list` → `videos.list` against the real API |
-| Nightly **live** YouTube and search tests | M6 | The recorded-fixture half is done; `--live` is not wired. What no fixture can catch is a quota shape or a response field moving |
-| ADK **evalsets** for research quality | M6 | The tool contract is tested; whether a report is *good* is not, and cannot be by a stub. Still as recorded after M1 |
+| Nightly **live** YouTube and search tests | M7 | The recorded-fixture half is done; `--live` is not wired. What no fixture can catch is a quota shape or a response field moving |
+| ADK **evalsets** for research quality | M7 | The tool contract is tested; whether a report is *good* is not, and cannot be by a stub. Still as recorded after M1 |
 | `subscribe` by `runId` | **M5** | Still deferred. A manual run has a `turnId` and the client watches that; a *scheduled* run has no turn, which is when the frame becomes necessary |
 | `propose_tasks` and `reprioritize` | **M5** | `research_agent` has no board-mutating tools by design ([10-risks.md](10-risks.md#r7--prompt-injection-via-fetched-pages-and-uploads)); reshaping the board is a separate step with its own budget |
 | `post_report`'s **event-level idempotency** | **M5** | [05-autonomous-runs.md](05-autonomous-runs.md#execution-semantics) already flags this. The report document is idempotent by overwrite; the session event is not, and a manual run cannot be re-executed so nothing exercises it yet |
-| Everything still open after M3 | as recorded | Content scanning (M7), `turns` composite indexes (M5), `board_update` across instances (M5), `prod` and `terraform destroy` |
+| Everything still open after M3 | as recorded | Content scanning (M9), `turns` composite indexes (M5), `board_update` across instances (M5), `prod` and `terraform destroy` |
 
 **Endpoints in the API contract still unimplemented**: everything under runs (M5),
-`PATCH /api/me/learner-profile`'s Settings UI (M6), and `DELETE /api/me` (M7). `GET
+`PATCH /api/me/learner-profile`'s Settings UI (M7), and `DELETE /api/me` (M9). `GET
 /api/runs/{runId}` is *reachable* through `ResearchService.get` but has no route, because
 the contract files it under M5 and a manual run is watched by its turn.
 
@@ -552,7 +552,7 @@ checklist — closing the one row M4 left unconfirmed (RUNBOOK §4's `youtube-ap
 now seeded). A production run's `propose_tasks` step has also been observed creating a
 task (`origin: "agent"` on the task document), which is the first end-to-end evidence
 for the row below about the stub not exercising that tool path — the *stub* limitation
-for the local suite still stands, and still wants the M6 evalset.
+for the local suite still stands, and still wants the M7 evalset.
 
 **The requested-research change, decided at the start of the milestone**, is specified in
 [05-autonomous-runs.md](05-autonomous-runs.md#two-kinds-of-work-and-the-only-difference-between-them)
@@ -563,13 +563,13 @@ The queued path is the one intended to outlive the inline button.
 
 | Item | Needed by | Note |
 | --- | --- | --- |
-| `propose_tasks`'s **tool path** under the stub | M6 | Locally, the stub answers the propose prompt in prose, so `test_autonomous_tools.py`'s enumeration is still the only local coverage of that tool. Deployed, against a real model, the path has now been observed working (see above); what M6's evalset adds is *quality*, not existence |
-| Nightly evalsets, live-API tests, real-auth test | M6 | Still as recorded after M1 |
-| Content **scanning** on finalize | M7 | Still as recorded after M2 |
+| `propose_tasks`'s **tool path** under the stub | M7 | Locally, the stub answers the propose prompt in prose, so `test_autonomous_tools.py`'s enumeration is still the only local coverage of that tool. Deployed, against a real model, the path has now been observed working (see above); what M7's evalset adds is *quality*, not existence |
+| Nightly evalsets, live-API tests, real-auth test | M7 | Still as recorded after M1 |
+| Content **scanning** on finalize | M9 | Still as recorded after M2 |
 | `prod` environment, `terraform destroy` | before release | Still as recorded after M1 |
 
 **Endpoints in the API contract still unimplemented**: `PATCH /api/me/learner-profile`'s
-Settings UI (M6) and `DELETE /api/me` (M7). Everything under runs landed here.
+Settings UI (M7) and `DELETE /api/me` (M9). Everything under runs landed here.
 
 **Decisions made during implementation** that the design documents did not fix:
 
@@ -626,7 +626,7 @@ the first.
 
 ---
 
-## M6 — Learner model and adaptation (~1 week)
+## M6 — Splitting the coach into a project coach and a task teacher (~0.5 week)
 
 - **Split the one coach agent into two.** Reported from use after M4: asked to add optional
   topics to a study plan, the coach reaches for `add_task` — putting them on the *board* —
@@ -641,14 +641,27 @@ the first.
   the distinction and the instruction already branches on it in prose, which is the version
   of this that does not work well enough.
 
-  It lands here rather than sooner because it is a rework of the agent graph rather than a
-  wording fix, and because it wants the same session-scoped context the learner model
-  introduces. A prompt clarification went in after M4 as the cheap half.
+  It lands on its own branch, ahead of the rest of the learner-model work in M7, because it
+  is a rework of the agent graph rather than a wording fix — and because M7's profile-driven
+  prompt changes are cheaper to make once, against two purpose-built instructions, than once
+  against a single instruction serving two audiences and then again after the split. A
+  prompt clarification went in after M4 as the cheap half.
+
+**Exit:** Playwright flows #1, #2, and #7 still pass with two agents instead of one; asked
+to add optional topics to a study plan, the project coach proposes `add_task` from the
+intake session and the task teacher proposes `add_subtask` from the task session — never
+the reverse; the project coach has no item-level tool available to it at all.
+
+---
+
+## M7 — Learner model and adaptation (~1 week)
+
 - **Task-level preference overrides**, which [02-data-model.md](02-data-model.md#task-items)
   and `agents/tools.py` both anticipate: the checklist-size guidance currently reads the
   *project's* default task length, and a single task that is deliberately longer has no way
   to say so.
-- `CoachMemoryService` + contract suite; `load_memory` wired into the coach.
+- `CoachMemoryService` + contract suite; `load_memory` wired into the task teacher (and the
+  project coach, if intake conversations turn out to want it too).
 - Session-close summarization into memory; `update_learner_profile` typed tool with
   versioning and an audit trail.
 - Prompt construction consumes the profile; guidance style and verbosity visibly change
@@ -660,9 +673,32 @@ profile change is attributable to a session and reversible by the user.
 
 ---
 
-## M7 — Hardening and launch readiness (~1.5 weeks)
+## M8 — Research sessions, UI rework, and usage quotas (~1.5 weeks)
 
-- Rate limits, per-user daily token and run quotas, `usage/*` counters.
+- **Split research runs out of the task session into a session of their own, per research
+  job.** A research run currently executes as an ordinary turn inside the task's own
+  session — decided at M4 specifically so it could reuse the disconnect guarantee,
+  checkpoints, and broker without a second implementation ([status after M4](#status-after-m4):
+  "a research run is an ordinary turn … one argument to `TurnService.start` selects the
+  agent"). This milestone keeps that reuse but gives each run its own session, so a task's
+  conversation transcript stops interleaving with tool-heavy research turns the learner
+  never took part in.
+- **UI rework.** Scope decided at the start of the milestone, once the session split above
+  shows what the transcript and the task workspace actually need to display.
+- **Rate limits, per-user daily token and run quotas, `usage/*` counters.** Moved out of the
+  hardening milestone (M9): quota enforcement hangs off the same run/session boundary this
+  milestone is already reworking, so it is cheaper to build against the new shape once than
+  to build it against the old shape and migrate it at M9.
+
+**Exit:** a research run's events live in a session scoped to that run, not the task's; the
+task session's transcript reads as conversation between the learner and the task teacher;
+per-user daily token and run quotas are enforced and backed by `usage/*` counters. The UI
+rework's own exit condition is recorded here once its scope is decided.
+
+---
+
+## M9 — Hardening and launch readiness (~1.5 weeks)
+
 - Observability: dashboards, alert policies, log-based metrics, trace sampling.
 - Error handling pass: retryable vs terminal, user-facing messages, empty states.
 - Account deletion cascade; data export.
@@ -691,4 +727,7 @@ sessions · mobile PWA with offline board reads.
 `M0 → M1 → M2` is strictly sequential and carries most of the risk. `M3` and `M4` can
 overlap once M2 lands (different tool surfaces, shared runner). `M5` depends on M4 for the
 research workflow it schedules. `M6` is independent of M4/M5 and can slot in wherever
-convenient. Roughly 11 weeks of sequential work, ~9 with the M3/M4 overlap.
+convenient. `M7` depends on M6, since its profile-driven prompt changes assume the
+project-coach/task-teacher split already exists. `M8` depends on M4 and M5 for the research
+and run machinery it reworks. `M9` closes out the list. Roughly 13.5 weeks of sequential
+work, ~11.5 with the M3/M4 overlap.

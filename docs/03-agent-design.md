@@ -86,7 +86,7 @@ keyword extraction with a stop-word list, storage with a `keywords[]` array, and
 The subclass adds only per-user collection placement (`users/{uid}/memories/{memoryId}`)
 and the `sourceSessionId` / `projectId` fields the UI attributes memories by.
 
-v2 upgrade path (M6+): add an `embedding` vector field and use Firestore's `find_nearest`
+v2 upgrade path (M7+): add an `embedding` vector field and use Firestore's `find_nearest`
 KNN with `text-embedding-004`. The `BaseMemoryService` interface does not change, so this
 is a drop-in swap behind a config flag.
 
@@ -248,7 +248,7 @@ Behaviour encoded in the instruction:
   total against it once it is exceeded — a *fact*, not a refusal. There is deliberately no
   guard: a 50-minute plan on a 45-minute task is a rounding difference, and the coach with
   the learner in front of it is better placed to judge than a rule. Task-level overrides
-  arrive with the learner model at M6.
+  arrive with the learner model at M7.
 - When the user uploads work, analyse it against the task's success criteria and respond
   in the learner's `guidanceStyle`.
 - Never claim material was read that was not fetched; cite the tool result.

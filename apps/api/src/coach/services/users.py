@@ -78,7 +78,7 @@ class UserService:
 
         Every write bumps `version` and records who made it, which is what lets the
         Settings screen show why the coach changed its approach. The agent's own writes
-        go through the `update_learner_profile` tool at M6, never through this path.
+        go through the `update_learner_profile` tool at M7, never through this path.
         """
         user = await self.get_or_create(principal)
         if not patch:

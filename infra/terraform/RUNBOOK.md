@@ -853,7 +853,7 @@ see [docs/09-roadmap.md](../../docs/09-roadmap.md#two-more-rows-found-by-the-han
   the first.
 
 The table below is kept for what each row exercises, useful background for the next
-deployed-only milestone (M7).
+deployed-only milestone (M9).
 
 | Unproven until this step | Why no test covers it |
 | --- | --- |

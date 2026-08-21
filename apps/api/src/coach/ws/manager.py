@@ -65,7 +65,7 @@ FOLLOW_POLL_SECONDS = 0.4
 #: How many turns one tab may follow at once. A ceiling on this connection's pump tasks,
 #: not a rate limit — the limits in docs/04-api-contract.md#rate-limits (3 connections and
 #: 100 frames per minute per user) are cross-instance counters and land with the rest of
-#: the token-bucket work at M7.
+#: the token-bucket work at M8.
 MAX_SUBSCRIPTIONS = 32
 
 #: Ledger statuses that end a run's stream, the `run_status` analogue of `TERMINAL_TYPES`.

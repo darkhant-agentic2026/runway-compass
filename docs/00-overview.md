@@ -103,5 +103,5 @@ through ADK's `GcsArtifactService`.
 | [06-frontend.md](06-frontend.md) | Routes, TanStack Query vs Zustand split, board and session UI, theming |
 | [07-infra-deploy.md](07-infra-deploy.md) | Terraform, Cloud Run settings, GitHub Actions, local dev |
 | [08-testing.md](08-testing.md) | pytest/emulator, vitest, Playwright golden flows, agent evals |
-| [09-roadmap.md](09-roadmap.md) | Milestones M0–M7 with exit criteria |
+| [09-roadmap.md](09-roadmap.md) | Milestones M0–M9 with exit criteria |
 | [10-risks.md](10-risks.md) | Risks, mitigations, and open questions needing a decision |

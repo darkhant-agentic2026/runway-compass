@@ -186,9 +186,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         `detail` carries the exception outside production, because in `local` and `dev`
         the person reading the toast is the person fixing the bug. In `prod` it is a
         fixed string: an exception message can carry a bucket name, a query, or a row of
-        data, and none of that belongs in a browser. M7's error-handling pass owns the
+        data, and none of that belongs in a browser. M9's error-handling pass owns the
         wider question of retryability and user-facing wording
-        (docs/09-roadmap.md#m7--hardening-and-launch-readiness-15-weeks).
+        (docs/09-roadmap.md#m9--hardening-and-launch-readiness-15-weeks).
         """
         trace_id = _trace_id(request)
         logger.exception(

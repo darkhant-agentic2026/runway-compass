@@ -55,7 +55,7 @@ async def patch_learner_profile(
 ) -> dict[str, object]:
     """User edits to "what your coach knows about you".
 
-    The Settings screen this backs is an M6 deliverable; the endpoint lands here because
+    The Settings screen this backs is an M7 deliverable; the endpoint lands here because
     the profile document and its versioning are part of the M1 user model.
     """
     profile = await users.patch_learner_profile(
