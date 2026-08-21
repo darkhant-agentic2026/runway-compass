@@ -22,6 +22,7 @@ turns/{turnId}                               ← streaming checkpoints
 turns/{turnId}/checkpoint_pages/{page}       ← spill when the turn doc nears 1 MiB
 autonomous_runs/{runId}                      ← durable job ledger
 presence/{uid}
+board_events/{uid}                           ← board_update across instances (M5)
 usage/{uid}_{yyyymmdd}                       ← token + run counters
 idempotency/{uid}__{fingerprint}             ← Idempotency-Key replay records, TTL 24 h
 ws_tickets/{ticket}                          ← single-use socket tickets, TTL 60 s
@@ -58,6 +59,26 @@ needs cross-instance state that no existing collection holds:
     "artifactUri": "gs://{project}-coach-artifacts/…",  // what a turn actually references
     "createdAt": ts, "finalizedAt": ts, "expiresAt": null }
   ```
+
+`board_events/{uid}` was added at M5, and it is the same argument a third time: a
+`board_update` has to reach the owner's tabs, and until M5 every board mutation came from
+a tool call inside a turn the user's own request had started — so the in-process hub reached
+all of them. A scheduled run executes wherever Cloud Tasks lands it, with no relationship to
+where the owner is connected.
+
+```jsonc
+{ "rev": 42,
+  "frames": [ { "rev": 41, "instanceId": "…", "frame": { /* board_update */ } }, … ] }
+```
+
+One document per user, appended transactionally and trimmed to the last 20, read by a poller
+on every instance holding a socket for that user. A *document* rather than a subcollection
+because this is read on a timer and the cheapest read available is the right one; **polled**
+rather than watched for the same reason the cross-instance resume path polls (`on_snapshot`
+exists only on the synchronous `DocumentReference`). Each frame carries the instance that
+wrote it, so the writer's own poller skips what it has already delivered locally. Losing
+intermediate frames to the trim costs nothing: every frame is the same instruction —
+refetch — and the last one is enough.
 
   **`objectName` and `artifactUri` point at different buckets, and only the second is
   durable.** `{project}-coach-uploads` is staging and carries
@@ -167,6 +188,7 @@ authority, and it repairs the pointer when it runs.
   "sessionId": "…",                      // 1:1 with an ADK session, created lazily
   "needsResearch": true,
   "researchStatus": "none" | "pending" | "in_progress" | "done" | "failed",
+  "researchRequestedAt": null | ts,      // set iff researchStatus == "pending"
   "latestReportId": null | "…",
   "items": [                             // LEAF tasks only; see Task items below
     { "itemId": "i_01J…", "shortDescription": "…", "details": "…",
@@ -180,6 +202,33 @@ authority, and it repairs the pointer when it runs.
   "createdAt": ts, "updatedAt": ts, "completedAt": null
 }
 ```
+
+**`needsResearch`, `researchStatus`, and `researchRequestedAt` answer three different
+questions**, and M5 is where the third one starts having a writer:
+
+| Field | Question | Written by |
+| --- | --- | --- |
+| `needsResearch` | *Would* this task benefit from prepared material? | Whoever created the task — the coach's `add_task`/`add_subtask`, or the learner's form |
+| `researchStatus` | Where is that material in its lifecycle? | The research path: `pending` when queued, `in_progress` while a run holds it, `done`/`failed` at the end |
+| `researchRequestedAt` | Did the *learner* ask for it, and when? | The queue button alone ([04-api-contract.md](04-api-contract.md#tasks)) |
+
+`researchRequestedAt` is a timestamp rather than a boolean because it is doing two jobs:
+non-null *is* the priority flag, and its value is the fairness order among several queued
+tasks. A boolean would need a second field to break ties, and would have to be kept
+consistent with it.
+
+The pair is what [05-autonomous-runs.md](05-autonomous-runs.md#two-kinds-of-work-and-the-only-difference-between-them)
+splits scheduled work on: `needsResearch` with `researchStatus ∈ {none, failed}` is work
+the *coach* signed up for, and is skipped while the owner is present; `researchStatus ==
+"pending"` with a `researchRequestedAt` is work the *learner* asked for, and runs first
+regardless. The invariant between the last two is that neither exists without the other —
+`pending` with no timestamp would be a request nothing can order, and a timestamp on any
+other status is a request that already ran.
+
+`researchStatus ∈ {pending, in_progress}` is also half of invariant 6: a task whose
+checklist is fully ticked does **not** auto-complete while research is outstanding, because
+more items are about to arrive. Queueing research on an already-`completed` task does not
+reopen it, though — the derivation only reopens on an item being un-ticked.
 
 `items` and `rollup` are the same field in two moods and are mutually exclusive by
 construction: a leaf task's plan is its item list, a parent's plan is its subtasks. Nothing
@@ -515,6 +564,7 @@ See [05-autonomous-runs.md](05-autonomous-runs.md) for the full schema and seman
 | Next-up selection | `tasks`: `state ASC, needsResearch ASC, order ASC` |
 | Task's reports, newest first | `research_reports`: `taskId ASC, createdAt DESC` — two fields, so a composite. The emulator answers it without one; Firestore returns `FAILED_PRECONDITION` on the first deployed call, which is the first row of [09-roadmap.md](09-roadmap.md#what-a-green-local-run-does-not-prove) and the reason this row was written in the same change as the query |
 | Expired postponements sweep | collection group `tasks`: `state ASC, postponedUntil ASC` |
+| Requested research queue | collection group `tasks`: `researchStatus ASC, researchRequestedAt ASC` — the tick's first query, across every owner. Two fields on a collection group, so a composite that the emulator will answer without and Firestore will not ([09-roadmap.md](09-roadmap.md#what-a-green-local-run-does-not-prove), row 1). The task state is filtered in Python, for the same reason `sessions.projectId` is: a third field would be a wider index for a list already bounded by how many requests can be outstanding |
 | Projects list | `projects`: `ownerUid ASC, status ASC, updatedAt DESC` |
 | Autonomous candidates | `projects`: `status ASC, lastAutonomousRunAt ASC` |
 | Stuck runs | `autonomous_runs`: `status ASC, leaseExpiresAt ASC` |

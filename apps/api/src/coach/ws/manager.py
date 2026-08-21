@@ -39,6 +39,8 @@ from pydantic import TypeAdapter, ValidationError
 from coach.core.errors import CoachError
 from coach.core.principal import Principal
 from coach.repositories.presence import PresenceRepository
+from coach.services.models import RunStatus as LedgerRunStatus
+from coach.services.runs import RunService
 from coach.services.turns import TurnService
 from coach.ws.broker import StreamBroker
 from coach.ws.hub import BoardUpdateHub, attached
@@ -52,6 +54,7 @@ from coach.ws.protocol import (
     Subscribe,
     Unsubscribe,
 )
+from coach.ws.protocol import RunStatus as RunStatusFrame
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +67,19 @@ FOLLOW_POLL_SECONDS = 0.4
 #: 100 frames per minute per user) are cross-instance counters and land with the rest of
 #: the token-bucket work at M7.
 MAX_SUBSCRIPTIONS = 32
+
+#: Ledger statuses that end a run's stream, the `run_status` analogue of `TERMINAL_TYPES`.
+#: `skipped_owner_present` is in here and is not a failure: it is the presence guard doing
+#: its job, and a client waiting for a run that was deliberately abandoned would wait
+#: forever (docs/05-autonomous-runs.md#presence-guard-details).
+TERMINAL_RUN_STATUSES = frozenset(
+    {
+        LedgerRunStatus.COMPLETE,
+        LedgerRunStatus.FAILED,
+        LedgerRunStatus.CANCELLED,
+        LedgerRunStatus.SKIPPED_OWNER_PRESENT,
+    }
+)
 
 _CLIENT_FRAME = TypeAdapter[ClientFrame](ClientFrame)
 
@@ -80,10 +96,12 @@ class SocketSession:
         broker: StreamBroker,
         presence: PresenceRepository,
         board_updates: BoardUpdateHub,
+        runs: RunService,
     ) -> None:
         self._socket = websocket
         self._principal = principal
         self._turns = turns
+        self._runs = runs
         self._broker = broker
         self._presence = presence
         self._board_updates = board_updates
@@ -148,25 +166,22 @@ class SocketSession:
         if (turn_id is None) == (run_id is None):
             await self._send({"type": "error", "code": "subscribe-needs-one-target"})
             return
-        if run_id is not None:
-            # `subscribe` by runId carries `run_status` frames only. Runs arrive with the
-            # ledger at M5; accepting the frame now and answering plainly beats a silent
-            # no-op that would look like a dropped subscription.
-            await self._send({"type": "error", "code": "runs-not-available-until-m5"})
-            return
-        assert turn_id is not None
-
-        if turn_id in self._pumps and not self._pumps[turn_id].done():
-            # Re-subscribing to a turn this tab already follows is what a reconnect race
+        key = turn_id or run_id
+        assert key is not None
+        if key in self._pumps and not self._pumps[key].done():
+            # Re-subscribing to something this tab already follows is what a reconnect race
             # looks like; restart the pump at the newer cursor rather than running two.
-            self._stop_pump(turn_id)
+            self._stop_pump(key)
         if len(self._pumps) >= MAX_SUBSCRIPTIONS:
             await self._send({"type": "error", "code": "too-many-subscriptions"})
             return
 
-        self._pumps[turn_id] = asyncio.create_task(
-            self._pump(turn_id, last_seq), name=f"ws-pump:{turn_id}"
+        pump = (
+            self._pump(turn_id, last_seq)
+            if turn_id is not None
+            else self._pump_run(run_id or "")
         )
+        self._pumps[key] = asyncio.create_task(pump, name=f"ws-pump:{key}")
 
     def _stop_pump(self, key: str | None) -> None:
         if key is None:
@@ -219,6 +234,50 @@ class SocketSession:
                 if frame.get("type") in TERMINAL_TYPES:
                     return
 
+    async def _pump_run(self, run_id: str) -> None:
+        """Follow one autonomous run, emitting `run_status` frames as its steps move.
+
+        This is the frame M2 accepted and answered with an error until the ledger existed
+        (docs/09-roadmap.md#status-after-m2). It matters because **a scheduled run has no
+        `turnId` for the client to watch**: a manual run's progress rides on its turn, and
+        a queued one has no turn at all until its research step opens one — on whichever
+        instance Cloud Tasks chose.
+
+        Polled, like the cross-instance turn follower and for the same reason. A step
+        boundary is a Firestore write minutes apart from the last one, so the poll interval
+        that matters here is generous rather than tight; it shares `FOLLOW_POLL_SECONDS`
+        anyway, because a run is short-lived and a second constant to tune is a second
+        thing to get wrong.
+
+        **Frames are emitted per step transition, not per poll.** A client rendering
+        progress off a stream that repeats itself would flicker, and one counting frames
+        would count polls.
+        """
+        seen: dict[str, str] = {}
+        while True:
+            try:
+                run = await self._runs.get(self._principal, run_id)
+            except CoachError as error:
+                await self._send({"type": "error", "code": error.code, "runId": run_id})
+                return
+            for step in run.steps:
+                if seen.get(step.id) == step.status.value:
+                    continue
+                seen[step.id] = step.status.value
+                await self._send(
+                    RunStatusFrame(
+                        run_id=run.id, step=step.id, status=step.status.value
+                    ).to_wire()
+                )
+            if run.status in TERMINAL_RUN_STATUSES:
+                # The run itself is the last frame, so the client can drop the
+                # subscription rather than polling a row that will never move again.
+                await self._send(
+                    RunStatusFrame(run_id=run.id, step="run", status=run.status.value).to_wire()
+                )
+                return
+            await asyncio.sleep(FOLLOW_POLL_SECONDS)
+
     async def _pump_remote(self, turn_id: str, last_seq: int) -> None:
         """Replay, then follow the document. See the module docstring on polling."""
         while True:
@@ -242,4 +301,9 @@ class SocketSession:
                 await self._socket.send_json(frame)
 
 
-__all__ = ["FOLLOW_POLL_SECONDS", "MAX_SUBSCRIPTIONS", "SocketSession"]
+__all__ = [
+    "FOLLOW_POLL_SECONDS",
+    "MAX_SUBSCRIPTIONS",
+    "TERMINAL_RUN_STATUSES",
+    "SocketSession",
+]

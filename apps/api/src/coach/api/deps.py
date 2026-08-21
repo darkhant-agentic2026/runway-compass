@@ -28,8 +28,10 @@ from coach.agents.tools import DomainTools
 from coach.core.config import Settings
 from coach.core.principal import Principal
 from coach.integrations.artifacts import artifact_service_provider
+from coach.integrations.queue import build_job_queue
 from coach.integrations.storage import build_object_store
 from coach.integrations.youtube import YouTubeClient
+from coach.repositories.board_events import BoardEventRepository
 from coach.repositories.firestore import Database, LazyAsyncClient
 from coach.repositories.idempotency import IdempotencyRepository
 from coach.repositories.presence import PresenceRepository
@@ -40,10 +42,14 @@ from coach.repositories.tasks import TaskRepository
 from coach.repositories.tickets import TicketRepository
 from coach.repositories.turns import TurnRepository
 from coach.repositories.uploads import UploadRepository
+from coach.repositories.usage import UsageRepository
 from coach.repositories.users import UserRepository
+from coach.services.executor import RunExecutor
 from coach.services.projects import ProjectService
 from coach.services.reports import ReportService
 from coach.services.research import ResearchService
+from coach.services.runs import RunService
+from coach.services.scheduler import SchedulerService
 from coach.services.sessions import SessionService
 from coach.services.tasks import TaskService
 from coach.services.turns import TurnService
@@ -87,6 +93,7 @@ class Container:
         self.presence_repository = PresenceRepository(self.db)
         self.report_repository = ReportRepository(self.db)
         self.run_repository = RunRepository(self.db)
+        self.usage_repository = UsageRepository(self.db)
         self.tickets = TicketRepository(self.db)
 
         self.users = UserService(self.user_repository)
@@ -141,7 +148,13 @@ class Container:
         # second fan-out beside the broker because its keyspace is the *user*, not the
         # turn: a board update matters to every tab this user has open, including the one
         # that is not watching the conversation (`ws/hub.py`).
-        self.board_updates = BoardUpdateHub()
+        # The relay is what makes `board_update` cross-instance, which M5 needs and M3
+        # deferred: a scheduled run executes wherever Cloud Tasks lands it, with no
+        # relation to where the owner's socket is (`repositories/board_events.py`).
+        self.board_event_repository = BoardEventRepository(self.db)
+        self.board_updates = BoardUpdateHub(
+            self.board_event_repository, instance_id=self.instance_id
+        )
         # Held on the container as well as handed to the factory: the agent-tool tests
         # call them directly, which is how a guard gets a test that does not depend on
         # persuading a model to trip it.
@@ -182,6 +195,42 @@ class Container:
             self.turns,
             instance_id=self.instance_id,
         )
+
+        # --- M5: the autonomous chain ------------------------------------------------
+        # The executor is built before the queue because the *local* queue calls it: with
+        # `ENV=local` there is no Cloud Tasks, and `/internal/tick` hands each run to an
+        # in-process task instead (docs/05-autonomous-runs.md#local-development). Passing
+        # the bound method rather than the object keeps the queue ignorant of everything
+        # the executor needs.
+        self.executor = RunExecutor(
+            runs=self.run_repository,
+            tasks=self.tasks,
+            task_repository=self.task_repository,
+            projects=self.project_repository,
+            sessions=self.sessions,
+            turns=self.turns,
+            presence=self.presence_repository,
+            board_updates=self.board_updates,
+            instance_id=self.instance_id,
+        )
+        self.queue = build_job_queue(settings, self._execute_run)
+        self.runs = RunService(self.run_repository, self.tasks, self.projects)
+        self.scheduler = SchedulerService(
+            tasks=self.tasks,
+            task_repository=self.task_repository,
+            projects=self.project_repository,
+            users=self.user_repository,
+            runs=self.run_repository,
+            presence=self.presence_repository,
+            usage=self.usage_repository,
+            queue=self.queue,
+        )
+
+    async def _execute_run(self, run_id: str) -> None:
+        """The local queue's target. A method rather than a lambda so it is namable in a
+        traceback, and so the executor can be swapped in a test without rebuilding the
+        queue around it."""
+        await self.executor.execute(run_id)
 
 
 def get_container(request: Request) -> Container:
@@ -226,6 +275,10 @@ def get_research_service(container: Container = Depends(get_container)) -> Resea
     return container.research
 
 
+def get_run_service(container: Container = Depends(get_container)) -> RunService:
+    return container.runs
+
+
 Users = Annotated[UserService, Depends(get_user_service)]
 Projects = Annotated[ProjectService, Depends(get_project_service)]
 Tasks = Annotated[TaskService, Depends(get_task_service)]
@@ -234,7 +287,12 @@ Turns = Annotated[TurnService, Depends(get_turn_service)]
 Uploads = Annotated[UploadService, Depends(get_upload_service)]
 Reports = Annotated[ReportService, Depends(get_report_service)]
 Research = Annotated[ResearchService, Depends(get_research_service)]
+Runs = Annotated[RunService, Depends(get_run_service)]
 SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
+#: For the handful of routes that need something the container holds but no service owns —
+#: the `BoardUpdateHub`, chiefly. Reaching for the whole container is a smell in a router,
+#: so it is spelled out rather than aliased per dependency.
+ContainerDep = Annotated[Container, Depends(get_container)]
 
 # Re-exported so routers depend on one module.
 from coach.api.auth import require_user  # noqa: E402

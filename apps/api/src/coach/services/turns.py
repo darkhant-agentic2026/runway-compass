@@ -32,6 +32,7 @@ from typing import Any, Literal
 from google.adk.agents._streaming_mode import StreamingMode
 from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
+from google.adk.runners import Runner
 from google.genai import types
 
 from coach.agents.runner import RunnerFactory
@@ -64,9 +65,25 @@ CANCELLED_CODE = "cancelled"
 MAX_TURN_TEXT = 32_000
 
 #: Which agent a turn's detached task drives. Not a `Settings` value and not something the
-#: client chooses: `TurnService.start`'s callers are the turns router (always `coach`) and
-#: `ResearchService` (always `research`).
-AgentChoice = Literal["coach", "research"]
+#: client chooses: `TurnService.start`'s callers are the turns router (always `coach`),
+#: `ResearchService` (always `research`), and M5's `RunExecutor` — which uses `research`
+#: for its research step and `propose` for the background pass over the board.
+#:
+#: `propose` is a *different agent*, not the coach with a different message, and that is
+#: the safety rail: it carries `DomainTools.as_autonomous_tools()`, so an unattended run
+#: has no `discard_task` to be talked into using
+#: (docs/03-agent-design.md#safety-rails-on-autonomy).
+AgentChoice = Literal["coach", "research", "propose"]
+
+#: `AgentChoice` to the factory method that builds its runner. A mapping rather than a
+#: chain of `if`s so that adding a fourth agent without a runner is a `KeyError` at the
+#: call site instead of a silent fall-through to the coach — which would be an unattended
+#: run holding the *full* tool set, and would look entirely normal in a transcript.
+_RUNNERS: dict[str, Callable[[RunnerFactory], Runner]] = {
+    "coach": lambda factory: factory.runner(),
+    "research": lambda factory: factory.research_runner(),
+    "propose": lambda factory: factory.autonomous_runner(),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +158,7 @@ class TurnService:
         attachments: list[dict[str, str]] | None = None,
         confirmation: Confirmation | None = None,
         agent: AgentChoice = "coach",
+        state_delta: dict[str, Any] | None = None,
         on_finished: Callable[[], Awaitable[None]] | None = None,
     ) -> Turn:
         """`POST /api/sessions/{sid}/turns` — 202, generation continues in background.
@@ -159,6 +177,13 @@ class TurnService:
         row and drop the project's agent lease at the moment generation stops, rather than
         at the next tick of a poller — a lease outliving its run by even half a second is a
         button the learner can press and the server refuses.
+
+        `state_delta` is invocation state ADK applies to the user event *before* the root
+        node runs, which is before `agents/prompt.py`'s callback. M5 carries the run id
+        through it, so `post_research_report` can key the report document on the run and a
+        retried step overwrites instead of duplicating. Keys must be `temp:`-prefixed —
+        ADK trims temp deltas before persistence, and session `state` is stored as a JSON
+        string, so a plain key would re-serialize onto the session document forever.
         """
         if self._registry.draining:
             raise Conflict(
@@ -182,7 +207,9 @@ class TurnService:
                 instance_id=self._instance_id,
             )
         )
-        task = self._registry.spawn(turn.id, self._generate(turn, principal, content, agent))
+        task = self._registry.spawn(
+            turn.id, self._generate(turn, principal, content, agent, state_delta)
+        )
         if on_finished is not None:
             task.add_done_callback(lambda _: _run_detached(on_finished()))
         return turn
@@ -332,6 +359,7 @@ class TurnService:
         principal: Principal,
         content: types.Content,
         agent: AgentChoice = "coach",
+        state_delta: dict[str, Any] | None = None,
     ) -> None:
         """The detached task. Nothing awaits this; the registry only holds it."""
         seq = 0
@@ -347,15 +375,12 @@ class TurnService:
             async with self._slots:
                 watcher = asyncio.create_task(self._watch_cancellation(turn.id))
                 async with CheckpointWriter(self._turns, turn.id) as writer:
-                    runner = (
-                        self._runners.research_runner()
-                        if agent == "research"
-                        else self._runners.runner()
-                    )
+                    runner = _RUNNERS[agent](self._runners)
                     async for event in runner.run_async(
                         user_id=principal.uid,
                         session_id=turn.session_id,
                         new_message=content,
+                        state_delta=state_delta or None,
                         run_config=RunConfig(streaming_mode=StreamingMode.SSE),
                     ):
                         seq, streamed = await self._emit(turn, event, seq, streamed, writer)

@@ -6,7 +6,35 @@ The requirement, restated as invariants:
 2. Work happens on the next-up, non-completed, non-discarded task.
 3. Research results are posted into that task's session.
 4. The agent may add tasks and reorder them as a result.
-5. It never runs on a project whose owner is currently working in that project.
+5. **Auto-scheduled** work never runs on a project whose owner is currently working in
+   that project. Work the learner *asked for* runs anyway — see below.
+
+## Two kinds of work, and the only difference between them
+
+Everything from the trigger chain down is shared. What differs is who decided the run
+should happen, and that decides exactly two things: whether the owner being present skips
+it, and where it sits in the queue.
+
+| | **Auto-scheduled** | **Requested** |
+| --- | --- | --- |
+| Who decided | The coach, when it created the task with `needsResearch: true` | The learner, by pressing "Have my coach prepare this" on the task ([06-frontend.md](06-frontend.md#task-workspace-projectsprojectidtaskstaskid)) |
+| Marked by | `needsResearch == true` and `researchStatus ∈ {none, failed}` | `researchStatus == "pending"` with `researchRequestedAt` set ([02-data-model.md](02-data-model.md#projectsprojectidtaskstaskid)) |
+| Owner present | **Skipped.** The learner is working; a background run that reshapes the board under them is the failure this guard exists for | **Runs.** Their press is why it exists, and pressing a button and watching nothing happen because you are looking at the page is indefensible |
+| Cooldown, `autonomousEnabled`, quiet hours | All apply | **None apply.** All three are defaults about *unprompted* work, and this run was prompted |
+| Lease, daily quota | Apply | Apply. The lease is mutual exclusion rather than policy, and the quota is a hard cost cap |
+| Ledger `trigger` | `"scheduled"` | `"requested"` |
+| Position in the tick's queue | After every requested run, `lastAutonomousRunAt ASC` | **First**, `researchRequestedAt ASC` |
+
+A requested run is not a *manual* run. `POST /api/sessions/{sid}/research` (`trigger:
+"manual"`, M4) executes inline, in the request, with a `turnId` the caller watches stream.
+A requested run is queued and headless: the learner marks the task and leaves, and the next
+tick picks it up. Both take the same lease, so the two cannot collide.
+
+**This is the direction of travel, not a side door.** The headless scheme is intended to
+become *the* way research runs, with the inline button retired, once the autonomous agent
+has been shown to be robust unattended. That is deliberately postponed until the core M5
+functionality is in place and has run for a while; until then both paths ship, the inline
+one remains the primary action, and the queued one is the thing being proven.
 
 ## Trigger chain
 
@@ -35,26 +63,40 @@ rate limiting, and dedup for free, and keeps any single failure from poisoning t
 
 ## Candidate selection and guards
 
-A project is a candidate if all hold:
+A project is a candidate if every guard that applies to it holds. The last column is the
+whole of the difference between the two kinds:
 
-| Guard | Check |
-| --- | --- |
-| Owner enabled autonomy | `user.globalPrefs.autonomousEnabled` |
-| Not quiet hours | Current time in the user's timezone outside `autonomousQuietHours` |
-| Project active | `project.status == "active"` |
-| Cooldown | `now - project.lastAutonomousRunAt > 6 h` |
-| **Owner not present** | `presence/{ownerUid}` does not show `activeProjectId == projectId` with a heartbeat in the last 120 s |
-| No lease held | `projects/{id}/locks/agent` absent or expired |
-| Under quota | `usage/{uid}_{today}.autonomousRuns < plan.limits.autonomousRunsPerDay` |
-| Work exists | At least one task in `draft`/`not_started`/`in_progress` with `researchStatus != done` |
+| Guard | Check | Applies to |
+| --- | --- | --- |
+| Owner enabled autonomy | `user.globalPrefs.autonomousEnabled` | auto-scheduled only |
+| Not quiet hours | Current time in the user's timezone outside `autonomousQuietHours` | auto-scheduled only |
+| Cooldown | `now - project.lastAutonomousRunAt > 6 h` | auto-scheduled only |
+| **Owner not present** | `presence/{ownerUid}` does not show `activeProjectId == projectId` with a heartbeat in the last 120 s | auto-scheduled only |
+| Project active | `project.status == "active"` | both |
+| No lease held | `projects/{id}/locks/agent` absent or expired | both |
+| Under quota | `usage/{uid}_{today}.autonomousRuns < plan.limits.autonomousRunsPerDay` | both |
+| Work exists | Auto-scheduled: at least one task in `draft`/`not_started`/`in_progress` with `needsResearch` and `researchStatus ∈ {none, failed}`. Requested: at least one task in those states with `researchStatus == "pending"` | both, differently |
 
 `draft` is first in that list on purpose. From M4 it is the state a task starts in and the
 one it leaves when research gives it a checklist ([02-data-model.md](02-data-model.md#task-state-machine)),
 so a project full of drafts is exactly the project with the most for a run to do — and a
 guard written before `draft` existed would have skipped it as having no work.
 
-Ordering of candidates: `lastAutonomousRunAt ASC` (fairness), capped at N projects per
-tick to bound cost.
+**The four owner-facing guards are skipped for a requested run rather than passed.** The
+distinction matters for the log line: a requested run records which guards it bypassed, so
+"why did my coach work at 2 a.m. when I set quiet hours" has an answer that names the press
+rather than looking like a bug in the quiet-hours check.
+
+Ordering of candidates: **every project with a requested task first**, by that project's
+oldest `researchRequestedAt` ascending, then the rest by `lastAutonomousRunAt ASC`
+(fairness). Capped at N projects per tick to bound cost — and the cap is applied *after*
+the sort, so a backlog of auto-scheduled work can never starve a learner who pressed a
+button.
+
+Selecting the task **within** a chosen project follows the same rule: a requested task
+outranks `select_next_task`'s ordinary lowest-`order` choice, oldest request first.
+Otherwise a tick would take the project because the learner asked and then research
+something else in it.
 
 ### Presence guard details
 
@@ -65,6 +107,12 @@ once at scheduling time and again inside the lease transaction at execution time
 because a Cloud Tasks delivery can arrive minutes after scheduling and the user may have
 sat down in the meantime. If the second check fails, the run is abandoned with
 `status: "skipped_owner_present"`, not failed.
+
+**Both checks are on the auto-scheduled path only.** A `trigger: "requested"` run does not
+consult presence at either point, and the second check is where that has to be written
+down rather than inferred: the execution-time guard runs inside the lease transaction,
+minutes after the tick, with none of the tick's reasoning in scope. A requested run whose
+learner sat down in the meantime is the *expected* case, not the race.
 
 ## The lease
 
@@ -87,7 +135,7 @@ collide" true rather than hopeful.
 ```jsonc
 {
   "ownerUid": "…", "projectId": "…", "taskId": "…",
-  "trigger": "scheduled" | "manual",
+  "trigger": "scheduled" | "requested" | "manual",
   "mode": "queued" | "inline",
   "status": "pending" | "running" | "complete" | "failed" | "skipped_owner_present" | "cancelled",
   "attempts": 1, "maxAttempts": 3,
@@ -115,7 +163,9 @@ collide" true rather than hopeful.
   recovery. This is the concrete meaning of "complete previously interrupted work."
 - Steps are individually idempotent:
   - `select_next_task` — pure function of board state; re-running yields the same task
-    unless the board changed, and the recorded `output.taskId` is reused on resume.
+    unless the board changed, and the recorded `output.taskId` is reused on resume. It
+    also records `output.requested`, because by the time a later step or a recovery asks,
+    the flag it selected on is gone (below).
   - `research` — keyed by `runId`; the report document id is `report_{runId}` so a retry
     overwrites rather than duplicating.
   - `post_report` — the session event carries `invocationId = runId:post_report`, and the
@@ -139,14 +189,29 @@ collide" true rather than hopeful.
 > writing. The deterministic-id option is the cheaper of the two and rides on the
 > overwrite semantics that already exist.
 >
-> This is an **M5 obligation**, not something to build now — the step it protects does not
-> exist until then. It is called out here because the "steps are individually idempotent"
-> list above would otherwise read as already-satisfied. Note also that the report document
-> (`report_{runId}`) *is* genuinely idempotent by the same overwrite mechanism; it is only
-> the session event that needs the extra work. Overriding `append_event` is already the
-> most bump-sensitive surface in the project
-> ([03-agent-design.md](03-agent-design.md#bumping-the-adk-version)), so whichever option
-> is chosen belongs on the bump checklist.
+> **Settled at M5, and the shape turned out to be different from either option.** There is
+> no `research_report_ref` event to give a deterministic id to: a research run is an
+> ordinary turn, so what lands in the transcript is ADK's own `post_research_report` call
+> and its function response, written by `append_event` on a path we do not choose ids for.
+> What M5 implemented instead is the half that *is* ours:
+>
+> - The report document is keyed `report_{runId}` — the tool reads the run id out of
+>   `temp:coach_run_id`, which the executor passes as `state_delta` — so a retried step
+>   overwrites rather than duplicating. `tests/test_run_executor.py` asserts one report per
+>   run across a deliberately re-executed step.
+> - **Resume-at-cursor is the real protection**, and it is stronger than event-level
+>   dedup: a `research` step that completed is never re-entered at all, so the ordinary
+>   crash-and-recover path writes nothing twice.
+>
+> What remains uncovered is narrow and worth naming: a step that posts its report and *then*
+> fails — while streaming its closing prose — is retried, and the transcript gains a second
+> tool call and response for the same report. The report and the checklist are unaffected;
+> the conversation reads as though the coach delivered the same materials twice. Left as is
+> rather than papered over, because the fix is either overriding `append_event` — the most
+> bump-sensitive surface in the project
+> ([03-agent-design.md](03-agent-design.md#bumping-the-adk-version)) — or making the reader
+> deduplicate, and neither is worth it for a duplicate that costs nothing but a repeated
+> line.
 
 - Retries: Cloud Tasks retry with exponential backoff (min 30 s, max 10 min, 3 attempts).
   After `maxAttempts` the run is `failed` and surfaced in the UI as "the coach couldn't
@@ -154,6 +219,28 @@ collide" true rather than hopeful.
 - Poison-pill protection: a step that fails with a non-retryable error (invalid task
   state, quota exceeded, safety block) marks the run `failed` immediately without burning
   retries.
+
+### When the request flag is cleared
+
+A requested task's `researchStatus` moves `pending → in_progress` **as the run starts**, in
+the same write that clears `researchRequestedAt`. Not at the end, and not on success only:
+
+- The queue query is `researchStatus == "pending"`, so leaving the flag up while the run
+  executes means the next tick — 15 minutes later, possibly against a still-running run —
+  finds the same task and enqueues it again. The lease would refuse the second run, which
+  makes it a wasted enqueue rather than a duplicate report, but a queue that keeps
+  re-offering work it has already handed out is a queue that hides its own backlog.
+- Clearing it on *failure* too is what stops a task the research agent cannot handle from
+  being retried forever. `maxAttempts` bounds the retries of one run; without this, the
+  ledger would give up and the tick would immediately queue a fresh one. A failed run ends
+  with `researchStatus: "failed"` and no request, which is exactly the state the UI offers
+  a "retry?" against
+  ([06-frontend.md](06-frontend.md#task-workspace-projectsprojectidtaskstaskid)) — the
+  retry re-queues, and the decision to spend another run is the learner's.
+
+The learner may also cancel a request before it is picked up, which writes `researchStatus`
+back to `none` and clears the timestamp. Cancelling is only meaningful while the status is
+`pending`; once a run holds the task, the way to stop it is the turn's cancel.
 
 ## What the run is allowed to change
 
@@ -192,3 +279,14 @@ a `tick` command plus a `--loop 60s` mode, so the whole autonomous path is exerc
 a laptop against the Firestore emulator with no Cloud Scheduler or Cloud Tasks. In local
 mode the Cloud Tasks enqueue is replaced by a direct in-process call behind the same
 `JobQueue` interface.
+
+`dev.sh tick` calls the API that `dev.sh up` is already serving rather than starting one of
+its own: with `ENV=local` the runs execute *inside* the process that received the tick, so
+a second process would do the work somewhere nothing is watching.
+
+**The local queue enforces the same concurrency limit the real one does** — five runs at a
+time, matching the Cloud Tasks queue's `max_concurrent_dispatches`. That is not a detail of
+the double: a stand-in without the limit its original enforces is a different system that
+happens to compile, and this one's absence surfaced as the e2e suite degrading over
+consecutive runs with `Aborted: Transaction lock timeout` on writes that had nothing to do
+with any run ([09-roadmap.md](09-roadmap.md#four-more-rows-for-the-table-above)).

@@ -47,6 +47,30 @@ class ProjectRepository:
             async for doc in query.stream()
         ]
 
+    async def list_autonomous_candidates(self, limit: int = 100) -> list[Project]:
+        """Active projects, least-recently-worked-on first — the tick's fairness order.
+
+        Backed by the `status ASC, lastAutonomousRunAt ASC` index in
+        docs/02-data-model.md#indexes. Across every owner, because the tick is not a user
+        request; the per-owner guards are applied by `SchedulerService`.
+
+        **A project that has never had a run must sort first, and that only works because
+        `lastAutonomousRunAt` is written as an explicit `null`.** Firestore omits a
+        document from an ordered query when the ordered field is *absent*, so a model that
+        dropped its `None` fields on write would make every brand-new project permanently
+        invisible to the scheduler — with nothing failing anywhere.
+        """
+        query = (
+            self._collection()
+            .where(filter=FieldFilter("status", "==", ProjectStatus.ACTIVE.value))
+            .order_by("lastAutonomousRunAt")
+            .limit(limit)
+        )
+        return [
+            Project.model_validate({**(doc.to_dict() or {}), "id": doc.id})
+            async for doc in query.stream()
+        ]
+
     async def create(self, project: Project) -> Project:
         timestamp = now()
         project = project.model_copy(update={"created_at": timestamp, "updated_at": timestamp})

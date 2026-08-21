@@ -322,6 +322,12 @@ class Task(DomainModel):
     session_id: str | None = None
     needs_research: bool = True
     research_status: ResearchStatus = ResearchStatus.NONE
+    #: Set iff `research_status is PENDING`: when the *learner* asked for research, as
+    #: opposed to the coach signing the task up for it with `needs_research`. Non-null is
+    #: the priority flag and its value is the fairness order among queued tasks, which is
+    #: why it is a timestamp and not a boolean
+    #: (docs/05-autonomous-runs.md#two-kinds-of-work-and-the-only-difference-between-them).
+    research_requested_at: datetime | None = None
     latest_report_id: str | None = None
     #: LEAF tasks only. `items` and `rollup` are the same field in two moods — a leaf's plan
     #: is its checklist, a parent's is its subtasks — and are mutually exclusive by
@@ -467,6 +473,21 @@ class RunStep(DomainModel):
     error: str | None = None
 
 
+class RunChange(DomainModel):
+    """One reversible write a run made, recorded so undo does not have to guess.
+
+    docs/05-autonomous-runs.md#what-the-run-is-allowed-to-change: "the ledger records
+    enough to reverse: created task ids and previous `order`/`nextUpTaskId` values". A
+    diff computed at undo time could not tell the run's writes from the learner's, which
+    is the whole reason this is recorded forwards rather than reconstructed backwards.
+    """
+
+    kind: Literal["task_created", "task_reordered"]
+    task_id: str
+    #: The `order` the task held *before* the run moved it. `None` on a creation.
+    previous_order: str | None = None
+
+
 class AutonomousRun(DomainModel):
     """`autonomous_runs/{runId}`. docs/05-autonomous-runs.md#run-ledger.
 
@@ -482,7 +503,12 @@ class AutonomousRun(DomainModel):
     owner_uid: str
     project_id: str
     task_id: str | None = None
-    trigger: Literal["scheduled", "manual"] = "manual"
+    #: `"requested"` is the learner's queued, headless run: it skips the presence guard,
+    #: the cooldown, `autonomousEnabled`, and quiet hours, and it sorts ahead of every
+    #: `"scheduled"` candidate
+    #: (docs/05-autonomous-runs.md#two-kinds-of-work-and-the-only-difference-between-them).
+    #: `"manual"` remains the inline run a turn streams.
+    trigger: Literal["scheduled", "requested", "manual"] = "manual"
     mode: Literal["queued", "inline"] = "inline"
     status: RunStatus = RunStatus.PENDING
     attempts: int = 1
@@ -492,6 +518,16 @@ class AutonomousRun(DomainModel):
     steps: list[RunStep] = Field(default_factory=list)
     usage: dict[str, int] = Field(default_factory=dict)
     turn_id: str | None = None
+    #: What the "Updated by your coach" banner lists and what `POST /api/runs/{id}/undo`
+    #: reverses. Appended as the run writes, never derived afterwards.
+    changes: list[RunChange] = Field(default_factory=list)
+    #: `project.nextUpTaskId` before `reprioritize` touched the board. Recorded because
+    #: docs/05-autonomous-runs.md asks the ledger to hold enough to reverse the run — but
+    #: undo does not *write* it: the pointer became derived from the board at M4, so
+    #: restoring the task's `order` restores the pin as a consequence. It is here as the
+    #: audit answer to "what was next up before my coach touched this".
+    previous_next_up_task_id: str | None = None
+    undone_at: datetime | None = None
     #: Also the Firestore TTL field (30 days), touched at every step boundary.
     created_at: datetime | None = None
     updated_at: datetime | None = None

@@ -30,6 +30,7 @@ import {
   useCreateSubtask,
   useReportFeedback,
   useReportHistory,
+  useResearchRequest,
   useSetSubtaskState,
   useStartResearch,
   useSubtaskItemMutation,
@@ -55,6 +56,7 @@ export default function TaskWorkspacePage() {
   const subtaskItem = useSubtaskItemMutation(taskId, projectId);
   const addSubtask = useCreateSubtask(taskId, projectId);
   const startResearch = useStartResearch(taskId, projectId);
+  const researchRequest = useResearchRequest(taskId, projectId);
   const feedback = useReportFeedback(taskId);
   const history = useReportHistory(taskId);
 
@@ -79,6 +81,14 @@ export default function TaskWorkspacePage() {
     (startResearch.data?.turnId != null &&
       liveTurn?.turnId === startResearch.data.turnId &&
       liveTurn.status === 'running');
+
+  /*
+    Whether the learner has queued research that no run has picked up yet. Read from
+    `researchStatus` rather than from `researchRequestedAt`, even though the two are
+    written together: `pending` is the state the *scheduler* keys on, and a control that
+    disagreed with the queue about what is queued would be worse than one that lagged.
+  */
+  const queued = task?.researchStatus === 'pending';
 
   function research(force: boolean) {
     if (!sessionId) return;
@@ -190,19 +200,61 @@ export default function TaskWorkspacePage() {
         */}
         {task && !isComposite ? (
           <div className="space-y-2">
-            <Button
-              variant={report ? 'outline' : 'default'}
-              size="sm"
-              disabled={researching || !sessionId}
-              onClick={() => research(report !== null)}
-            >
-              {researching
-                ? 'Your coach is preparing materials…'
-                : report
-                  ? 'Research again'
-                  : 'Research this task now'}
-            </Button>
-            {!report && !researching ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant={report ? 'outline' : 'default'}
+                size="sm"
+                disabled={researching || !sessionId}
+                onClick={() => research(report !== null)}
+              >
+                {researching
+                  ? 'Your coach is preparing materials…'
+                  : report
+                    ? 'Research again'
+                    : 'Research this task now'}
+              </Button>
+              {/*
+                The queued half of the pair. Same research, run headless by the next tick
+                with priority over auto-scheduled work, so the learner can mark the task
+                and close the tab (docs/06-frontend.md).
+
+                Two buttons for one outcome is a real cost and it is paid deliberately:
+                the queued path is the one intended to become the *only* path once the
+                autonomous agent is proven unattended, and the inline button is what keeps
+                the feature usable while that is being established.
+
+                Hidden while a run holds the task, because by then `researchStatus` has
+                left `pending` and the honest control is the turn's cancel, not this one.
+              */}
+              {!researching ? (
+                <Button
+                  variant={queued ? 'secondary' : 'outline'}
+                  size="sm"
+                  disabled={researchRequest.isPending}
+                  data-testid="queue-research"
+                  onClick={() => researchRequest.mutate({ queued: !queued })}
+                >
+                  {queued ? 'Starts soon — cancel' : 'Have my coach prepare this'}
+                </Button>
+              ) : null}
+            </div>
+            {queued ? (
+              <p className="text-sm text-muted-foreground" data-testid="research-queued-note">
+                Queued. Your coach will prepare this in the background, ahead of anything it
+                planned for itself — you can close this tab.
+              </p>
+            ) : null}
+            {/*
+              A failed run reads as an offer rather than an error, and the retry is a press
+              rather than an automatic re-enqueue: a task the research agent cannot handle
+              should cost one run per decision the learner makes, not one per tick.
+            */}
+            {task.researchStatus === 'failed' && !researching ? (
+              <p className="text-sm text-muted-foreground" data-testid="research-failed">
+                Your coach couldn&apos;t prepare this last time. Try again when you like.
+              </p>
+            ) : null}
+            {!report && !researching && !queued ? (
               <p className="text-sm text-muted-foreground">
                 No materials yet. Your coach can find reading, videos, and exercises sized to
                 this task.

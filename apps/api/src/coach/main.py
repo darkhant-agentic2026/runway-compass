@@ -26,9 +26,11 @@ from fastapi.staticfiles import StaticFiles
 from coach.api.idempotency import IdempotencyMiddleware, ReplayedResponse
 from coach.api.routers import (
     health,
+    internal,
     me,
     projects,
     reports,
+    runs,
     sessions,
     tasks,
     uploads,
@@ -234,9 +236,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(projects.router)
     app.include_router(tasks.router)
     app.include_router(reports.router)
+    app.include_router(runs.router)
     app.include_router(sessions.router)
     app.include_router(uploads.router)
     app.include_router(ws.router)
+    # OIDC-authenticated, called by Cloud Scheduler and Cloud Tasks rather than by a
+    # browser. Registered like any other router — the catch-all below still has to come
+    # last, and `/internal` is in `API_PREFIXES` so a typo under it 404s as JSON.
+    app.include_router(internal.router)
 
     if settings.is_local:
         # ------------------------------------------------------------------------------

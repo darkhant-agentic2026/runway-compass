@@ -60,7 +60,15 @@ class UserService:
         await self._users.patch(
             principal.uid, {f"globalPrefs.{key}": value for key, value in patch.items()}
         )
-        merged = user.global_prefs.model_copy(update={_snake(k): v for k, v in patch.items()})
+        # Re-*validated* rather than `model_copy`-ed. `model_copy(update=…)` assigns without
+        # validating, so a nested patch — `autonomousQuietHours`, the only one there is —
+        # would leave a plain `dict` where a `QuietHours` belongs. The document in Firestore
+        # is correct either way and re-validates on the next read, so the only casualty is
+        # *this* response, which pydantic serializes with a warning and no error. A shape
+        # that is right in the database and wrong in the reply is worse than either.
+        merged = GlobalPrefs.model_validate(
+            {**user.global_prefs.to_document(), **patch},
+        )
         return user.model_copy(update={"global_prefs": merged})
 
     async def patch_learner_profile(

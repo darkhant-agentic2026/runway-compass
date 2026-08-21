@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 from coach.services.models import (
+    AutonomousRun,
     EffectivePrefs,
     GlobalPrefs,
     GuidanceStyle,
@@ -212,6 +213,34 @@ class TaskDetailResponse(ResponseModel):
     #: + `latestReport`". The checklist is on the task; the report is the material behind
     #: it, and the workspace renders `optional[]` and the citations from here.
     latest_report: ResearchReport | None = None
+
+
+class RunResponse(ResponseModel):
+    """`GET /api/runs/{runId}` — the whole ledger row.
+
+    Whole rather than projected: the client renders `steps[]` as progress, keys the
+    "Updated by your coach" banner off `changes[]` and `undoneAt`, and reads `turnId` to
+    attach to the stream. Picking a subset here would mean a second endpoint the first
+    time the UI wanted one more field.
+    """
+
+    run: AutonomousRun
+
+
+class RunListResponse(ResponseModel):
+    runs: list[AutonomousRun]
+
+
+class RunUndoResponse(ResponseModel):
+    """`POST /api/runs/{runId}/undo`.
+
+    `taskIds` is what the client invalidates. It is returned rather than inferred from
+    `run.changes` because undo tolerates a task that has already gone, so what it *did*
+    touch is a strictly smaller list than what the run changed.
+    """
+
+    run: AutonomousRun
+    task_ids: list[str]
 
 
 class ReportListResponse(ResponseModel):

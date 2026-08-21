@@ -40,6 +40,20 @@ DEFAULT_MINUTES_KEY = "temp:coach_default_minutes"
 #: tool call, and a Firestore read on that path would be one per gated call.
 CONFIRM_ITEMS_KEY = "temp:coach_confirm_items"
 
+#: The autonomous run this invocation belongs to, or absent for an interactive turn.
+#:
+#: Unlike every other key here it is **not** written by `agents/prompt.py` — it arrives as
+#: `state_delta` on `Runner.run_async`, which ADK applies to the user event *before* the
+#: root node runs. That ordering is why the prompt callback must never give this key a
+#: default: `state.update(defaults)` runs afterwards and would erase it, and the symptom
+#: would be a report whose id was not derived from the run — visible only as a duplicate
+#: report after a retry.
+#:
+#: It is what makes `post_research_report` idempotent across a re-executed step: the report
+#: lands on `report_{runId}`, so a retry overwrites rather than duplicating
+#: (docs/05-autonomous-runs.md#execution-semantics).
+RUN_ID_KEY = "temp:coach_run_id"
+
 #: The minute budget a research report's required list has to fit inside — the task's own
 #: estimate, falling back to the project default. `post_research_report` validates against
 #: this rather than re-reading the number out of the rendered instruction.
@@ -118,6 +132,7 @@ __all__ = [
     "MAX_TASK_MINUTES_FACTOR",
     "PROJECT_ID_KEY",
     "RESEARCH_BUDGET_KEY",
+    "RUN_ID_KEY",
     "TASK_ID_KEY",
     "AgentContext",
     "agent_context",

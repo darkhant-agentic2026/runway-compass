@@ -117,6 +117,33 @@ describe('card chrome', () => {
     renderCard(makeParent({ researchStatus: 'done' }));
     expect(screen.getByTestId('materials-ready')).toBeInTheDocument();
   });
+
+  it('shows "Starts soon" for research the learner queued', () => {
+    /*
+      The board is where a learner queues several tasks in a row and then wants to see what
+      is waiting, so the indicator has to be here and not only on the screen that set it
+      (docs/06-frontend.md#task-board-projectsprojectid).
+    */
+    renderCard(makeParent({ researchStatus: 'pending' }));
+    expect(screen.getByTestId('research-queued')).toBeInTheDocument();
+    expect(screen.queryByTestId('materials-ready')).toBeNull();
+  });
+
+  it('says so while a run holds the task', () => {
+    renderCard(makeParent({ researchStatus: 'in_progress' }));
+    expect(screen.getByTestId('research-running')).toBeInTheDocument();
+    expect(screen.queryByTestId('research-queued')).toBeNull();
+  });
+
+  it('offers no queue control on the board', () => {
+    /*
+      A badge, not a button. Queueing and cancelling both live in the workspace with the
+      rest of the research affordances; a second place to change it is a second place for
+      the two to disagree about what is queued.
+    */
+    renderCard(makeParent({ researchStatus: 'pending' }));
+    expect(screen.queryByTestId('queue-research')).toBeNull();
+  });
 });
 
 describe('row actions offer only legal transitions', () => {
