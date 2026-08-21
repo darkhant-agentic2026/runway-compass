@@ -666,6 +666,14 @@ all; `task_teacher`'s (`as_task_tools`) has no `add_task` — the structural hal
 fix, checked by name in `tests/test_agent_tools.py` rather than left to the instruction.
 586 backend tests, 281 web.
 
+**Verified by hand on `coach-dev`**, against a real model rather than the stub: both
+agents are live and, in ordinary use, doing roughly what they were designed to — the
+project coach proposing and sizing board-level work from intake, the task teacher working
+a task's own checklist without reaching for `add_task`. No deploy-only surface is new here
+(no second Google integration, no Terraform change), so this milestone had no hand
+verification in its exit criteria the way M3's and M5's did; it was done anyway; nothing
+further was found.
+
 **The split is a routing decision, not an instruction branch.** `TurnService._resolve_agent`
 reads the turn's own session linkage — `task_id is None` or not — and picks
 `RunnerFactory.project_runner()` or `.task_runner()` before generation starts; the public
