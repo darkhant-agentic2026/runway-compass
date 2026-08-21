@@ -1,6 +1,6 @@
 """Per-invocation prompt assembly.
 
-docs/03-agent-design.md#coach_agent:
+docs/03-agent-design.md#project_coach-and-task_teacher:
 
 > Dynamic instruction is assembled per-invocation by a `before_agent_callback` that
 > injects: project goal, effective prefs, current task + its subtasks, last N task
@@ -66,7 +66,6 @@ BOARD_KEY = "temp:coach_board"
 FOCUS_KEY = "temp:coach_focus"
 OUTCOMES_KEY = "temp:coach_outcomes"
 LEARNER_KEY = "temp:coach_learner"
-MODE_KEY = "temp:coach_mode"
 #: Read by `research_agent`'s instruction. Prose rather than a number, because the model has
 #: to reason about what is *left* after the reading it has already chosen, and a bare
 #: integer in a template invites it to be treated as the answer rather than the ceiling.
@@ -310,7 +309,6 @@ class PromptBuilder:
             FOCUS_KEY: "",
             OUTCOMES_KEY: "",
             LEARNER_KEY: render_learner(LearnerProfile()),
-            MODE_KEY: "task",
             BUDGET_TEXT_KEY: render_budget(
                 None,
                 EffectivePrefs.model_construct(
@@ -367,7 +365,6 @@ class PromptBuilder:
                 FOCUS_KEY: render_focus(focus),
                 OUTCOMES_KEY: render_outcomes(board),
                 LEARNER_KEY: render_learner(user.learner_profile),
-                MODE_KEY: "intake" if linkage.task_id is None else "task",
                 BUDGET_TEXT_KEY: render_budget(focus, prefs),
                 PROJECT_ID_KEY: linkage.project_id,
                 TASK_ID_KEY: linkage.task_id or "",
@@ -388,7 +385,6 @@ __all__ = [
     "BUDGET_TEXT_KEY",
     "FOCUS_KEY",
     "LEARNER_KEY",
-    "MODE_KEY",
     "OUTCOMES_KEY",
     "PREFS_KEY",
     "PROJECT_KEY",

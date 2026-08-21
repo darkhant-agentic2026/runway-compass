@@ -235,9 +235,15 @@ async def test_the_tools_are_the_catalogue_the_design_lists(container) -> None:
     this list grows once more. Pinning it by name means a tool that is added without a
     docs row, or removed by a refactor, shows up here rather than as a model that quietly
     stops being able to do something.
+
+    Two agents, not one, since docs/09-roadmap.md#m6 (splitting the coach into a project
+    coach and a task teacher): `project_coach` has no item-level tool at all, and
+    `task_teacher` has no `add_task` — which is the structural half of the M6 fix.
+    `discard_task` and `ask_learner` are on both, and `add_subtask` is too: golden flow #2
+    breaks an oversized task into subtasks in the same intake turn that created it.
     """
-    names = {tool.name for tool in container.domain_tools.as_tools()}
-    assert names == {
+    project_names = {tool.name for tool in container.domain_tools.as_project_tools()}
+    assert project_names == {
         "list_tasks",
         "add_task",
         "add_subtask",
@@ -246,6 +252,14 @@ async def test_the_tools_are_the_catalogue_the_design_lists(container) -> None:
         "set_next_up",
         "reorder_task",
         "discard_task",
+        "ask_learner",
+        "update_project_prefs",
+    }
+
+    task_names = {tool.name for tool in container.domain_tools.as_task_tools()}
+    assert task_names == {
+        "list_tasks",
+        "add_subtask",
         "add_task_items",
         "update_task_item",
         "reorder_task_item",
@@ -253,8 +267,22 @@ async def test_the_tools_are_the_catalogue_the_design_lists(container) -> None:
         "delete_task_item",
         "complete_task_item",
         "ask_learner",
-        "update_project_prefs",
+        "discard_task",
     }
+
+    # No item-level tool ever reaches `project_coach`, and no `add_task` ever reaches
+    # `task_teacher` — the two properties the split exists for.
+    assert project_names.isdisjoint(
+        {
+            "add_task_items",
+            "update_task_item",
+            "reorder_task_item",
+            "move_task_items",
+            "delete_task_item",
+            "complete_task_item",
+        }
+    )
+    assert "add_task" not in task_names
 
 
 async def test_exactly_three_tools_are_gated_on_the_learners_confirmation(container) -> None:
@@ -277,12 +305,16 @@ async def test_exactly_three_tools_are_gated_on_the_learners_confirmation(contai
     `ask_learner` is deliberately *absent*. It asks the learner a question rather than for
     approval, so it requests its own confirmation from inside the tool body with a payload
     carrying the question — the static flag would post ADK's generic hint and no payload.
+
+    Checked against the union of both agents' catalogues: the gate is a property of the
+    tool, not of which agent holds it, so `discard_task` is gated identically wherever it
+    appears.
     """
-    gated = {
-        tool.name
-        for tool in container.domain_tools.as_tools()
-        if getattr(tool, "_require_confirmation", False)
-    }
+    catalogue = [
+        *container.domain_tools.as_project_tools(),
+        *container.domain_tools.as_task_tools(),
+    ]
+    gated = {tool.name for tool in catalogue if getattr(tool, "_require_confirmation", False)}
     assert gated == {"discard_task", "complete_task_item", "delete_task_item"}
 
 
@@ -607,7 +639,7 @@ async def test_moving_items_is_not_gated_on_the_learners_approval(container) -> 
     """
     gated = {
         tool.name
-        for tool in container.domain_tools.as_tools()
+        for tool in container.domain_tools.as_task_tools()
         if getattr(tool, "_require_confirmation", False)
     }
     assert "move_task_items" not in gated

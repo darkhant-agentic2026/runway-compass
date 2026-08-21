@@ -18,10 +18,11 @@ from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import BaseSessionService
 
 from coach.agents.autonomous_agent import build_autonomous_agent
-from coach.agents.coach_agent import build_coach_agent
+from coach.agents.project_coach import build_project_coach
 from coach.agents.prompt import PromptBuilder
 from coach.agents.research_agent import build_research_agent
 from coach.agents.research_tools import ResearchTools
+from coach.agents.task_teacher import build_task_teacher
 from coach.agents.tools import DomainTools
 from coach.core.app import APP_NAME
 from coach.core.config import Settings
@@ -56,34 +57,65 @@ class RunnerFactory:
         # bucket, and — worse — two places that could disagree about which bucket that is.
         #
         # A provider rather than the service, so that constructing the factory resolves no
-        # credentials. It is called in `runner()`, which is the first turn rather than
-        # startup, and `Runner` gets the real instance it validates for.
+        # credentials. It is called by whichever `*_runner()` method the first turn
+        # reaches, rather than at startup, and `Runner` gets the real instance it
+        # validates for.
         self._artifacts = artifacts
         self._model: BaseLlm | None = None
-        self._runner: Runner | None = None
+        self._project: Runner | None = None
+        self._task: Runner | None = None
         self._research: Runner | None = None
         self._autonomous: Runner | None = None
 
     def set_model(self, model: BaseLlm | None) -> None:
         """Install a model, discarding any cached runner. See the module docstring."""
         self._model = model
-        self._runner = None
+        self._project = None
+        self._task = None
         self._research = None
         self._autonomous = None
 
-    def runner(self) -> Runner:
-        if self._runner is None:
-            self._runner = Runner(
+    def project_runner(self) -> Runner:
+        """The `project_coach` runner — intake, and every later board-level conversation.
+
+        `services/turns.py` picks this one whenever the turn's session has no linked
+        task (`taskId: null`), which is the property that makes this agent's "no
+        item-level tool at all" true by construction rather than by prompt.
+        """
+        if self._project is None:
+            self._project = Runner(
                 app_name=APP_NAME,
-                agent=build_coach_agent(
+                agent=build_project_coach(
                     self._build_model(),
-                    tools=self._tools.as_tools(),
+                    tools=self._tools.as_project_tools(),
                     before_agent_callback=self._prompt,
                 ),
                 session_service=self._session_service,
                 artifact_service=self._artifacts(),
             )
-        return self._runner
+        return self._project
+
+    def task_runner(self) -> Runner:
+        """The `task_teacher` runner — the conversation about one task.
+
+        `services/turns.py` picks this one whenever the turn's session is linked to a
+        task. `DomainTools.as_task_tools()` has no `add_task`, which is the structural
+        half of docs/09-roadmap.md#m6's fix: a learner describing extra work here cannot
+        land on the board beside the task, because the tool that would do that is not in
+        this agent's list.
+        """
+        if self._task is None:
+            self._task = Runner(
+                app_name=APP_NAME,
+                agent=build_task_teacher(
+                    self._build_model(),
+                    tools=self._tools.as_task_tools(),
+                    before_agent_callback=self._prompt,
+                ),
+                session_service=self._session_service,
+                artifact_service=self._artifacts(),
+            )
+        return self._task
 
     def research_runner(self) -> Runner:
         """The `research_agent` runner, sharing everything but the agent.

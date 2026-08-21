@@ -8,7 +8,7 @@ docs/05-autonomous-runs.md#execution-semantics. The executor loads the run, resu
 | 1 | `select_next_task` | code |
 | 2 | `research` | `research_agent`, as an ordinary turn |
 | 3 | `post_report` | code — settles what the tool wrote |
-| 4 | `propose_tasks` | `coach_agent` with the reduced tool set |
+| 4 | `propose_tasks` | its own agent, with the reduced tool set |
 | 5 | `reprioritize` | code |
 
 **Each step commits its output to the ledger before the next begins.** That sentence is
@@ -356,7 +356,7 @@ class RunExecutor:
     async def _propose_tasks(
         self, principal: Principal, run: AutonomousRun, steps: dict[str, RunStep]
     ) -> dict[str, object]:
-        """A bounded `coach_agent` turn that may add prerequisites research turned up.
+        """A bounded `propose_tasks` turn that may add prerequisites research turned up.
 
         Runs with the **reduced tool set** (docs/03-agent-design.md#safety-rails-on-autonomy):
         no `discard_task`, no `update_learner_profile`, no `update_project_prefs`.

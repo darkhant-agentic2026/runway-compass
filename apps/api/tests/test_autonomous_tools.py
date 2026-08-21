@@ -7,8 +7,8 @@ instruction ("please do not discard tasks") would be an honour system, and one e
 a subtraction would silently re-admit every tool added afterwards.
 
 The forbidden-list test is therefore written to fail **when a new destructive tool is added
-to `as_tools` and not considered here** — which is the failure mode worth catching, since
-nothing else in the system would notice.
+to `as_project_tools` or `as_task_tools` and not considered here** — which is the failure
+mode worth catching, since nothing else in the system would notice.
 """
 
 from __future__ import annotations
@@ -60,23 +60,31 @@ def test_the_allowed_tools_are_present(container) -> None:
     assert {"add_task", "add_subtask", "reorder_task", "set_next_up", "list_tasks"} <= names
 
 
-def test_the_autonomous_set_is_a_subset_of_the_interactive_one(container) -> None:
+def test_the_autonomous_set_is_a_subset_of_the_interactive_ones(container) -> None:
     """A background run must not reach a tool the learner's own coach does not have.
 
-    Written as a subset rather than as a list, so it keeps meaning something as both sets
-    grow.
+    "The learner's own coach" is two agents since
+    docs/09-roadmap.md#m6--splitting-the-coach-into-a-project-coach-and-a-task-teacher, so
+    the bound is against their union — `add_task_items` is `task_teacher`'s and not
+    `project_coach`'s, for instance, and the autonomous set has to fit inside *some*
+    interactive agent's catalogue, not necessarily one alone.
+
+    Written as a subset rather than as a list, so it keeps meaning something as all three
+    sets grow.
     """
     tools: DomainTools = container.domain_tools
 
-    assert _names(tools.as_autonomous_tools()) <= _names(tools.as_tools())
+    interactive = _names(tools.as_project_tools()) | _names(tools.as_task_tools())
+    assert _names(tools.as_autonomous_tools()) <= interactive
 
 
 def test_the_propose_agent_is_built_with_that_set_and_not_the_full_one(container) -> None:
     """The wiring, not just the enumeration.
 
     `as_autonomous_tools` returning the right list is worth nothing if `autonomous_runner`
-    passes `as_tools()` — and that substitution would be invisible in every transcript,
-    because the model has no reason to reach for a forbidden tool in most runs.
+    passes the full interactive catalogue — and that substitution would be invisible in
+    every transcript, because the model has no reason to reach for a forbidden tool in
+    most runs.
     """
     runner = container.runners.autonomous_runner()
 
@@ -85,8 +93,11 @@ def test_the_propose_agent_is_built_with_that_set_and_not_the_full_one(container
     assert names == _names(container.domain_tools.as_autonomous_tools())
 
 
-def test_the_interactive_coach_still_has_the_full_set(container) -> None:
-    """The reduction is per-agent, not global."""
-    runner = container.runners.runner()
+def test_the_interactive_agents_still_have_discard_task(container) -> None:
+    """The reduction is per-agent, not global: both `project_coach` and `task_teacher`
+    keep `discard_task`, and only `propose_tasks` loses it."""
+    project_runner = container.runners.project_runner()
+    task_runner = container.runners.task_runner()
 
-    assert "discard_task" in {tool.name for tool in runner.agent.tools}
+    assert "discard_task" in {tool.name for tool in project_runner.agent.tools}
+    assert "discard_task" in {tool.name for tool in task_runner.agent.tools}

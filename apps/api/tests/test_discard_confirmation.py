@@ -426,14 +426,14 @@ async def test_the_opt_out_does_not_silence_the_destructive_gates(container) -> 
     """
     gated = {
         tool.name
-        for tool in container.domain_tools.as_tools()
+        for tool in container.domain_tools.as_task_tools()
         if getattr(tool, "_require_confirmation", False) is True
     }
     assert gated == {"discard_task", "delete_task_item"}
 
     dynamic = {
         tool.name
-        for tool in container.domain_tools.as_tools()
+        for tool in container.domain_tools.as_task_tools()
         if callable(getattr(tool, "_require_confirmation", False))
     }
     assert dynamic == {"complete_task_item"}

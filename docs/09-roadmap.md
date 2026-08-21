@@ -297,7 +297,7 @@ milestone and are settled, each taking its default. Q4 is due at M4.
 | `POST /api/projects/{id}/session` added | [04-api-contract.md](04-api-contract.md) has `POST /api/projects` *create* the intake session and nothing that resolves a project back to it. Every visit after the one that created it needs exactly that | `api/routers/projects.py` |
 | `projects/{id}.intakeSessionId` added | The alternative is a collection-group scan of the project's sessions on every board load. The scan survives as the fallback for projects created before the pointer, and repairs it when it runs | [02-data-model.md](02-data-model.md#projectsprojectid) |
 | The intake conversation lives **on the board screen** | [06-frontend.md](06-frontend.md#routes) gives the intake session no route of its own, and the board is the screen a new project lands on. Beside the board rather than on its own page is also what makes flow #1 legible — the learner watches cards appear as the coach proposes them | `pages/BoardPage.tsx` |
-| Prompt context is injected as **`temp:` state** | [03-agent-design.md](03-agent-design.md#coach_agent) says "injected as state"; `temp:` is the lifetime that means. Session `state` is stored as a JSON *string*, so a plain key would re-serialize the whole board onto the session document on every appended event, and ADK trims `temp:` deltas before persistence. The cost is one contentless event per turn, which the transcript drops | `agents/prompt.py` |
+| Prompt context is injected as **`temp:` state** | [03-agent-design.md](03-agent-design.md#project_coach-and-task_teacher) says "injected as state"; `temp:` is the lifetime that means. Session `state` is stored as a JSON *string*, so a plain key would re-serialize the whole board onto the session document on every appended event, and ADK trims `temp:` deltas before persistence. The cost is one contentless event per turn, which the transcript drops | `agents/prompt.py` |
 | `add_task`'s per-run cap lives in `temp:` state too | The cap is "≤ 5/run". A persisted counter would make the sixth task of a *conversation* impossible rather than the sixth of a turn | `agents/context.py` |
 | A failed tool **returns** a result rather than raising | An exception out of a tool aborts the invocation, so a model that asked for a nine-hour task would end the turn instead of being told the number is too big and trying again. Guards answer `{"ok": false, "error": …}`; anything that is not a `CoachError` still propagates | `agents/tools.py` |
 | `update_project_prefs` takes named arguments, not a patch object | [03-agent-design.md](03-agent-design.md#domain-tools) says "whitelist of keys". Spelling the keys out as parameters *is* the whitelist; an open patch argument would let the model write fields it invented onto the project document | `agents/tools.py` |
@@ -651,6 +651,59 @@ the first.
 to add optional topics to a study plan, the project coach proposes `add_task` from the
 intake session and the task teacher proposes `add_subtask` from the task session — never
 the reverse; the project coach has no item-level tool available to it at all.
+
+---
+
+## Status after M6
+
+**Met.** Golden flows #1, #2, and #7 pass on all four Playwright projects with
+`project_coach` and `task_teacher` in place of the single coach, alongside every earlier
+spec: 39 specs, 156 runs, including a full run of `coach.spec.ts`'s "discarding a task
+waits for the learner to say so" from inside a task's own workspace — the spec that
+exercises `discard_task` through `task_teacher` rather than `project_coach`.
+`project_coach`'s catalogue (`DomainTools.as_project_tools`) has no item-level tool at
+all; `task_teacher`'s (`as_task_tools`) has no `add_task` — the structural half of the
+fix, checked by name in `tests/test_agent_tools.py` rather than left to the instruction.
+586 backend tests, 281 web.
+
+**The split is a routing decision, not an instruction branch.** `TurnService._resolve_agent`
+reads the turn's own session linkage — `task_id is None` or not — and picks
+`RunnerFactory.project_runner()` or `.task_runner()` before generation starts; the public
+`AgentChoice` literal callers pass (`"coach"`, from the turns router, unchanged) is resolved
+to the concrete one internally, so nothing outside `services/turns.py` had to change to
+route correctly. `MODE_KEY` — the state key the old single instruction branched on in prose
+— is gone from `agents/prompt.py` entirely: once the branch became two instructions, nothing
+read it.
+
+**Deliberately deferred, and the milestone that needs it:**
+
+| Item | Needed by | Note |
+| --- | --- | --- |
+| `update_task`, `set_task_state`, `set_next_up`, `reorder_task` on `task_teacher` | — | Kept `project_coach`-only. Nothing in the current design or tests asks for "postpone this task" or "re-estimate this task" from inside its own conversation; add them to `as_task_tools` if that turns out to be wanted, rather than pre-emptively |
+| Everything still open after M5 | as recorded | Content scanning (M9), nightly evalsets and live-API tests (M7), `prod` and `terraform destroy` |
+
+**Decisions made during implementation** that the design documents did not fix:
+
+| Decision | Why | Where |
+| --- | --- | --- |
+| `discard_task` and `ask_learner` are on **both** catalogues | [09-roadmap.md](#m6--splitting-the-coach-into-a-project-coach-and-a-task-teacher)'s own sketch only says `task_teacher` "owns the checklist … and `add_subtask`", but a pre-existing regression test drives "discard that task" from inside a task's own session (`tests/test_discard_confirmation.py`, `coach.spec.ts`), and `ask_learner` was already reachable from the board session. Removing either to make the split cleaner would have failed a test that predates this milestone | `agents/tools.py` |
+| `add_subtask` is on **both** catalogues, not `task_teacher`-exclusive | Golden flow #2 breaks an oversized task into subtasks in the same intake turn that created it (`add_task` then three `add_subtask` calls, all from `project_coach`). Giving `task_teacher` the exclusive claim on `add_subtask` would have broken that flow; the tool that is exclusive to `task_teacher` is `add_task`'s absence, not `add_subtask`'s presence | `agents/tools.py` |
+| `services/turns.py` resolves `"coach"` to `"coach_project"` / `"coach_task"` **once, in `start`**, using the same linkage read that already existed for ownership checking | The alternative — branching inside each agent's `before_agent_callback` — is exactly the "one instruction serving two audiences" shape M6 exists to remove. Resolving before generation starts is also what makes the choice testable without a running turn (`test_the_interactive_agents_still_have_discard_task`) | `services/turns.py` |
+
+**One trap recurred, in a new place.** `integrations/stub_model.py`'s tool loop used
+`"add_task" not in tools` to mean "an agent with no domain tools at all" — true throughout
+M3–M5, when the only such agent existed for the disconnect suite's plain-streaming double.
+Splitting the coach made it false: `task_teacher`'s real, registered tool set also has no
+`add_task`, so unless the check changed, `discard_task`, `ask_learner`, and
+`complete_task_item` would have gone silently unreachable through the stub on that agent —
+every test that drives them from a task session would have hung or fallen back to prose,
+and nothing local would have named the reason. Fixed by checking membership in the full
+known tool vocabulary (`_DOMAIN_TOOLS`) instead of the presence of one specific tool. The
+general shape, for the table in [09-roadmap.md](#what-a-green-local-run-does-not-prove):
+**a test double's gating logic can encode an assumption about the *set* of production tool
+catalogues, which a later milestone that adds a catalogue silently breaks.** Any future
+split of an agent's tools is the place to check a hand-written double's tool-presence
+checks again, not just its scripted call sequences.
 
 ---
 

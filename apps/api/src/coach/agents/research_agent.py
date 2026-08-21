@@ -121,7 +121,7 @@ def build_research_agent(
     """The research agent, with `search_agent` exposed to it as an `AgentTool`.
 
     `tools` is `ResearchTools.as_tools()` and is passed in for the same reason
-    `build_coach_agent`'s is: it closes over the process's services, and an agent that
+    `build_project_coach`'s is: it closes over the process's services, and an agent that
     reached for a container would be unbuildable in a unit test.
     """
     return LlmAgent(
