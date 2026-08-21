@@ -1081,8 +1081,19 @@ class DomainTools:
             logger.info("agent tool refused", extra={"code": error.code, "detail": str(error)})
             return {"ok": False, "error": {"code": error.code, "message": str(error)}}
 
-    def as_tools(self) -> list[FunctionTool]:
-        """Every domain tool, in the order the model sees them.
+    def as_project_tools(self) -> list[FunctionTool]:
+        """The board-level catalogue — `project_coach`'s tools.
+
+        docs/09-roadmap.md#m6--splitting-the-coach-into-a-project-coach-and-a-task-teacher:
+        this agent reasons about the board as a whole and has **no item-level tool at
+        all** — nothing here can touch a checklist, because a checklist belongs to one
+        task and this conversation is never about one task.
+
+        `add_subtask` is here as well as on `as_task_tools`: golden flow #2 breaks an
+        oversized task into subtasks in the same intake turn that created it, so the
+        agent that just called `add_task` has to be able to follow it with `add_subtask`
+        without a second conversation. What it does *not* have is any checklist tool —
+        the subtask it creates is a new entry on the board, not a step inside one.
 
         Reads first, then writes: nothing depends on the ordering, but a catalogue that
         starts with "look at the board" reads as one, and the instruction tells the model
@@ -1099,6 +1110,32 @@ class DomainTools:
             # `adk_request_confirmation` call and runs the body only after the learner
             # answers, so the gate does not depend on the model respecting it.
             FunctionTool(self.discard_task, require_confirmation=True),
+            FunctionTool(self.add_subtask),
+            # Not `require_confirmation=True`: this tool asks for a *choice*, not for
+            # approval, so it posts its own confirmation carrying the question. See
+            # `_ask_learner`.
+            FunctionTool(self.ask_learner),
+            FunctionTool(self.update_project_prefs),
+        ]
+
+    def as_task_tools(self) -> list[FunctionTool]:
+        """The checklist catalogue — `task_teacher`'s tools.
+
+        docs/09-roadmap.md#m6--splitting-the-coach-into-a-project-coach-and-a-task-teacher:
+        this agent is the conversation about one task, and everything it can create —
+        `add_subtask`, a checklist step — is scoped inside that task. **There is no
+        `add_task` here.** That is the fix for the reported bug: a learner describing an
+        extra topic for the task in front of them used to reach the coach's `add_task`,
+        which puts a new entry beside the task on the board rather than inside it. An
+        agent that cannot call `add_task` cannot make that mistake, whatever the prompt
+        says.
+
+        `discard_task` is here for the same reason it is on `as_project_tools`: a learner
+        can say "discard this" from inside the task's own conversation as easily as from
+        the board, and the gate is the same one either way.
+        """
+        return [
+            FunctionTool(self.list_tasks),
             FunctionTool(self.add_subtask),
             FunctionTool(self.add_task_items),
             FunctionTool(self.update_task_item),
@@ -1137,7 +1174,7 @@ class DomainTools:
             # the project document because this runs while the tool call is being assembled,
             # and a Firestore read on that path would be one per gated call.
             FunctionTool(self.complete_task_item, require_confirmation=_confirm_completions),
-            FunctionTool(self.update_project_prefs),
+            FunctionTool(self.discard_task, require_confirmation=True),
         ]
 
     def as_autonomous_tools(self) -> list[FunctionTool]:

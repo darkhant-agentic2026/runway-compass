@@ -175,6 +175,32 @@ _MAX_SUBTASKS = 8
 #: test at all — a gate nothing can trip is a gate nothing verifies.
 _DISCARD_PATTERN = re.compile(r"\b(discard|drop)\b", re.IGNORECASE)
 
+#: Every tool name either `project_coach` or `task_teacher` might declare
+#: (docs/03-agent-design.md#domain-tools). Used only to tell "an agent with *no* domain
+#: tools at all" — the disconnect suite's plain streaming double — from either of the two
+#: real ones, neither of which carries the full catalogue after
+#: docs/09-roadmap.md#m6--splitting-the-coach-into-a-project-coach-and-a-task-teacher.
+_DOMAIN_TOOLS = frozenset(
+    {
+        "list_tasks",
+        "add_task",
+        "add_subtask",
+        "update_task",
+        "set_task_state",
+        "set_next_up",
+        "reorder_task",
+        "discard_task",
+        "add_task_items",
+        "update_task_item",
+        "reorder_task_item",
+        "move_task_items",
+        "delete_task_item",
+        "complete_task_item",
+        "ask_learner",
+        "update_project_prefs",
+    }
+)
+
 #: Task ids as `agents/prompt.py` renders them into the board: `(45 min, id=k_01J…)`.
 _TASK_ID_PATTERN = re.compile(r"id=([A-Za-z0-9_-]+)")
 
@@ -363,13 +389,16 @@ def _plan_tool_call(llm_request: Any) -> types.FunctionCall | None:
         plan = research_plan(research_budget_minutes(_instruction(llm_request)))
         return types.FunctionCall(name="post_research_report", args=plan)
 
-    if "add_task" not in tools:
+    if not tools & _DOMAIN_TOOLS:
         # No domain tools on this agent — the disconnect suite builds one that way, and
         # it must keep getting the plain streaming reply it asserts against.
         return None
 
     budget = budget_minutes(_instruction(llm_request))
 
+    # `task_teacher` has no `add_task` (docs/09-roadmap.md#m6), so `responses` can never
+    # hold one on that agent and this is naturally a no-op there rather than needing its
+    # own guard.
     created = _created_task(responses)
     if created is not None:
         task_id, minutes, title = created
@@ -433,13 +462,18 @@ def _plan_tool_call(llm_request: Any) -> types.FunctionCall | None:
             args={"item_id": match.group(1), "note": "you told me you had done it"},
         )
 
-    if _DISCARD_PATTERN.search(text):
+    if _DISCARD_PATTERN.search(text) and "discard_task" in tools:
         target = first_task_id(_instruction(llm_request))
         if target is not None:
             return types.FunctionCall(
                 name="discard_task",
                 args={"task_id": target, "reason": "You asked me to drop this one."},
             )
+        return None
+
+    if "add_task" not in tools:
+        # `task_teacher`: nothing left in this stub's repertoire is one of its tools, so
+        # it answers in prose rather than reaching for a call the agent does not have.
         return None
 
     asked = requested_minutes(text)

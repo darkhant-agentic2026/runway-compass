@@ -3,16 +3,16 @@
 docs/03-agent-design.md#autonomous_workflow, step 4: "May emit `add_task` / `add_subtask`
 calls if research revealed missing prerequisites. Bounded: ≤ 5 new tasks per run."
 
-It is a separate agent from `coach_agent` rather than the same one with a different
-message, and the difference is not cosmetic:
+It is a separate agent from `project_coach`/`task_teacher` rather than the same one with a
+different message, and the difference is not cosmetic:
 
 - **It runs with the reduced tool set** (`DomainTools.as_autonomous_tools`), so the safety
   rails are a property of the agent rather than of the instruction. A prompt that asks a
   model not to discard tasks is an honour system; an agent with no `discard_task` cannot.
-- **Nobody is reading.** `coach_agent`'s instruction is written for a conversation — it
-  asks questions, proposes, waits. Every one of those behaviours is wrong here, where the
-  reply goes into a transcript the learner will find tomorrow. So the instruction says to
-  act or to say nothing, and says it in the past tense.
+- **Nobody is reading.** The interactive agents' instructions are written for a
+  conversation — they ask questions, propose, wait. Every one of those behaviours is wrong
+  here, where the reply goes into a transcript the learner will find tomorrow. So the
+  instruction says to act or to say nothing, and says it in the past tense.
 - `thinking_level` is `low`, not `high`. docs/00-overview.md reserves `high` for research
   synthesis and the Socratic intake; this step is a bounded mechanical decision about
   whether one or two prerequisites are missing, which is exactly the kind the same document
@@ -88,7 +88,7 @@ def build_autonomous_agent(
 ) -> LlmAgent:
     """The `propose_tasks` agent.
 
-    `tools` is injected exactly as `build_coach_agent`'s is, and the caller is expected to
+    `tools` is injected exactly as `build_project_coach`'s is, and the caller is expected to
     pass `DomainTools.as_autonomous_tools()`. It is not defaulted here: a builder that
     reached for the reduced set itself would make "which tools does background work have"
     a fact split across two files, and the one place it should live is the method that
@@ -106,7 +106,7 @@ def build_autonomous_agent(
 
 
 def static_instruction(state: dict[str, str]) -> str:
-    """`INSTRUCTION` rendered against `state`, for the prompt test. See `coach_agent`."""
+    """`INSTRUCTION` rendered against `state`, for the prompt test. See `project_coach`."""
     rendered = INSTRUCTION
     for key, value in state.items():
         rendered = rendered.replace("{" + key + "}", value)

@@ -107,7 +107,7 @@ async def test_a_runner_can_open_an_invocation_context(deployed_artifacts) -> No
     # A scripted model so that no model client is built either; the artifact service is
     # what is under test.
     factory.set_model(ScriptedModel(chunks=["hi"], invocations=[]))
-    runner = factory.runner()
+    runner = factory.project_runner()
 
     context = runner._new_invocation_context(
         Session(id="s_1", app_name=APP_NAME, user_id="u_alice")

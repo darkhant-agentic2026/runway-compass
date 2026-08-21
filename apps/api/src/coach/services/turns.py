@@ -75,15 +75,37 @@ MAX_TURN_TEXT = 32_000
 #: (docs/03-agent-design.md#safety-rails-on-autonomy).
 AgentChoice = Literal["coach", "research", "propose"]
 
-#: `AgentChoice` to the factory method that builds its runner. A mapping rather than a
-#: chain of `if`s so that adding a fourth agent without a runner is a `KeyError` at the
-#: call site instead of a silent fall-through to the coach — which would be an unattended
-#: run holding the *full* tool set, and would look entirely normal in a transcript.
+#: What `"coach"` resolves to, once `start` knows whether the session is linked to a task
+#: (docs/09-roadmap.md#m6--splitting-the-coach-into-a-project-coach-and-a-task-teacher).
+#: `"research"` and `"propose"` already name a concrete agent and pass through `_resolve_agent`
+#: unchanged, so this is the union `_RUNNERS` actually indexes on.
+_ResolvedAgent = Literal["coach_project", "coach_task", "research", "propose"]
+
+#: The resolved agent to the factory method that builds its runner. A mapping rather than a
+#: chain of `if`s so that adding a fifth agent without a runner is a `KeyError` at the call
+#: site instead of a silent fall-through to one of the coaches — which would put a turn on
+#: the wrong tool set and would look entirely normal in a transcript.
 _RUNNERS: dict[str, Callable[[RunnerFactory], Runner]] = {
-    "coach": lambda factory: factory.runner(),
+    "coach_project": lambda factory: factory.project_runner(),
+    "coach_task": lambda factory: factory.task_runner(),
     "research": lambda factory: factory.research_runner(),
     "propose": lambda factory: factory.autonomous_runner(),
 }
+
+
+def _resolve_agent(agent: AgentChoice, task_id: str | None) -> _ResolvedAgent:
+    """`"coach"` is the router's request for "the interactive agent"; which one that
+    means depends on whether the turn's session is linked to a task — `project_coach` for
+    the board-level (and intake) conversation, `task_teacher` for one task's own. Deciding
+    it here, once, rather than in each agent's instruction is the structural half of the
+    M6 fix: `task_teacher` simply has no `add_task` tool, so a learner describing extra
+    work inside a task's conversation cannot land it on the board by construction.
+
+    `"research"` and `"propose"` already name a concrete agent and are untouched.
+    """
+    if agent != "coach":
+        return agent
+    return "coach_task" if task_id else "coach_project"
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,7 +214,8 @@ class TurnService:
             )
         if len(text) > MAX_TURN_TEXT:
             raise ValidationProblem(f"A turn's text is capped at {MAX_TURN_TEXT} characters.")
-        await self._sessions.require_owned(principal, session_id)
+        linkage = await self._sessions.require_owned(principal, session_id)
+        resolved_agent = _resolve_agent(agent, linkage.task_id)
 
         content = await self._build_content(principal, text, attachments or [], confirmation)
         if content is None:
@@ -208,7 +231,7 @@ class TurnService:
             )
         )
         task = self._registry.spawn(
-            turn.id, self._generate(turn, principal, content, agent, state_delta)
+            turn.id, self._generate(turn, principal, content, resolved_agent, state_delta)
         )
         if on_finished is not None:
             task.add_done_callback(lambda _: _run_detached(on_finished()))
@@ -358,7 +381,7 @@ class TurnService:
         turn: Turn,
         principal: Principal,
         content: types.Content,
-        agent: AgentChoice = "coach",
+        agent: _ResolvedAgent,
         state_delta: dict[str, Any] | None = None,
     ) -> None:
         """The detached task. Nothing awaits this; the registry only holds it."""

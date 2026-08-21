@@ -4,17 +4,19 @@ An adaptive agentic coach that turns your technical goals into bite-sized tasks,
 the material for the next one while you're away, and adjusts how it guides you as it
 learns how you think.
 
-**Status:** M0–M5 landed and deployed. A signed-in user can work the board by hand, hold a
+**Status:** M0–M6 landed and deployed. A signed-in user can work the board by hand, hold a
 streaming conversation with the coach about an uploaded screenshot, and have the coach
-*change the board* — proposing a task list through a Socratic intake, splitting oversized
-work to fit the project's own duration budget, and asking before it discards anything.
-The coach also researches on its own: it prepares the materials for a task — articles, a
-duration-checked video, an exercise it wrote — either on a schedule while you're away, or
-the moment you ask it to, and reports what changed with one-press undo. Generation
-survives a dropped socket and resumes across instances. CI builds, tests, and deploys on
-merge.
+*change the board* — a Socratic **project coach** proposes a task list from intake, splits
+oversized work to fit the project's own duration budget, and asks before it discards
+anything. A separate **task teacher** runs the conversation about one task and owns its
+checklist, so it has no tool that can put new work on the board instead of inside the task
+in front of the learner. The coach also researches on its own: it prepares the materials
+for a task — articles, a duration-checked video, an exercise it wrote — either on a
+schedule while you're away, or the moment you ask it to, and reports what changed with
+one-press undo. Generation survives a dropped socket and resumes across instances. CI
+builds, tests, and deploys on merge.
 
-The design is in [`docs/`](docs/). [09-roadmap.md](docs/09-roadmap.md#status-after-m5)
+The design is in [`docs/`](docs/). [09-roadmap.md](docs/09-roadmap.md#status-after-m6)
 records what is deferred, what was decided during implementation, and — worth reading
 before writing anything — the failure modes a fully green local test run did not catch.
 
@@ -81,25 +83,29 @@ steps each environment needs before its first `terraform apply`.
 
 ## Next step
 
-**M6** in
-[the roadmap](docs/09-roadmap.md#m6--splitting-the-coach-into-a-project-coach-and-a-task-teacher-05-week):
-splitting the one coach agent into a project coach (intake, no item tools) and a task
-teacher (owns the checklist, `add_subtask`). The rest of the learner-model work —
-`CoachMemoryService`, session-close summarization into a versioned learner profile, prompt
-construction that visibly changes guidance style and verbosity from it, and the "What your
-coach knows about you" settings screen — follows at
-[M7](docs/09-roadmap.md#m7--learner-model-and-adaptation-1-week).
+**M7** in
+[the roadmap](docs/09-roadmap.md#m7--learner-model-and-adaptation-1-week): the learner
+model and adaptation. Task-level preference overrides, `CoachMemoryService` and
+session-close summarization into a versioned learner profile, a typed
+`update_learner_profile` tool with an audit trail, prompt construction that visibly changes
+guidance style and verbosity from what the coach has learned, and the "What your coach
+knows about you" settings screen with per-field edit and reset. M7 depends on M6 — its
+profile-driven prompt changes assume the project-coach/task-teacher split already exists,
+which is why M6 landed out of roadmap order, ahead of it.
 
-Read [Status after M5](docs/09-roadmap.md#status-after-m5) first, and then the trap tables
-it points at — earlier milestones' failure modes recur, and M5's own two rows
-([the e2e-found four](docs/09-roadmap.md#four-more-rows-for-the-table-above) and
-[the hand-verification-found two](docs/09-roadmap.md#two-more-rows-found-by-the-hand-verification-rather-than-the-e2e-suite))
-are the freshest evidence that a green local gate is not the same claim as a green
-deployed one.
+Read [Status after M6](docs/09-roadmap.md#status-after-m6) first. The coach is two agents
+now, `project_coach` and `task_teacher`, chosen by `TurnService._resolve_agent` from the
+turn's own session linkage rather than by either instruction arguing for itself in prose —
+and one trap recurred in a new place doing it: a hand-written test double
+(`integrations/stub_model.py`) had encoded an assumption about the *set* of production tool
+catalogues, which splitting those catalogues silently broke. The same question is worth
+asking again at M7 — does every local double still match the shape of what it stands in
+for, now that `CoachMemoryService` and a profile summarizer are new state both agents read.
 
-M5 is verified on `coach-dev` against a real Cloud Scheduler tick, real Cloud Tasks
-delivery, and a real model: autonomous research completes end to end, including a
-duration-checked YouTube recommendation landing in a task's checklist. That hand
-verification is what found M5's own two post-gate defects, both now fixed — the pattern
-holding across every milestone so far is that the *first* deployed run of a new
-Google-service integration finds something a fully green local suite did not.
+M6 has been verified by hand on `coach-dev`: both agents are live and, in ordinary use,
+doing what they were designed to. Earlier milestones' failure modes still recur, and the
+trap tables after [M2](docs/09-roadmap.md#what-a-green-local-run-does-not-prove),
+[M4](docs/09-roadmap.md#five-more-rows-for-the-table-above), and
+[M5](docs/09-roadmap.md#four-more-rows-for-the-table-above) are the evidence that a green
+local gate is not the same claim as a green deployed one — M7's new Firestore queries and
+new writer are exactly the kind of surface those tables warn about.
