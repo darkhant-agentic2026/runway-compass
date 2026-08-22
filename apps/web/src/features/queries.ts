@@ -17,6 +17,7 @@ import { api, ApiError, newIdempotencyKey } from '@/lib/api';
 import { orderForMove } from '@/lib/ordering';
 import type {
   GlobalPrefs,
+  Me,
   Project,
   ProjectPrefs,
   SessionEvent,
@@ -777,6 +778,20 @@ export function usePatchGlobalPrefs() {
       queryClient.setQueryData(queryKeys.me, me);
       // Every project's effective prefs may have moved with the global layer.
       void queryClient.invalidateQueries({ queryKey: ['project'] });
+    },
+  });
+}
+
+export function usePatchLearnerProfile() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: Parameters<typeof api.patchLearnerProfile>[0]) =>
+      api.patchLearnerProfile(patch),
+    onSuccess(profile) {
+      queryClient.setQueryData<Me>(queryKeys.me, (previous) =>
+        previous ? { ...previous, learnerProfile: profile } : previous,
+      );
+      void queryClient.invalidateQueries({ queryKey: queryKeys.me });
     },
   });
 }

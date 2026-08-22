@@ -198,6 +198,10 @@ _DOMAIN_TOOLS = frozenset(
         "complete_task_item",
         "ask_learner",
         "update_project_prefs",
+        "update_project_plan",
+        "update_learner_profile",
+        "remember",
+        "load_memory",
     }
 )
 
@@ -470,6 +474,30 @@ def _plan_tool_call(llm_request: Any) -> types.FunctionCall | None:
                 args={"task_id": target, "reason": "You asked me to drop this one."},
             )
         return None
+
+    if re.search(r"\b(propose a plan|update the plan|suggest a plan)\b", text, re.I) and (
+        "update_project_plan" in tools
+    ):
+        return types.FunctionCall(
+            name="update_project_plan",
+            args={
+                "summary": "Study plan for this project",
+                "tasks": [
+                    {
+                        "title": "Phase 1: Foundations",
+                        "description": "Core concepts and setup",
+                        "estimated_minutes": budget,
+                        "needs_research": True,
+                    },
+                    {
+                        "title": "Phase 2: Practical project",
+                        "description": "Hands-on implementation",
+                        "estimated_minutes": budget,
+                        "needs_research": True,
+                    },
+                ],
+            },
+        )
 
     if "add_task" not in tools:
         # `task_teacher`: nothing left in this stub's repertoire is one of its tools, so

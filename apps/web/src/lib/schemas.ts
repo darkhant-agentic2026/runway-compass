@@ -31,24 +31,17 @@ export const researchStatusSchema = z.enum([
 export const originSchema = z.enum(['user', 'agent']);
 export const projectStatusSchema = z.enum(['active', 'paused', 'archived']);
 export const guidanceStyleSchema = z.enum(['socratic', 'direct', 'mixed']);
+export type GuidanceStyle = z.infer<typeof guidanceStyleSchema>;
+
+export const guidanceLevelSchema = z.enum(['mostly_guided', 'balanced', 'mostly_unguided']);
+export type GuidanceLevel = z.infer<typeof guidanceLevelSchema>;
+
 export const verbositySchema = z.enum(['terse', 'balanced', 'thorough']);
+export type Verbosity = z.infer<typeof verbositySchema>;
+
 export const researchDepthSchema = z.enum(['light', 'standard', 'deep']);
+export type ResearchDepth = z.infer<typeof researchDepthSchema>;
 
-export const rollupSchema = z.object({
-  subtaskCount: z.number().int(),
-  completedSubtasks: z.number().int(),
-  totalEstimatedMinutes: z.number().int(),
-});
-export type Rollup = z.infer<typeof rollupSchema>;
-
-/**
- * One entry on a leaf task's checklist (docs/02-data-model.md#task-items).
- *
- * `details` is asymmetric between guided and unguided, and the UI has to respect that:
- * for an unguided item it is the instruction and is rendered; for a guided one it is the
- * coach's teaching notes, the exercise's answer lives in there, and it must **not** be
- * rendered (docs/06-frontend.md).
- */
 export const taskItemSchema = z.object({
   itemId: z.string(),
   shortDescription: z.string(),
@@ -62,6 +55,13 @@ export const taskItemSchema = z.object({
 });
 export type TaskItem = z.infer<typeof taskItemSchema>;
 
+export const rollupSchema = z.object({
+  subtaskCount: z.number().int(),
+  completedSubtasks: z.number().int(),
+  totalEstimatedMinutes: z.number().int(),
+});
+export type Rollup = z.infer<typeof rollupSchema>;
+
 export const taskSchema = z.object({
   id: z.string(),
   projectId: z.string(),
@@ -71,25 +71,17 @@ export const taskSchema = z.object({
   description: z.string().default(''),
   state: taskStateSchema,
   postponedUntil: z.string().nullable().default(null),
-  estimatedMinutes: z.number().int(),
+  estimatedMinutes: z.number().int().default(45),
   actualMinutes: z.number().int().nullable().default(null),
   order: z.string(),
   sessionId: z.string().nullable().default(null),
   needsResearch: z.boolean().default(true),
-  researchStatus: researchStatusSchema.default('none'),
-  /**
-   * When the learner queued research by hand, or `null`. Set iff `researchStatus` is
-   * `pending`, and the pair is what the scheduler treats as priority work
-   * (docs/05-autonomous-runs.md#two-kinds-of-work-and-the-only-difference-between-them).
-   * The UI reads `researchStatus === 'pending'` for the "Starts soon" badge; this is here
-   * for ordering and for saying *when* they asked.
-   */
+  researchStatus: z.enum(['none', 'pending', 'in_progress', 'done', 'failed']).default('none'),
   researchRequestedAt: z.string().nullable().default(null),
   latestReportId: z.string().nullable().default(null),
-  /** Leaf tasks only; mutually exclusive with `rollup`. */
   items: z.array(taskItemSchema).default([]),
   rollup: rollupSchema.nullable().default(null),
-  origin: originSchema.default('user'),
+  origin: z.enum(['user', 'agent']).default('user'),
   createdAt: z.string().nullable().default(null),
   updatedAt: z.string().nullable().default(null),
   completedAt: z.string().nullable().default(null),
@@ -104,6 +96,7 @@ export type TaskWithSubtasks = z.infer<typeof taskWithSubtasksSchema>;
 export const projectPrefsSchema = z.object({
   defaultTaskMinutes: z.number().int().nullable().default(null),
   guidanceStyle: guidanceStyleSchema.nullable().default(null),
+  guidanceLevel: guidanceLevelSchema.nullable().default(null),
   researchDepth: researchDepthSchema.nullable().default(null),
   allowVideos: z.boolean().nullable().default(null),
   confirmItemCompletion: z.boolean().nullable().default(null),
@@ -143,6 +136,7 @@ export type Project = z.infer<typeof projectSchema>;
 export const effectivePrefsSchema = z.object({
   defaultTaskMinutes: z.number().int(),
   guidanceStyle: guidanceStyleSchema,
+  guidanceLevel: guidanceLevelSchema.default('balanced'),
   verbosity: verbositySchema,
   timezone: z.string(),
   researchDepth: researchDepthSchema,
@@ -177,6 +171,10 @@ export const learnerProfileSchema = z.object({
   version: z.number().int().default(0),
 });
 export type LearnerProfile = z.infer<typeof learnerProfileSchema>;
+
+export const learnerProfileResponseSchema = z.object({
+  learnerProfile: learnerProfileSchema,
+});
 
 export const meSchema = z.object({
   uid: z.string(),

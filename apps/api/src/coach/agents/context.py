@@ -64,6 +64,10 @@ RESEARCH_BUDGET_KEY = "temp:coach_research_budget"
 #: "≤ 5/run", and a persisted counter would exhaust the budget forever after five tasks.
 ADDED_TASKS_KEY = "temp:coach_added_tasks"
 
+#: Flag tracking whether `update_learner_profile` was already called in this turn.
+#: docs/03-agent-design.md#memory-tools: "Rate-limited to 1 call/turn".
+PROFILE_UPDATED_KEY = "temp:coach_profile_updated"
+
 #: docs/03-agent-design.md, `add_task`: "≤ 5/run".
 MAX_TASKS_PER_RUN = 5
 
@@ -79,6 +83,7 @@ class AgentContext:
     project_id: str
     task_id: str | None
     default_task_minutes: int
+    session_id: str | None = None
 
     @property
     def max_task_minutes(self) -> int:
@@ -101,11 +106,17 @@ def agent_context(tool_context: Context) -> AgentContext:
             "This conversation is not linked to a project, so the board cannot be "
             "changed from it."
         )
+    session_id = (
+        tool_context.session.id
+        if hasattr(tool_context, "session") and tool_context.session is not None
+        else None
+    )
     return AgentContext(
         principal=Principal(uid=tool_context.user_id, source="agent"),
         project_id=str(project_id),
         task_id=(str(state[TASK_ID_KEY]) if state.get(TASK_ID_KEY) else None),
         default_task_minutes=int(state.get(DEFAULT_MINUTES_KEY) or 45),
+        session_id=session_id,
     )
 
 
@@ -124,17 +135,33 @@ def claim_task_slot(tool_context: Context) -> None:
     tool_context.state[ADDED_TASKS_KEY] = used + 1
 
 
+def claim_profile_update_slot(tool_context: Context) -> None:
+    """Spend this turn's `update_learner_profile` allowance (1 per turn).
+
+    Raises:
+        ValidationProblem: when this turn has already updated the learner profile.
+    """
+    if tool_context.state.get(PROFILE_UPDATED_KEY):
+        raise ValidationProblem(
+            "The learner profile has already been updated in this turn. "
+            "Only one profile update per turn is allowed."
+        )
+    tool_context.state[PROFILE_UPDATED_KEY] = True
+
+
 __all__ = [
     "ADDED_TASKS_KEY",
     "CONFIRM_ITEMS_KEY",
     "DEFAULT_MINUTES_KEY",
     "MAX_TASKS_PER_RUN",
     "MAX_TASK_MINUTES_FACTOR",
+    "PROFILE_UPDATED_KEY",
     "PROJECT_ID_KEY",
     "RESEARCH_BUDGET_KEY",
     "RUN_ID_KEY",
     "TASK_ID_KEY",
     "AgentContext",
     "agent_context",
+    "claim_profile_update_slot",
     "claim_task_slot",
 ]

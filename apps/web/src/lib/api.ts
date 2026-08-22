@@ -16,6 +16,7 @@ import { getAuthProvider } from '@/lib/auth';
 import {
   boardSchema,
   effectivePrefsResponseSchema,
+  learnerProfileResponseSchema,
   meSchema,
   problemSchema,
   projectListSchema,
@@ -121,6 +122,23 @@ export const api = {
       body: patch,
       ...(idempotencyKey ? { idempotencyKey } : {}),
     }),
+
+  patchLearnerProfile: (
+    patch: Partial<{
+      thinkingStyle: string;
+      strengths: string[];
+      gaps: string[];
+      technologies: Array<{ name: string; level: string; evidence?: string }>;
+      pacing: string;
+      feedbackNotes: string[];
+    }>,
+    idempotencyKey?: string,
+  ) =>
+    request('/api/me/learner-profile', learnerProfileResponseSchema, {
+      method: 'PATCH',
+      body: patch,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    }).then((response) => response.learnerProfile),
 
   // --- projects ---------------------------------------------------------------------
 

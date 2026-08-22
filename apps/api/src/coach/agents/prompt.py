@@ -91,14 +91,22 @@ def render_prefs(prefs: EffectivePrefs) -> str:
     # bearing rather than redundant: `integrations/stub_model.py` reads the budget back
     # out of the rendered instruction, which is what makes golden flow #7 prove the
     # preference reached the model instead of asserting a number the test itself supplied.
-    return (
+    lines = [
         f"- Default task length: {prefs.default_task_minutes} minutes "
-        f"({format_minutes(prefs.default_task_minutes)}) — the budget a task must fit\n"
-        f"- Guidance style: {prefs.guidance_style}\n"
-        f"- Verbosity: {prefs.verbosity}\n"
+        f"({format_minutes(prefs.default_task_minutes)}) — the budget a task must fit",
+        f"- Guidance style: {prefs.guidance_style}",
+        f"- Guidance level (hands-on guidance amount): {prefs.guidance_level}",
+        f"- Verbosity: {prefs.verbosity}",
         f"- Research depth: {prefs.research_depth}; "
-        f"videos {'allowed' if prefs.allow_videos else 'not wanted'}"
-    )
+        f"videos {'allowed' if prefs.allow_videos else 'not wanted'}",
+    ]
+    if prefs.preferred_sources:
+        sources_str = ", ".join(prefs.preferred_sources)
+        lines.append(f"- Topics/sources to prioritize and reinforce: {sources_str}")
+    if prefs.avoid_sources:
+        sources_str = ", ".join(prefs.avoid_sources)
+        lines.append(f"- Topics/sources to skip or avoid: {sources_str}")
+    return "\n".join(lines)
 
 
 def render_task(task: Task, *, indent: str = "") -> str:
@@ -226,9 +234,8 @@ def render_outcomes(board: list[TaskWithSubtasks]) -> str:
 def render_learner(profile: LearnerProfile) -> str:
     """The `learnerProfile` summary.
 
-    Empty until M7 fills it, which is why this says so explicitly rather than rendering an
-    empty section: a blank heading reads to a model as "nothing is known and that is
-    surprising", and an absent one is a placeholder that raises.
+    Renders the coach's current beliefs about the learner: thinking style, strengths,
+    gaps, technology proficiency, pacing, and recent feedback observations.
     """
     lines: list[str] = []
     if profile.thinking_style:
@@ -242,6 +249,9 @@ def render_learner(profile: LearnerProfile) -> str:
         lines.append(f"- Technologies: {known}")
     if profile.pacing:
         lines.append(f"- Pacing: {profile.pacing}")
+    if profile.feedback_notes:
+        recent = profile.feedback_notes[-5:]
+        lines.append(f"- Recent observations: {'; '.join(recent)}")
     if not lines:
         return "Nothing recorded yet — you are meeting this learner for the first time."
     return "\n".join(lines)

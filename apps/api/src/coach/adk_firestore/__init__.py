@@ -11,10 +11,20 @@ service.
 
 from __future__ import annotations
 
+from coach.adk_firestore.memory_service import (
+    MEMORIES_COLLECTION,
+    CoachMemoryService,
+)
 from coach.adk_firestore.session_service import (
     CoachSessionService,
     SessionLinkage,
     StoredEvent,
 )
 
-__all__ = ["CoachSessionService", "SessionLinkage", "StoredEvent"]
+__all__ = [
+    "MEMORIES_COLLECTION",
+    "CoachMemoryService",
+    "CoachSessionService",
+    "SessionLinkage",
+    "StoredEvent",
+]

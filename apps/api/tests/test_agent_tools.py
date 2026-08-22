@@ -254,6 +254,10 @@ async def test_the_tools_are_the_catalogue_the_design_lists(container) -> None:
         "discard_task",
         "ask_learner",
         "update_project_prefs",
+        "update_project_plan",
+        "update_learner_profile",
+        "remember",
+        "load_memory",
     }
 
     task_names = {tool.name for tool in container.domain_tools.as_task_tools()}
@@ -268,6 +272,10 @@ async def test_the_tools_are_the_catalogue_the_design_lists(container) -> None:
         "complete_task_item",
         "ask_learner",
         "discard_task",
+        "update_project_prefs",
+        "update_learner_profile",
+        "remember",
+        "load_memory",
     }
 
     # No item-level tool ever reaches `project_coach`, and no `add_task` ever reaches
@@ -285,9 +293,9 @@ async def test_the_tools_are_the_catalogue_the_design_lists(container) -> None:
     assert "add_task" not in task_names
 
 
-async def test_exactly_three_tools_are_gated_on_the_learners_confirmation(container) -> None:
-    """docs/03-agent-design.md: `discard_task`, `complete_task_item`, and
-    `delete_task_item` "require user confirmation".
+async def test_the_gated_tools_require_user_confirmation(container) -> None:
+    """docs/03-agent-design.md: `discard_task`, `complete_task_item`, `delete_task_item`,
+    and `update_project_plan` "require user confirmation".
 
     The gate is ADK's `require_confirmation`, so it holds whether or not the model
     cooperates — which is the difference between a gate and an instruction. Asserted
@@ -315,7 +323,12 @@ async def test_exactly_three_tools_are_gated_on_the_learners_confirmation(contai
         *container.domain_tools.as_task_tools(),
     ]
     gated = {tool.name for tool in catalogue if getattr(tool, "_require_confirmation", False)}
-    assert gated == {"discard_task", "complete_task_item", "delete_task_item"}
+    assert gated == {
+        "discard_task",
+        "complete_task_item",
+        "delete_task_item",
+        "update_project_plan",
+    }
 
 
 async def test_an_oversized_task_is_refused_rather_than_created(
@@ -684,3 +697,106 @@ async def test_a_subtask_change_also_names_the_task_the_learner_has_open(
     assert fixture["second"]["id"] in named
     # The one the workspace is keyed on.
     assert fixture["parent"]["id"] in named
+
+
+async def test_update_project_prefs_tool(client: httpx.AsyncClient, container) -> None:
+    """The coach can adjust project-level preferences (duration, guidance level, topics)."""
+    project = await _project(client, "Advanced Rust")
+    session_id = await _intake_session(client, project["id"])
+
+    # Build context for tool
+    from coach.agents.context import (
+        DEFAULT_MINUTES_KEY,
+        PROJECT_ID_KEY,
+        TASK_ID_KEY,
+    )
+
+    class _FakeToolContext:
+        def __init__(self, uid: str, sid: str, pid: str) -> None:
+            self.user_id = uid
+            self.session = type("_S", (), {"id": sid})()
+            self.state = {
+                PROJECT_ID_KEY: pid,
+                TASK_ID_KEY: "",
+                DEFAULT_MINUTES_KEY: 45,
+            }
+
+    ctx = _FakeToolContext("u_alice", session_id, project["id"])
+    result = await container.domain_tools.update_project_prefs(
+        default_task_minutes=120,
+        guidance_level="mostly_guided",
+        preferred_sources=["tokio", "async-std"],
+        avoid_sources=["actix-web"],
+        research_depth="deep",
+        tool_context=ctx,
+    )
+    assert result["ok"] is True
+    prefs = result["effectivePrefs"]
+    assert prefs["defaultTaskMinutes"] == 120
+    assert prefs["guidanceLevel"] == "mostly_guided"
+    assert prefs["preferredSources"] == ["tokio", "async-std"]
+    assert prefs["avoidSources"] == ["actix-web"]
+    assert prefs["researchDepth"] == "deep"
+
+    # Verify reflected in GET /api/projects/{id}/effective-prefs
+    effective = (await client.get(f"/api/projects/{project['id']}/effective-prefs")).json()
+    assert effective["effectivePrefs"]["guidanceLevel"] == "mostly_guided"
+    assert effective["effectivePrefs"]["preferredSources"] == ["tokio", "async-std"]
+
+
+async def test_update_project_plan_tool(client: httpx.AsyncClient, container) -> None:
+    """The coach can propose/update an overall project plan with a list of tasks."""
+    project = await _project(client, "Distributed Consensus")
+    session_id = await _intake_session(client, project["id"])
+
+    from coach.agents.context import DEFAULT_MINUTES_KEY, PROJECT_ID_KEY, TASK_ID_KEY
+
+    class _FakeToolContext:
+        def __init__(self, uid: str, sid: str, pid: str) -> None:
+            self.user_id = uid
+            self.session = type("_S", (), {"id": sid})()
+            self.state = {
+                PROJECT_ID_KEY: pid,
+                TASK_ID_KEY: "",
+                DEFAULT_MINUTES_KEY: 45,
+            }
+
+    ctx = _FakeToolContext("u_alice", session_id, project["id"])
+    result = await container.domain_tools.update_project_plan(
+        summary="3-part learning roadmap for Raft consensus",
+        goal="Build a working replicated state machine",
+        tasks=[
+            {
+                "title": "Leader election",
+                "description": "Understand term numbers and election timers",
+                "estimated_minutes": 45,
+                "needs_research": True,
+            },
+            {
+                "title": "Log replication",
+                "description": "Heartbeats and entry commit consensus",
+                "estimated_minutes": 60,
+                "needs_research": True,
+                "subtasks": [
+                    {"title": "AppendEntries RPC", "estimated_minutes": 30},
+                    {"title": "Log matching invariant", "estimated_minutes": 30},
+                ],
+            },
+        ],
+        tool_context=ctx,
+    )
+    assert result["ok"] is True
+    assert result["accepted"] is True
+    assert result["tasksCount"] == 2
+
+    # Verify project goal was updated
+    proj_data = (await client.get(f"/api/projects/{project['id']}")).json()
+    assert proj_data["goal"] == "Build a working replicated state machine"
+
+    # Verify tasks and subtasks are on the board
+    board = await _board(client, project["id"])
+    assert len(board) == 2
+    assert board[0]["title"] == "Leader election"
+    assert board[1]["title"] == "Log replication"
+    assert len(board[1]["subtasks"]) == 2
+    assert board[1]["subtasks"][0]["title"] == "AppendEntries RPC"

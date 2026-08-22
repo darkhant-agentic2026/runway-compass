@@ -24,6 +24,7 @@ WRITABLE_PREF_KEYS = frozenset(
     {
         "defaultTaskMinutes",
         "guidanceStyle",
+        "guidanceLevel",
         "researchDepth",
         "allowVideos",
         "confirmItemCompletion",

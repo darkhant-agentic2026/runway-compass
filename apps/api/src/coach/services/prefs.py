@@ -13,12 +13,19 @@ full inherit/override matrix).
 
 from __future__ import annotations
 
-from coach.services.models import EffectivePrefs, GlobalPrefs, ProjectPrefs, ResearchDepth
+from coach.services.models import (
+    EffectivePrefs,
+    GlobalPrefs,
+    GuidanceLevel,
+    ProjectPrefs,
+    ResearchDepth,
+)
 
 #: Defaults for the project-scoped preferences that have no global counterpart. A `None`
 #: on one of these means "unset", not "inherit", because there is nothing to inherit from.
 DEFAULT_RESEARCH_DEPTH: ResearchDepth = "standard"
 DEFAULT_ALLOW_VIDEOS = True
+DEFAULT_GUIDANCE_LEVEL: GuidanceLevel = "balanced"
 #: The gate on `complete_task_item` is on unless a project turns it off. Completing the
 #: last step completes the task, so this default is what keeps docs/10-risks.md Q1 —
 #: "completion is the learner's click" — true without the learner having to opt in.
@@ -45,6 +52,7 @@ def resolve_prefs(
             project.default_task_minutes, global_prefs.default_task_minutes
         ),
         guidance_style=inherited(project.guidance_style, global_prefs.guidance_style),
+        guidance_level=inherited(project.guidance_level, DEFAULT_GUIDANCE_LEVEL),
         # Not overridable per project: the project prefs schema in docs/02-data-model.md
         # carries neither of these.
         verbosity=global_prefs.verbosity,

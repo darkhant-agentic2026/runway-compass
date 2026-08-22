@@ -18,6 +18,7 @@ from coach.services.models import (
     AutonomousRun,
     EffectivePrefs,
     GlobalPrefs,
+    GuidanceLevel,
     GuidanceStyle,
     ItemFeedback,
     LearnerProfile,
@@ -73,11 +74,19 @@ class GlobalPrefsPatch(RequestModel):
     autonomous_quiet_hours: QuietHoursPatch | None = None
 
 
+class TechnologyBeliefPatch(RequestModel):
+    name: str
+    level: str
+    evidence: str = ""
+
+
 class LearnerProfilePatch(RequestModel):
     thinking_style: str | None = Field(default=None, max_length=500)
     strengths: list[str] | None = None
     gaps: list[str] | None = None
+    technologies: list[TechnologyBeliefPatch] | None = None
     pacing: str | None = None
+    feedback_notes: list[str] | None = None
 
 
 # --- projects ------------------------------------------------------------------------
@@ -91,6 +100,7 @@ class ProjectCreate(RequestModel):
 class ProjectPrefsPatch(RequestModel):
     default_task_minutes: Minutes | None = None
     guidance_style: GuidanceStyle | None = None
+    guidance_level: GuidanceLevel | None = None
     research_depth: ResearchDepth | None = None
     allow_videos: bool | None = None
     confirm_item_completion: bool | None = None
@@ -121,7 +131,7 @@ class BoardResponse(ResponseModel):
 class TaskCreate(RequestModel):
     title: str = Field(min_length=1, max_length=300)
     description: str = ""
-    estimated_minutes: Minutes = 45
+    estimated_minutes: Minutes | None = None
     parent_task_id: str | None = None
     after_task_id: str | None = None
     needs_research: bool = True

@@ -734,6 +734,29 @@ profile change is attributable to a session and reversible by the user.
 
 ---
 
+## Status after M7
+
+**Met.** The learner model and adaptation suite is fully implemented and tested. Across multiple
+sessions the coach demonstrably adapts (`tests/test_adaptation.py`), recording profile changes
+audited with session attribution and rate-limited to 1 call per turn. Every profile change is
+reversible and editable by the user on the "What your coach knows about you" Settings screen.
+`CoachMemoryService` subclasses ADK's `FirestoreMemoryService` with `users/{uid}/memories/{memoryId}`
+placement and contract tests against `InMemoryMemoryService`. Task-level duration overrides are
+respected in checklist guidance. 606 backend tests, 285 web tests.
+
+**Deliberately deferred, and the milestone that needs it:**
+
+| Item | Needed by | Note |
+| --- | --- | --- |
+| Split research runs into dedicated sessions | **M8** | Moves research events out of the task conversation into job-scoped sessions |
+| UI rework for workspace and transcript | **M8** | Scope decided once research sessions are decoupled |
+| Per-user token and run quotas backed by `usage/*` | **M8** | Quota enforcement on the reworked run/session boundary |
+| Nightly live-API and evalset runs | **M9** | Live API tests against real Gemini/YouTube |
+| Content scanning on finalize | **M9** | Still as recorded after M2 |
+| `prod` environment, `terraform destroy` | before release | Still as recorded after M1 |
+
+---
+
 ## M8 — Research sessions, UI rework, and usage quotas (~1.5 weeks)
 
 - **Split research runs out of the task session into a session of their own, per research

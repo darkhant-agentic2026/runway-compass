@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Annotated, cast
 
 from fastapi import Depends, Request
 
-from coach.adk_firestore import CoachSessionService
+from coach.adk_firestore import CoachMemoryService, CoachSessionService
 from coach.agents.prompt import PromptBuilder
 from coach.agents.research_tools import ResearchTools
 from coach.agents.runner import RunnerFactory
@@ -118,6 +118,9 @@ class Container:
             client=cast("AsyncClient", LazyAsyncClient(settings)),
             root_collection=settings.adk_firestore_root_collection,
         )
+        self.memory_service = CoachMemoryService(
+            client=cast("AsyncClient", LazyAsyncClient(settings)),
+        )
         # One artifact service for the process. `UploadService` writes user uploads into
         # it on finalize and the agent reads them back through the `Runner`, so a second
         # instance would be a second client against the same bucket and a second place to
@@ -158,7 +161,13 @@ class Container:
         # Held on the container as well as handed to the factory: the agent-tool tests
         # call them directly, which is how a guard gets a test that does not depend on
         # persuading a model to trip it.
-        self.domain_tools = DomainTools(self.tasks, self.projects, self.board_updates)
+        self.domain_tools = DomainTools(
+            self.tasks,
+            self.projects,
+            self.board_updates,
+            users=self.users,
+            memory=self.memory_service,
+        )
         self.reports = ReportService(self.report_repository, self.tasks, self.projects)
         # A plain HTTP client and an API key, not a Google client with ADC: the YouTube
         # Data API is a different credential from everything else in this process, and
@@ -174,6 +183,7 @@ class Container:
             settings,
             self.session_service,
             self.artifacts,
+            memory_service=self.memory_service,
             tools=self.domain_tools,
             research_tools=self.research_tools,
             prompt=self.prompt_builder,

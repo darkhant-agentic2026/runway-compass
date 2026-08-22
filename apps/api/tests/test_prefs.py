@@ -82,6 +82,20 @@ def test_empty_source_lists_are_an_override_not_an_absence() -> None:
     assert effective.avoid_sources == ["medium.com"]
 
 
+@pytest.mark.parametrize("level", ["mostly_guided", "balanced", "mostly_unguided"])
+def test_guidance_level_resolves(level: str) -> None:
+    effective = resolve_prefs(
+        GlobalPrefs(),
+        ProjectPrefs(guidance_level=level),  # type: ignore[arg-type]
+    )
+    assert effective.guidance_level == level
+
+
+def test_guidance_level_defaults_to_balanced() -> None:
+    effective = resolve_prefs(GlobalPrefs(), ProjectPrefs())
+    assert effective.guidance_level == "balanced"
+
+
 def test_verbosity_and_timezone_are_not_project_overridable() -> None:
     """The project prefs schema in docs/02-data-model.md carries neither field."""
     assert "verbosity" not in ProjectPrefs.model_fields

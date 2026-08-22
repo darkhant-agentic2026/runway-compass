@@ -56,6 +56,23 @@ async def test_a_new_task_carries_the_documented_defaults(
     assert task["rollup"] is None
 
 
+async def test_a_new_task_inherits_project_default_task_minutes(
+    client: httpx.AsyncClient,
+) -> None:
+    project = (await client.post("/api/projects", json={"title": "Custom Duration"})).json()
+    await client.patch(
+        f"/api/projects/{project['id']}", json={"prefs": {"defaultTaskMinutes": 90}}
+    )
+
+    # Created without explicit estimatedMinutes: inherits 90
+    task_inherited = await _add(client, project["id"], "Inherited task")
+    assert task_inherited["estimatedMinutes"] == 90
+
+    # Created with explicit estimatedMinutes (e.g. 25): uses explicit 25
+    task_explicit = await _add(client, project["id"], "Explicit task", estimatedMinutes=25)
+    assert task_explicit["estimatedMinutes"] == 25
+
+
 async def test_after_task_id_inserts_rather_than_appends(
     client: httpx.AsyncClient,
 ) -> None:

@@ -1,4 +1,5 @@
 import type {
+  LearnerProfile,
   Project,
   ReportItem,
   ResearchReport,
@@ -71,6 +72,7 @@ export function makeProject(overrides: Partial<Project> = {}): Project {
     prefs: {
       defaultTaskMinutes: null,
       guidanceStyle: null,
+      guidanceLevel: null,
       researchDepth: null,
       allowVideos: null,
       confirmItemCompletion: null,
@@ -141,6 +143,21 @@ export function makeReport(overrides: Partial<ResearchReport> = {}): ResearchRep
     progress: { feedback: {} },
     createdAt: null,
     updatedAt: null,
+    ...overrides,
+  };
+}
+
+export function makeLearnerProfile(overrides: Partial<LearnerProfile> = {}): LearnerProfile {
+  return {
+    thinkingStyle: '',
+    strengths: [],
+    gaps: [],
+    technologies: [],
+    pacing: '',
+    feedbackNotes: [],
+    updatedAt: null,
+    updatedBy: 'user',
+    version: 0,
     ...overrides,
   };
 }

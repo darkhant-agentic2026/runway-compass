@@ -99,6 +99,7 @@ class ProjectStatus(StrEnum):
 
 
 GuidanceStyle = Literal["socratic", "direct", "mixed"]
+GuidanceLevel = Literal["mostly_guided", "balanced", "mostly_unguided"]
 Verbosity = Literal["terse", "balanced", "thorough"]
 ResearchDepth = Literal["light", "standard", "deep"]
 
@@ -134,6 +135,7 @@ class ProjectPrefs(DomainModel):
 
     default_task_minutes: Minutes | None = None
     guidance_style: GuidanceStyle | None = None
+    guidance_level: GuidanceLevel | None = None
     research_depth: ResearchDepth | None = None
     allow_videos: bool | None = None
     #: Whether `complete_task_item` asks the learner before ticking a step.
@@ -156,6 +158,7 @@ class EffectivePrefs(DomainModel):
 
     default_task_minutes: Minutes
     guidance_style: GuidanceStyle
+    guidance_level: GuidanceLevel = "balanced"
     verbosity: Verbosity
     timezone: str
     research_depth: ResearchDepth

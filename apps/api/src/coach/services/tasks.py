@@ -291,13 +291,19 @@ class TaskService:
         *,
         title: str,
         description: str = "",
-        estimated_minutes: int = 45,
+        estimated_minutes: int | None = None,
         parent_task_id: str | None = None,
         after_task_id: str | None = None,
         needs_research: bool = True,
         origin: Origin = Origin.USER,
     ) -> Task:
         await self._project_service.require_owned(principal, project_id)
+        if estimated_minutes is None:
+            effective = await self._project_service.effective_prefs(principal, project_id)
+            resolved_minutes = effective.default_task_minutes
+        else:
+            resolved_minutes = estimated_minutes
+
         # Generated outside the transaction so that a Firestore-driven retry of the
         # closure below reuses the same id rather than minting a second one.
         created_id = new_task_id()
@@ -334,7 +340,7 @@ class TaskService:
                 parent_task_id=parent_task_id,
                 title=title,
                 description=description,
-                estimated_minutes=estimated_minutes,
+                estimated_minutes=resolved_minutes,
                 order=planned.pop(NEW_TASK_SLOT),
                 needs_research=needs_research,
                 items=inherited,

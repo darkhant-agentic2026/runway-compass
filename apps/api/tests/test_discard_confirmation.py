@@ -437,3 +437,37 @@ async def test_the_opt_out_does_not_silence_the_destructive_gates(container) -> 
         if callable(getattr(tool, "_require_confirmation", False))
     }
     assert dynamic == {"complete_task_item"}
+
+
+async def test_proposing_plan_requires_confirmation(
+    client: httpx.AsyncClient, stub_model: StubModel
+) -> None:
+    """The coach proposing a plan requires user confirmation. Accepting creates tasks on
+    the board; declining leaves the board clean for refinement."""
+    project = (await client.post("/api/projects", json={"title": "Web Architecture"})).json()
+    session_id = (await client.post(f"/api/projects/{project['id']}/session")).json()["id"]
+
+    # 1. Coach proposes plan
+    await _turn(client, session_id, text="Propose a plan for web architecture")
+
+    # The board is untouched while waiting for confirmation
+    board_before = (await client.get(f"/api/projects/{project['id']}/tasks")).json()["tasks"]
+    assert len(board_before) == 0
+
+    # There is a pending adk_request_confirmation
+    calls = await _function_calls(client, session_id)
+    assert calls[-1]["name"] == CONFIRMATION_FUNCTION_NAME
+    confirmation_id = calls[-1]["id"]
+
+    # 2. Learner accepts the plan
+    await _turn(
+        client,
+        session_id,
+        confirmation={"functionCallId": confirmation_id, "confirmed": True},
+    )
+
+    # Board now has the planned tasks
+    board_after = (await client.get(f"/api/projects/{project['id']}/tasks")).json()["tasks"]
+    assert len(board_after) == 2
+    assert board_after[0]["title"] == "Phase 1: Foundations"
+    assert board_after[1]["title"] == "Phase 2: Practical project"

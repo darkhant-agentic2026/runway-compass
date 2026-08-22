@@ -2,11 +2,10 @@
  * Global settings — `/settings`.
  *
  * docs/06-frontend.md: "Global prefs, appearance (theme) + 'What your coach knows about
- * you' (learner profile, editable)". The learner-profile editor is an M7 deliverable and
- * is shown read-only here, so the section exists and is obviously not yet interactive
- * rather than being silently absent.
+ * you' (learner profile, editable)".
  */
 
+import { LearnerProfileEditor } from '@/components/settings/LearnerProfileEditor';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -29,6 +28,7 @@ export default function SettingsPage() {
   const me = useMe();
   const patch = usePatchGlobalPrefs();
   const prefs = me.data?.globalPrefs;
+  const profile = me.data?.learnerProfile;
 
   return (
     <div className="mx-auto w-full max-w-2xl space-y-6 p-4 sm:p-6">
@@ -146,23 +146,18 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>What your coach knows about you</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2 text-sm text-muted-foreground">
-          <p>
-            The coach builds this picture as you work together. Editing it arrives with the
-            learner model (M7); nothing writes to it yet.
-          </p>
-          <p>
-            Version {me.data?.learnerProfile.version ?? 0}
-            {me.data?.learnerProfile.thinkingStyle
-              ? ` · ${me.data.learnerProfile.thinkingStyle}`
-              : ' · nothing recorded yet'}
-          </p>
-        </CardContent>
-      </Card>
+      {profile ? (
+        <LearnerProfileEditor profile={profile} />
+      ) : (
+        <Card>
+          <CardHeader>
+            <CardTitle>What your coach knows about you</CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm text-muted-foreground">
+            <p>Loading your learner model…</p>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

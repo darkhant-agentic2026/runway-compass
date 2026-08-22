@@ -28,6 +28,12 @@ import { formatMinutes } from '@/lib/format';
 import type { ProjectPrefs } from '@/lib/schemas';
 
 const DEPTHS: NonNullable<ProjectPrefs['researchDepth']>[] = ['light', 'standard', 'deep'];
+const GUIDANCE_LEVELS: { value: NonNullable<ProjectPrefs['guidanceLevel']>; label: string }[] =
+  [
+    { value: 'mostly_guided', label: 'Mostly guided — hands-on walkthroughs with coach' },
+    { value: 'balanced', label: 'Balanced — mix of guided exercises & independent reading' },
+    { value: 'mostly_unguided', label: 'Mostly independent — self-driven with curated links' },
+  ];
 
 export default function ProjectSettingsPage() {
   const { projectId = '' } = useParams();
@@ -121,14 +127,79 @@ export default function ProjectSettingsPage() {
           </div>
 
           <div className="space-y-1">
+            <Label htmlFor="guidance-level">Guidance amount</Label>
+            <Select
+              value={prefs.guidanceLevel ?? effective.data?.guidanceLevel ?? 'balanced'}
+              onValueChange={(value) => {
+                if (value) {
+                  patch.mutate({
+                    prefs: { guidanceLevel: value as ProjectPrefs['guidanceLevel'] },
+                  });
+                }
+              }}
+            >
+              <SelectTrigger id="guidance-level">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {GUIDANCE_LEVELS.map((g) => (
+                  <SelectItem key={g.value} value={g.value}>
+                    {g.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-1">
+            <Label htmlFor="preferred-sources">Topics or materials to prioritize</Label>
+            <Input
+              id="preferred-sources"
+              placeholder="e.g. Official docs, RFCs, asyncio"
+              defaultValue={(prefs.preferredSources ?? []).join(', ')}
+              onBlur={(event) => {
+                const raw = event.target.value.trim();
+                const sources = raw
+                  ? raw
+                      .split(',')
+                      .map((s) => s.trim())
+                      .filter(Boolean)
+                  : null;
+                patch.mutate({ prefs: { preferredSources: sources } });
+              }}
+            />
+          </div>
+
+          <div className="space-y-1">
+            <Label htmlFor="avoid-sources">Topics or materials to skip</Label>
+            <Input
+              id="avoid-sources"
+              placeholder="e.g. Threading, legacy Python 2"
+              defaultValue={(prefs.avoidSources ?? []).join(', ')}
+              onBlur={(event) => {
+                const raw = event.target.value.trim();
+                const sources = raw
+                  ? raw
+                      .split(',')
+                      .map((s) => s.trim())
+                      .filter(Boolean)
+                  : null;
+                patch.mutate({ prefs: { avoidSources: sources } });
+              }}
+            />
+          </div>
+
+          <div className="space-y-1">
             <Label htmlFor="research-depth">Research depth</Label>
             <Select
               value={prefs.researchDepth ?? effective.data?.researchDepth ?? 'standard'}
-              onValueChange={(value) =>
-                patch.mutate({
-                  prefs: { researchDepth: value as ProjectPrefs['researchDepth'] },
-                })
-              }
+              onValueChange={(value) => {
+                if (value) {
+                  patch.mutate({
+                    prefs: { researchDepth: value as ProjectPrefs['researchDepth'] },
+                  });
+                }
+              }}
             >
               <SelectTrigger id="research-depth">
                 <SelectValue />
@@ -169,11 +240,6 @@ export default function ProjectSettingsPage() {
                 Ask before your coach ticks off a step
               </Label>
             </div>
-            {/*
-              Said here rather than only in the dialog, because turning it *off* from the
-              dialog is a click made in a hurry and turning it back on is a decision made
-              later, at which point the consequence should be legible.
-            */}
             <p className="text-xs text-muted-foreground">
               Finishing the last step finishes the task, so this stays on unless you turn it
               off. Worth turning off for a project of short, obvious steps.

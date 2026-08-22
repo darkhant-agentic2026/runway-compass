@@ -28,9 +28,12 @@ const LABELS: Record<string, string> = {
   complete_task_item: 'Marking a step done',
   update_task: 'Updating a task',
   update_project_prefs: 'Updating your preferences',
+  update_project_plan: 'Proposing project plan',
   discard_task: 'Discarding a task',
   search_agent: 'Searching the web',
   load_memory: 'Remembering earlier sessions',
+  update_learner_profile: 'Updating learner profile',
+  remember: 'Remembering insight',
 };
 
 export function labelForTool(name: string): string {
@@ -122,6 +125,25 @@ const DETAILS: Record<string, Summariser> = {
       .filter(([, value]) => value !== null && value !== undefined)
       .map(([key, value]) => `${key.replaceAll('_', ' ')}: ${String(value)}`)
       .join(', '),
+  update_project_plan: (args, result) => {
+    if (result.accepted === false) return 'Plan declined — continuing to refine';
+    const summary = text(args.summary);
+    const tasks = Array.isArray(args.tasks) ? args.tasks : [];
+    if (summary) return summary;
+    if (tasks.length > 0)
+      return `${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'} planned`;
+    return 'Project plan updated';
+  },
+  update_learner_profile: (args) => {
+    const parts = [];
+    if (args.thinking_style || args.thinkingStyle) parts.push('thinking style');
+    if (Array.isArray(args.strengths) && args.strengths.length) parts.push('strengths');
+    if (Array.isArray(args.gaps) && args.gaps.length) parts.push('gaps');
+    if (Array.isArray(args.technologies) && args.technologies.length)
+      parts.push('technologies');
+    return parts.length ? `Updated ${parts.join(', ')}` : 'Profile updated';
+  },
+  remember: (args) => text(args.text),
   fetch_url: (args) => text(args.url),
   youtube_find_by_duration: (args, result) => {
     const found = Array.isArray(result.videos) ? result.videos.length : null;

@@ -535,6 +535,59 @@ async def test_an_oversized_checklist_reports_the_total_but_does_not_refuse(
     assert "add_subtask" in reported["note"]
 
 
+async def test_task_level_duration_override_is_respected_by_checklist_budget(
+    container, alice, client
+) -> None:
+    """M7: A task with its own estimatedMinutes override uses that budget instead of
+    the project's defaultTaskMinutes."""
+    from coach.agents.context import AgentContext
+    from coach.agents.tools import _checklist_budget
+    from coach.core.principal import Principal
+
+    project_id = await _project(client)
+    task = (
+        await client.post(
+            f"/api/projects/{project_id}/tasks",
+            json={"title": "Long Task", "estimatedMinutes": 120},
+        )
+    ).json()["task"]
+
+    # Add 75 minutes of items: inside 120 min task budget, but exceeds 45 min project default.
+    added = await client.post(
+        f"/api/tasks/{task['id']}/items",
+        json={
+            "items": [
+                {"shortDescription": "Read the long paper", "minutes": 40},
+                {"shortDescription": "Do the long exercise", "minutes": 35},
+            ]
+        },
+    )
+    assert added.status_code == 201
+
+    stored = await container.tasks.resolve(alice, task["id"])
+    context = AgentContext(
+        principal=Principal(uid=alice.uid, source="agent"),
+        project_id=project_id,
+        task_id=task["id"],
+        default_task_minutes=45,
+    )
+    # Inside 120 minutes: reports nothing
+    assert _checklist_budget(stored, context) == {}
+
+    # Now add more items so planned is 140 min (> 120 min)
+    added_more = await client.post(
+        f"/api/tasks/{task['id']}/items",
+        json={"items": [{"shortDescription": "Bonus section", "minutes": 65}]},
+    )
+    assert added_more.status_code == 201
+
+    stored2 = await container.tasks.resolve(alice, task["id"])
+    reported = _checklist_budget(stored2, context)
+    assert reported["plannedMinutes"] == 140
+    assert reported["taskBudgetMinutes"] == 120
+    assert "140 minutes against a 120-minute task" in reported["note"]
+
+
 # --- moving items between a task and its subtasks -------------------------------------------
 
 

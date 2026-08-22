@@ -13,6 +13,7 @@ with only the token source scripted.
 
 from __future__ import annotations
 
+from google.adk.memory.base_memory_service import BaseMemoryService
 from google.adk.models.base_llm import BaseLlm
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import BaseSessionService
@@ -39,12 +40,14 @@ class RunnerFactory:
         session_service: BaseSessionService,
         artifacts: ArtifactServiceProvider,
         *,
+        memory_service: BaseMemoryService | None = None,
         tools: DomainTools,
         research_tools: ResearchTools,
         prompt: PromptBuilder,
     ) -> None:
         self._settings = settings
         self._session_service = session_service
+        self._memory_service = memory_service
         self._research_tools = research_tools
         # Both are process-wide and stateless over the services they wrap. They are built
         # once for the same reason the `Runner` is: `LlmAgent` derives every tool's
@@ -91,6 +94,7 @@ class RunnerFactory:
                     before_agent_callback=self._prompt,
                 ),
                 session_service=self._session_service,
+                memory_service=self._memory_service,
                 artifact_service=self._artifacts(),
             )
         return self._project
@@ -113,6 +117,7 @@ class RunnerFactory:
                     before_agent_callback=self._prompt,
                 ),
                 session_service=self._session_service,
+                memory_service=self._memory_service,
                 artifact_service=self._artifacts(),
             )
         return self._task

@@ -7,7 +7,7 @@ from typing import Any
 from coach.core.clock import now
 from coach.core.principal import Principal
 from coach.repositories.users import UserRepository
-from coach.services.models import GlobalPrefs, LearnerProfile, User
+from coach.services.models import GlobalPrefs, LearnerProfile, TechnologyBelief, User
 from coach.services.models import snake_case as _snake
 
 
@@ -60,12 +60,6 @@ class UserService:
         await self._users.patch(
             principal.uid, {f"globalPrefs.{key}": value for key, value in patch.items()}
         )
-        # Re-*validated* rather than `model_copy`-ed. `model_copy(update=…)` assigns without
-        # validating, so a nested patch — `autonomousQuietHours`, the only one there is —
-        # would leave a plain `dict` where a `QuietHours` belongs. The document in Firestore
-        # is correct either way and re-validates on the next read, so the only casualty is
-        # *this* response, which pydantic serializes with a warning and no error. A shape
-        # that is right in the database and wrong in the reply is worse than either.
         merged = GlobalPrefs.model_validate(
             {**user.global_prefs.to_document(), **patch},
         )
@@ -78,7 +72,7 @@ class UserService:
 
         Every write bumps `version` and records who made it, which is what lets the
         Settings screen show why the coach changed its approach. The agent's own writes
-        go through the `update_learner_profile` tool at M7, never through this path.
+        go through `agent_update_learner_profile` via the `update_learner_profile` tool.
         """
         user = await self.get_or_create(principal)
         if not patch:
@@ -93,11 +87,90 @@ class UserService:
         updates["learnerProfile.updatedAt"] = timestamp
         updates["learnerProfile.updatedBy"] = "user"
         await self._users.patch(principal.uid, updates)
-        return user.learner_profile.model_copy(
-            update={
-                **{_snake(k): v for k, v in patch.items()},
-                "version": version,
-                "updated_by": "user",
-                "updated_at": timestamp,
-            }
+
+        merged = {
+            **user.learner_profile.to_document(),
+            **patch,
+            "version": version,
+            "updatedAt": timestamp,
+            "updatedBy": "user",
+        }
+        return LearnerProfile.model_validate(merged)
+
+    async def agent_update_learner_profile(
+        self,
+        principal: Principal,
+        *,
+        thinking_style: str | None = None,
+        strengths: list[str] | None = None,
+        gaps: list[str] | None = None,
+        technologies: list[dict[str, Any] | TechnologyBelief] | None = None,
+        pacing: str | None = None,
+        feedback_note: str | None = None,
+        session_id: str | None = None,
+    ) -> LearnerProfile:
+        """Agent updates to the learner profile from the `update_learner_profile` tool.
+
+        Bumps `version`, records `updatedBy: 'agent'`, stamps `updatedAt`, and appends
+        `feedback_note` with session attribution to the 20-item ring buffer.
+        """
+        user = await self.get_or_create(principal)
+        timestamp = now()
+        version = user.learner_profile.version + 1
+        current = user.learner_profile
+
+        updates: dict[str, Any] = {
+            "learnerProfile.version": version,
+            "learnerProfile.updatedAt": timestamp,
+            "learnerProfile.updatedBy": "agent",
+        }
+
+        new_thinking_style = (
+            thinking_style[:500] if thinking_style is not None else current.thinking_style
+        )
+        if thinking_style is not None:
+            updates["learnerProfile.thinkingStyle"] = new_thinking_style
+
+        new_strengths = strengths if strengths is not None else current.strengths
+        if strengths is not None:
+            updates["learnerProfile.strengths"] = new_strengths
+
+        new_gaps = gaps if gaps is not None else current.gaps
+        if gaps is not None:
+            updates["learnerProfile.gaps"] = new_gaps
+
+        new_pacing = pacing if pacing is not None else current.pacing
+        if pacing is not None:
+            updates["learnerProfile.pacing"] = new_pacing
+
+        if technologies is not None:
+            tech_models = [
+                t if isinstance(t, TechnologyBelief) else TechnologyBelief.model_validate(t)
+                for t in technologies
+            ]
+            updates["learnerProfile.technologies"] = [t.to_document() for t in tech_models]
+            new_technologies = tech_models
+        else:
+            new_technologies = current.technologies
+
+        new_feedback_notes = list(current.feedback_notes)
+        if feedback_note:
+            note_text = f"[{session_id}] {feedback_note}" if session_id else feedback_note
+            new_feedback_notes.append(note_text)
+            if len(new_feedback_notes) > 20:
+                new_feedback_notes = new_feedback_notes[-20:]
+            updates["learnerProfile.feedbackNotes"] = new_feedback_notes
+
+        await self._users.patch(principal.uid, updates)
+
+        return LearnerProfile(
+            thinking_style=new_thinking_style,
+            strengths=new_strengths,
+            gaps=new_gaps,
+            technologies=new_technologies,
+            pacing=new_pacing,
+            feedback_notes=new_feedback_notes,
+            updated_at=timestamp,
+            updated_by="agent",
+            version=version,
         )

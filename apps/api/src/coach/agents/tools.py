@@ -32,22 +32,37 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from google.adk.memory.memory_entry import MemoryEntry
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.load_memory_tool import load_memory
 from google.adk.tools.tool_context import ToolContext
+from google.genai import types
 
 from coach.agents.context import (
     CONFIRM_ITEMS_KEY,
     AgentContext,
     agent_context,
+    claim_profile_update_slot,
     claim_task_slot,
 )
+from coach.core.app import APP_NAME
 from coach.core.errors import CoachError, ValidationProblem
-from coach.services.models import Origin, Task, TaskState, TaskWithSubtasks
+from coach.services.models import (
+    Origin,
+    Task,
+    TaskState,
+    TaskWithSubtasks,
+    TechnologyBelief,
+)
 from coach.services.projects import ProjectService
 from coach.services.tasks import TaskService
 from coach.ws.hub import BoardUpdateHub
+
+if TYPE_CHECKING:
+    from coach.adk_firestore import CoachMemoryService
+    from coach.services.users import UserService
 
 logger = logging.getLogger(__name__)
 
@@ -131,10 +146,14 @@ class DomainTools:
         tasks: TaskService,
         projects: ProjectService,
         hub: BoardUpdateHub,
+        users: UserService | None = None,
+        memory: CoachMemoryService | None = None,
     ) -> None:
         self._tasks = tasks
         self._projects = projects
         self._hub = hub
+        self._users = users
+        self._memory = memory
 
     # --- scoping -----------------------------------------------------------------------
 
@@ -995,10 +1014,16 @@ class DomainTools:
 
     async def update_project_prefs(
         self,
-        tool_context: ToolContext,
         default_task_minutes: int | None = None,
+        guidance_level: str | None = None,
+        guidance_style: str | None = None,
+        preferred_sources: list[str] | None = None,
+        avoid_sources: list[str] | None = None,
         research_depth: str | None = None,
         allow_videos: bool | None = None,
+        confirm_item_completion: bool | None = None,
+        *,
+        tool_context: ToolContext,
     ) -> dict[str, Any]:
         """Change this project's preferences, when the learner has asked you to.
 
@@ -1008,23 +1033,41 @@ class DomainTools:
 
         Args:
             default_task_minutes: How long a task in this project should be.
+            guidance_level: Amount of guidance desired for task items: `mostly_guided`,
+                `balanced`, or `mostly_unguided`.
+            guidance_style: Socratic inquiry vs direct explanations: `socratic`, `direct`,
+                or `mixed`.
+            preferred_sources: Topics, subjects, or material sources to reinforce
+                and prioritize.
+            avoid_sources: Topics, subjects, or material sources to skip or avoid.
             research_depth: `light`, `standard`, or `deep`.
             allow_videos: Whether videos may be recommended as material.
+            confirm_item_completion: Whether the coach must ask before ticking items complete.
         """
         return await self._guarded(
             tool_context,
             self._update_project_prefs,
             default_task_minutes,
+            guidance_level,
+            guidance_style,
+            preferred_sources,
+            avoid_sources,
             research_depth,
             allow_videos,
+            confirm_item_completion,
         )
 
     async def _update_project_prefs(
         self,
         context: AgentContext,
         default_task_minutes: int | None,
+        guidance_level: str | None,
+        guidance_style: str | None,
+        preferred_sources: list[str] | None,
+        avoid_sources: list[str] | None,
         research_depth: str | None,
         allow_videos: bool | None,
+        confirm_item_completion: bool | None,
     ) -> dict[str, Any]:
         # The keys are the whitelist in `ProjectService.WRITABLE_PREF_KEYS`, spelled out
         # one argument at a time rather than taken as a free-form patch: an open patch
@@ -1033,8 +1076,13 @@ class DomainTools:
             key: value
             for key, value in (
                 ("defaultTaskMinutes", default_task_minutes),
+                ("guidanceLevel", guidance_level),
+                ("guidanceStyle", guidance_style),
+                ("preferredSources", preferred_sources),
+                ("avoidSources", avoid_sources),
                 ("researchDepth", research_depth),
                 ("allowVideos", allow_videos),
+                ("confirmItemCompletion", confirm_item_completion),
             )
             if value is not None
         }
@@ -1048,12 +1096,219 @@ class DomainTools:
         return {
             "ok": True,
             "projectId": project.id,
-            "effectivePrefs": {
-                "defaultTaskMinutes": prefs.default_task_minutes,
-                "researchDepth": prefs.research_depth,
-                "allowVideos": prefs.allow_videos,
-            },
+            "effectivePrefs": prefs.to_document(),
         }
+
+    async def update_project_plan(
+        self,
+        tasks: list[dict[str, Any]],
+        summary: str = "",
+        goal: str | None = None,
+        *,
+        tool_context: ToolContext,
+    ) -> dict[str, Any]:
+        """Propose or update the overall project plan with a list of tasks.
+
+        This requires user confirmation. The learner can either 'Accept plan' (which applies
+        these tasks to their board) or choose to 'Keep refining' with additional feedback.
+
+        Args:
+            tasks: List of proposed tasks, each with title, description, optional
+                estimated_minutes, and optional subtasks.
+            summary: Brief overview or rationale of the proposed plan.
+            goal: Refined project goal statement, if updated through discussion.
+        """
+        return await self._guarded(
+            tool_context,
+            self._update_project_plan,
+            tasks,
+            summary,
+            goal,
+        )
+
+    async def _update_project_plan(
+        self,
+        context: AgentContext,
+        tasks: list[dict[str, Any]],
+        summary: str = "",
+        goal: str | None = None,
+    ) -> dict[str, Any]:
+        if not tasks:
+            raise ValidationProblem("A plan must contain at least one task.")
+
+        if goal:
+            await self._projects.patch(context.principal, context.project_id, goal=goal)
+
+        created_tasks: list[Task] = []
+        for task_dict in tasks:
+            title = str(task_dict.get("title", "")).strip()
+            if not title:
+                continue
+            desc = str(task_dict.get("description", ""))
+            raw_minutes = task_dict.get("estimated_minutes") or task_dict.get(
+                "estimatedMinutes"
+            )
+            minutes = int(raw_minutes) if raw_minutes is not None else None
+            needs_res = bool(
+                task_dict.get("needs_research", task_dict.get("needsResearch", True))
+            )
+
+            created = await self._tasks.create_task(
+                context.principal,
+                context.project_id,
+                title=title,
+                description=desc,
+                estimated_minutes=minutes,
+                needs_research=needs_res,
+                origin=Origin.AGENT,
+            )
+            created_tasks.append(created)
+
+            raw_subtasks = task_dict.get("subtasks")
+            if isinstance(raw_subtasks, list):
+                for sub in raw_subtasks:
+                    if isinstance(sub, dict):
+                        sub_title = str(sub.get("title", "")).strip()
+                        if not sub_title:
+                            continue
+                        sub_desc = str(sub.get("description", ""))
+                        sub_min = sub.get("estimated_minutes") or sub.get("estimatedMinutes")
+                        sub_minutes = int(sub_min) if sub_min is not None else None
+                        sub_res = bool(
+                            sub.get("needs_research", sub.get("needsResearch", True))
+                        )
+                        await self._tasks.create_task(
+                            context.principal,
+                            context.project_id,
+                            title=sub_title,
+                            description=sub_desc,
+                            estimated_minutes=sub_minutes,
+                            parent_task_id=created.id,
+                            needs_research=sub_res,
+                            origin=Origin.AGENT,
+                        )
+
+        await self._announce(context, [t.id for t in created_tasks])
+
+        return {
+            "ok": True,
+            "accepted": True,
+            "summary": summary,
+            "tasksCount": len(created_tasks),
+            "tasks": [task_view(t) for t in created_tasks],
+        }
+
+    # --- learner profile & memory tools (M7) -------------------------------------------
+
+    async def update_learner_profile(
+        self,
+        thinking_style: str | None = None,
+        strengths: list[str] | None = None,
+        gaps: list[str] | None = None,
+        technologies: list[dict[str, Any] | TechnologyBelief] | None = None,
+        pacing: str | None = None,
+        feedback_note: str | None = None,
+        *,
+        tool_context: ToolContext,
+    ) -> dict[str, Any]:
+        """Update beliefs about how this learner thinks and works.
+
+        Call this when you observe something significant about their learning style,
+        strengths, knowledge gaps, technology experience, or pacing. Rate-limited to 1
+        update per turn. Every update is audited and visible to the learner in Settings.
+
+        Args:
+            thinking_style: Description of their thinking style (≤ 500 chars).
+            strengths: Observed strengths or mastered concepts.
+            gaps: Knowledge gaps or areas needing reinforcement.
+            technologies: List of technology beliefs, each with name, level, evidence.
+            pacing: Learner's preferred pacing (e.g. "Fast-paced, prefers dense material").
+            feedback_note: Specific feedback note or observation from this session.
+        """
+        return await self._guarded(
+            tool_context,
+            self._update_learner_profile,
+            thinking_style,
+            strengths,
+            gaps,
+            technologies,
+            pacing,
+            feedback_note,
+            claim_profile_slot=tool_context,
+        )
+
+    async def _update_learner_profile(
+        self,
+        context: AgentContext,
+        thinking_style: str | None = None,
+        strengths: list[str] | None = None,
+        gaps: list[str] | None = None,
+        technologies: list[dict[str, Any] | TechnologyBelief] | None = None,
+        pacing: str | None = None,
+        feedback_note: str | None = None,
+    ) -> dict[str, Any]:
+        if self._users is None:
+            raise ValidationProblem("User service is not configured.")
+
+        profile = await self._users.agent_update_learner_profile(
+            context.principal,
+            thinking_style=thinking_style,
+            strengths=strengths,
+            gaps=gaps,
+            technologies=technologies,
+            pacing=pacing,
+            feedback_note=feedback_note,
+            session_id=context.session_id,
+        )
+        return {
+            "ok": True,
+            "learnerProfile": profile.to_document(),
+        }
+
+    async def remember(
+        self,
+        text: str,
+        tags: list[str] | None = None,
+        *,
+        tool_context: ToolContext,
+    ) -> dict[str, Any]:
+        """Store a durable memory item to recall in future sessions.
+
+        Args:
+            text: The key insight, preference, or concept to remember.
+            tags: Optional topic tags (e.g. ["asyncio", "debugging"]).
+        """
+        return await self._guarded(
+            tool_context,
+            self._remember,
+            text,
+            tags,
+        )
+
+    async def _remember(
+        self,
+        context: AgentContext,
+        text: str,
+        tags: list[str] | None = None,
+    ) -> dict[str, Any]:
+        if self._memory is None:
+            raise ValidationProblem("Memory service is not configured.")
+
+        entry = MemoryEntry(
+            content=types.Content(role="user", parts=[types.Part(text=text)]),
+            author="agent",
+            custom_metadata={
+                "tags": tags or [],
+                "sourceSessionId": context.session_id,
+                "projectId": context.project_id,
+            },
+        )
+        await self._memory.add_memory(
+            app_name=APP_NAME,
+            user_id=context.principal.uid,
+            memories=[entry],
+        )
+        return {"ok": True, "remembered": text, "tags": tags or []}
 
     # --- shared plumbing ---------------------------------------------------------------
 
@@ -1063,6 +1318,8 @@ class DomainTools:
         handler: Any,
         *args: Any,
         claim_slot: ToolContext | None = None,
+        claim_profile_slot: ToolContext | None = None,
+        **kwargs: Any,
     ) -> dict[str, Any]:
         """Resolve the invocation's context, run `handler`, and turn refusals into results.
 
@@ -1074,7 +1331,9 @@ class DomainTools:
             context = agent_context(tool_context)
             if claim_slot is not None:
                 claim_task_slot(claim_slot)
-            result: dict[str, Any] = await handler(context, *args)
+            if claim_profile_slot is not None:
+                claim_profile_update_slot(claim_profile_slot)
+            result: dict[str, Any] = await handler(context, *args, **kwargs)
             return result
         except CoachError as error:
             # Deliberately not `logger.exception`: a guard firing is the system working.
@@ -1116,6 +1375,10 @@ class DomainTools:
             # `_ask_learner`.
             FunctionTool(self.ask_learner),
             FunctionTool(self.update_project_prefs),
+            FunctionTool(self.update_project_plan, require_confirmation=True),
+            FunctionTool(self.update_learner_profile),
+            FunctionTool(self.remember),
+            FunctionTool(load_memory),
         ]
 
     def as_task_tools(self) -> list[FunctionTool]:
@@ -1175,6 +1438,10 @@ class DomainTools:
             # and a Firestore read on that path would be one per gated call.
             FunctionTool(self.complete_task_item, require_confirmation=_confirm_completions),
             FunctionTool(self.discard_task, require_confirmation=True),
+            FunctionTool(self.update_project_prefs),
+            FunctionTool(self.update_learner_profile),
+            FunctionTool(self.remember),
+            FunctionTool(load_memory),
         ]
 
     def as_autonomous_tools(self) -> list[FunctionTool]:
@@ -1269,11 +1536,14 @@ def _checklist_budget(task: Task, context: AgentContext) -> dict[str, Any]:
     model is the *fact* — a running total it would otherwise have to keep in its head across
     several calls, which is exactly the kind of arithmetic a model quietly gets wrong.
 
+    The budget is the task's own `estimated_minutes` override if set, falling back to the
+    project's `default_task_minutes`.
+
     Reported only when there is something to report. A checklist inside its budget needs no
     comment, and a field that is always present is one the model learns to skip.
     """
     planned = sum(item.minutes or 0 for item in task.items)
-    budget = context.default_task_minutes
+    budget = task.estimated_minutes if task.estimated_minutes else context.default_task_minutes
     if planned <= budget:
         return {}
     return {
