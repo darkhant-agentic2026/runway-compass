@@ -90,7 +90,8 @@ async def test_a_report_writes_the_documents_and_the_checklist(
     fixture = await _task(client)
     report, task = await container.reports.post_report(
         alice,
-        fixture["task"]["id"],
+        project_id=fixture["project"]["id"],
+        task_id=fixture["task"]["id"],
         summary="Two things to get through.",
         required=_items(45),
         optional=[
@@ -131,7 +132,8 @@ async def test_a_report_over_budget_is_refused(container, alice, client) -> None
     with pytest.raises(ValidationProblem, match="60 minutes against a budget of 45"):
         await container.reports.post_report(
             alice,
-            fixture["task"]["id"],
+            project_id=fixture["project"]["id"],
+            task_id=fixture["task"]["id"],
             summary="Too much",
             required=_items(60),
             optional=[],
@@ -146,7 +148,8 @@ async def test_an_item_in_both_lists_is_refused(container, alice, client) -> Non
     with pytest.raises(ValidationProblem, match="in both"):
         await container.reports.post_report(
             alice,
-            fixture["task"]["id"],
+            project_id=fixture["project"]["id"],
+            task_id=fixture["task"]["id"],
             summary="Twice",
             required=duplicated,
             optional=list(duplicated),
@@ -166,7 +169,8 @@ async def test_a_required_item_needs_a_why(container, alice, client) -> None:
     with pytest.raises(ValidationProblem, match="no `why`"):
         await container.reports.post_report(
             alice,
-            fixture["task"]["id"],
+            project_id=fixture["project"]["id"],
+            task_id=fixture["task"]["id"],
             summary="No reasons",
             required=without,
             optional=[],
@@ -187,7 +191,8 @@ async def test_reports_accumulate_and_the_checklist_does_not(
     for summary in ("First run", "Second run"):
         await container.reports.post_report(
             alice,
-            task_id,
+            project_id=fixture["project"]["id"],
+            task_id=task_id,
             summary=summary,
             required=_items(45),
             optional=[],
@@ -214,7 +219,8 @@ async def test_report_feedback_is_written_and_completion_is_refused(
     fixture = await _task(client)
     report, _ = await container.reports.post_report(
         alice,
-        fixture["task"]["id"],
+        project_id=fixture["project"]["id"],
+        task_id=fixture["task"]["id"],
         summary="s",
         required=_items(45),
         optional=[],
@@ -390,13 +396,50 @@ async def test_a_parent_task_cannot_be_researched(
     assert refused.status_code == 422
 
 
-async def test_research_on_an_intake_session_is_refused(
+async def test_research_on_an_intake_session_with_no_reason_is_refused(
     client: httpx.AsyncClient, stub_model: StubModel
 ) -> None:
+    """Since M8, an intake session *can* be researched — but only with something to
+    research. There is no task description to fall back on, unlike the task-scoped path.
+    """
     project = (await client.post("/api/projects", json={"title": "No task yet"})).json()
     session = (await client.post(f"/api/projects/{project['id']}/session")).json()
-    refused = await client.post(f"/api/sessions/{session['id']}/research", json={})
+    refused = await client.post(f"/api/sessions/{session['id']}/research", json={"reason": ""})
     assert refused.status_code == 422
+
+
+async def test_research_from_the_project_coach_writes_a_taskless_report(
+    client: httpx.AsyncClient, container, alice, stub_model: StubModel
+) -> None:
+    """The M8 capability: research kicked off with no parent task, about the project as a
+    whole. Nothing is promoted anywhere, because there is no task to promote it onto.
+    """
+    project = (await client.post("/api/projects", json={"title": "No task yet"})).json()
+    intake = (await client.post(f"/api/projects/{project['id']}/session")).json()
+
+    started = await client.post(
+        f"/api/sessions/{intake['id']}/research",
+        json={"reason": "What's a good first project to build?"},
+    )
+    assert started.status_code == 202, started.text
+    body = started.json()
+    # The run's own session, never the intake conversation it was requested from.
+    assert body["sessionId"] != intake["id"]
+
+    turn = await _await_run(client, body["turnId"])
+    assert turn["status"] == "complete"
+
+    run = await container.research.get(alice, body["runId"])
+    assert run.task_id is None
+    assert run.session_id == body["sessionId"]
+
+    report = (await client.get(f"/api/runs/{body['runId']}/report")).json()["report"]
+    assert report["taskId"] is None
+    assert report["projectId"] == project["id"]
+
+    # The intake conversation itself never saw the research turn.
+    intake_events = (await client.get(f"/api/sessions/{intake['id']}/events")).json()["events"]
+    assert intake_events == []
 
 
 async def test_research_is_isolated_per_user(
@@ -503,7 +546,8 @@ async def test_a_report_can_be_posted_with_no_videos_available(
     fixture = await _task(client)
     report, task = await container.reports.post_report(
         alice,
-        fixture["task"]["id"],
+        project_id=fixture["project"]["id"],
+        task_id=fixture["task"]["id"],
         summary="Reading only, no videos available.",
         required=_items(45),
         optional=[],

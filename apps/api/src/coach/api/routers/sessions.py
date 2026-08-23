@@ -174,8 +174,11 @@ async def start_research(
         reason=body.reason,
         budget_minutes_override=body.budget_minutes_override,
         force=body.force,
+        attachments=[attachment.model_dump(by_alias=True) for attachment in body.attachments],
     )
-    return ResearchResponse(run_id=run.id, turn_id=run.turn_id, mode=run.mode)
+    return ResearchResponse(
+        run_id=run.id, turn_id=run.turn_id, session_id=run.session_id or "", mode=run.mode
+    )
 
 
 @router.post(

@@ -187,6 +187,25 @@ resource "google_firestore_index" "runs_by_project" {
   }
 }
 
+# "A task's own recent runs" — backs `GET /api/tasks/{id}/runs`, the task workspace's
+# research card. Added at M8 in the same change as the query, on the same reasoning as
+# `reports_by_task` above.
+resource "google_firestore_index" "runs_by_task" {
+  project     = var.project_id
+  database    = google_firestore_database.this.name
+  collection  = "autonomous_runs"
+  query_scope = "COLLECTION"
+
+  fields {
+    field_path = "taskId"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "createdAt"
+    order      = "DESCENDING"
+  }
+}
+
 # --- Single-field index overrides -------------------------------------------------------
 # Automatic single-field indexes are COLLECTION-scoped only, so a collection-group query
 # on one field needs an explicit override. `google_firestore_index` requires at least two

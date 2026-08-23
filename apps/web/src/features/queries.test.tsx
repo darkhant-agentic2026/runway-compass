@@ -385,7 +385,7 @@ describe('board_update reaches the screens that read a single task', () => {
       task: makeParent({ id: TASK }),
       latestReport: null,
     });
-    queryClient.setQueryData(queryKeys.reports(TASK), []);
+    queryClient.setQueryData(queryKeys.taskRuns(TASK), []);
     queryClient.setQueryData(queryKeys.taskSession(TASK), { id: 's_1' });
     queryClient.setQueryData(queryKeys.tasks(PROJECT, DEFAULT_FILTERS), []);
     return queryClient;
@@ -401,20 +401,21 @@ describe('board_update reaches the screens that read a single task', () => {
     void queryClient.invalidateQueries({ queryKey: ['project', frame.projectId] });
     for (const taskId of frame.taskIds) {
       void queryClient.invalidateQueries({ queryKey: ['task', taskId], exact: true });
-      void queryClient.invalidateQueries({ queryKey: ['task', taskId, 'reports'] });
+      void queryClient.invalidateQueries({ queryKey: ['task', taskId, 'runs'] });
     }
   }
 
-  it('invalidates the named task’s detail and report history, not just the board', () => {
+  it('invalidates the named task’s detail and its research runs, not just the board', () => {
     // The defect this pins: a research run posts its report and says nothing else, so
     // `board_update` is the *only* signal the workspace gets. Before M4 the frame
     // invalidated `['tasks', projectId]` and `['project', projectId]` — neither of which
-    // the task's own screen reads — and the checklist simply never appeared.
+    // the task's own screen reads — and the checklist simply never appeared. Since M8 the
+    // same gap exists for `useTaskRuns`, which is what the "latest research" card reads.
     const queryClient = setupCaches();
     handle(queryClient, { projectId: PROJECT, taskIds: [TASK] });
 
     expect(queryClient.getQueryState(queryKeys.task(TASK))?.isInvalidated).toBe(true);
-    expect(queryClient.getQueryState(queryKeys.reports(TASK))?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(queryKeys.taskRuns(TASK))?.isInvalidated).toBe(true);
     expect(
       queryClient.getQueryState(queryKeys.tasks(PROJECT, DEFAULT_FILTERS))?.isInvalidated,
     ).toBe(true);

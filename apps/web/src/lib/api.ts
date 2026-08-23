@@ -21,7 +21,6 @@ import {
   problemSchema,
   projectListSchema,
   projectSchema,
-  reportListSchema,
   reportResponseSchema,
   researchAcceptedSchema,
   runListSchema,
@@ -279,9 +278,6 @@ export const api = {
 
   // --- research -------------------------------------------------------------------------
 
-  listReports: (taskId: string) =>
-    request(`/api/tasks/${taskId}/reports`, reportListSchema).then((r) => r.reports),
-
   /**
    * The thumbs control. Feedback only — completion lives on the task from M4, and sending
    * `completed` here is a 422 rather than a silent no-op (docs/04-api-contract.md#tasks).
@@ -299,16 +295,26 @@ export const api = {
 
   /**
    * 202. A `409` carries the in-flight `runId` in its problem document, so the caller can
-   * attach to that run instead of starting a duplicate.
+   * attach to that run instead of starting a duplicate. Since M8 this also works on a
+   * session with no task (the project's intake conversation) — `reason` is then the
+   * question to research, and is required rather than optional in that case.
    */
   startResearch: (
     sessionId: string,
-    body: { reason?: string; force?: boolean } = {},
+    body: {
+      reason?: string;
+      force?: boolean;
+      attachments?: { uploadId: string; mimeType: string }[];
+    } = {},
     idempotencyKey?: string,
   ) =>
     request(`/api/sessions/${sessionId}/research`, researchAcceptedSchema, {
       method: 'POST',
-      body: { reason: body.reason ?? '', force: body.force ?? false },
+      body: {
+        reason: body.reason ?? '',
+        force: body.force ?? false,
+        attachments: body.attachments ?? [],
+      },
       ...(idempotencyKey ? { idempotencyKey } : {}),
     }),
 
@@ -335,8 +341,16 @@ export const api = {
   getRun: (runId: string) =>
     request(`/api/runs/${runId}`, runResponseSchema).then((r) => r.run),
 
+  /** The report a run wrote, once there is one. 404 while it is still working. */
+  getRunReport: (runId: string) =>
+    request(`/api/runs/${runId}/report`, reportResponseSchema).then((r) => r.report),
+
   listProjectRuns: (projectId: string) =>
     request(`/api/projects/${projectId}/runs`, runListSchema).then((r) => r.runs),
+
+  /** + M8. Recent runs for one task, newest first — the task workspace's research card. */
+  listTaskRuns: (taskId: string) =>
+    request(`/api/tasks/${taskId}/runs`, runListSchema).then((r) => r.runs),
 
   undoRun: (runId: string, idempotencyKey?: string) =>
     request(`/api/runs/${runId}/undo`, runUndoSchema, {

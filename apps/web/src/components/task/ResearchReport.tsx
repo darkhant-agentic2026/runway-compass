@@ -1,14 +1,17 @@
 /**
- * The research report — everything the run found that is *not* the checklist.
+ * The research report, in full — summary, required and optional material, citations.
  *
- * docs/06-frontend.md#task-workspace-projectsprojectidtaskstaskid. The required items moved
- * onto the task at M4 and render as `Checklist`; what is left here is the summary, the
- * optional material, and the citations.
+ * Since M8 this renders on its own screen
+ * (docs/06-frontend.md#research-view-projectsprojectidresearchrunid), not inline in the
+ * task workspace. Before M8, `required[]` was omitted here because it was already visible
+ * as the task's `Checklist`; the research view is a different screen with no checklist of
+ * its own next to it — a project-scoped report has nowhere else `required[]` could ever
+ * appear — so this renders both lists.
  *
- * **Optional items have no checkbox, and that is now structural rather than conventional.**
- * The two blocks read from different documents — the checklist from `task.items`, this from
- * `report.optional` — so there is no shared component that could be given a checkbox by
- * accident. Asserted anyway, because it is a product requirement (docs/08-testing.md).
+ * **Optional items have no checkbox, and that is structural rather than conventional.**
+ * `required[]` is rendered read-only here too — ticking a step happens on the task's own
+ * `Checklist`, from `task.items`, a different document than `report.required`, so there is
+ * no shared component that could be given a checkbox by accident.
  */
 
 import { ThumbsDown, ThumbsUp } from 'lucide-react';
@@ -29,11 +32,9 @@ const KIND_LABELS: Record<ReportItem['kind'], string> = {
 interface ResearchReportProps {
   report: Report;
   onFeedback?: (itemId: string, feedback: 'up' | 'down' | null) => void;
-  /** Earlier runs, rendered collapsed. docs/10-risks.md Q4: reports accumulate. */
-  earlier?: Report[];
 }
 
-export function ResearchReport({ report, onFeedback, earlier = [] }: ResearchReportProps) {
+export function ResearchReport({ report, onFeedback }: ResearchReportProps) {
   return (
     <section
       className="space-y-4 rounded-lg border bg-card p-4"
@@ -48,6 +49,41 @@ export function ResearchReport({ report, onFeedback, earlier = [] }: ResearchRep
           <p className="mt-1 text-sm text-muted-foreground">{report.summary}</p>
         ) : null}
       </header>
+
+      {report.required.length > 0 ? (
+        <div data-testid="report-required">
+          <h3 className="mb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
+            {report.taskId ? 'Required for this task' : 'What answers the question'}
+          </h3>
+          <ul className="space-y-2">
+            {report.required.map((item) => (
+              <li key={item.itemId} className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline" className="text-[0.7rem]">
+                    {KIND_LABELS[item.kind]}
+                  </Badge>
+                  <Badge variant="secondary" className="text-[0.7rem]">
+                    {formatMinutes(item.minutes)}
+                  </Badge>
+                </div>
+                {item.url ? (
+                  <a
+                    href={item.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-1 block text-sm text-primary underline underline-offset-2"
+                  >
+                    {item.title}
+                  </a>
+                ) : (
+                  <p className="mt-1 text-sm">{item.title}</p>
+                )}
+                {item.why ? <p className="text-xs text-muted-foreground">{item.why}</p> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       {report.optional.length > 0 ? (
         <div data-testid="report-optional">
@@ -114,30 +150,6 @@ export function ResearchReport({ report, onFeedback, earlier = [] }: ResearchRep
             ))}
           </ul>
         </div>
-      ) : null}
-
-      {/*
-        Q4 (docs/10-risks.md): reports accumulate, newest shown by default, older ones
-        collapsible. A `<details>` rather than component state — it is a disclosure, and
-        the browser already has one that is keyboard-accessible and survives a re-render.
-      */}
-      {earlier.length > 0 ? (
-        <details className="text-xs">
-          <summary className="cursor-pointer text-muted-foreground">
-            {earlier.length} earlier {earlier.length === 1 ? 'run' : 'runs'}
-          </summary>
-          <ul className="mt-2 space-y-2">
-            {earlier.map((old) => (
-              <li key={old.id} className="rounded border p-2">
-                <p className="text-muted-foreground">{old.summary || 'No summary'}</p>
-                <p className="mt-1 text-[0.7rem] text-muted-foreground">
-                  {old.required.length} required · {old.optional.length} optional ·{' '}
-                  {formatMinutes(old.totalRequiredMinutes)}
-                </p>
-              </li>
-            ))}
-          </ul>
-        </details>
       ) : null}
     </section>
   );

@@ -89,6 +89,11 @@ async def test_a_scheduled_run_researches_the_next_task_and_completes_every_step
     client: httpx.AsyncClient, container, alice, scheduler: SchedulerService, stub_model
 ) -> None:
     board = await _board(client)
+    task_id = board["tasks"][0]["id"]
+    # Opened before the run, as a learner who has visited the task at least once would
+    # have — this is what lets the assertion below tell "no session" apart from "a
+    # different session".
+    conversation = (await client.post(f"/api/tasks/{task_id}/session")).json()["session"]
     run_id = (await scheduler.tick()).scheduled[0]
 
     run = await container.executor.execute(run_id)
@@ -99,13 +104,20 @@ async def test_a_scheduled_run_researches_the_next_task_and_completes_every_step
     assert all(step.status in {StepStatus.COMPLETE, StepStatus.SKIPPED} for step in run.steps)
     assert run.cursor is None
 
-    task = await container.tasks.resolve(alice, board["tasks"][0]["id"])
+    task = await container.tasks.resolve(alice, task_id)
     assert task.research_status is ResearchStatus.DONE
-    # The report landed in the task's own session, which is invariant 3 — and the checklist
-    # it promoted is what takes the task out of `draft`.
+    # The checklist it promoted is what takes the task out of `draft`.
     assert task.items
     assert task.state is TaskState.NOT_STARTED
     assert task.latest_report_id == f"report_{run_id}"
+
+    # Since M8, the research turn ran in a session of its own, not the task's own
+    # conversation (docs/02-data-model.md#sessions--events-adk-owned-layout) — so the
+    # learner's own transcript for this task stays empty even though a report exists.
+    assert run.session_id is not None
+    assert run.session_id != conversation["id"]
+    conversation_events = await container.sessions.list_events(alice, conversation["id"])
+    assert conversation_events == []
 
 
 async def test_the_report_is_keyed_on_the_run_so_a_retry_overwrites(

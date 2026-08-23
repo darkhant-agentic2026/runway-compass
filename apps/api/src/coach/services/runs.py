@@ -64,6 +64,18 @@ class RunService:
         runs = await self._runs.list_for_project(project_id, limit)
         return [run for run in runs if principal.owns(run.owner_uid)]
 
+    async def list_for_task(
+        self, principal: Principal, task_id: str, *, limit: int = 20
+    ) -> list[AutonomousRun]:
+        """Recent runs for one task, newest first — the task workspace's research card.
+
+        + M8. Ownership checked through the task, on the same footing
+        `list_for_project` checks it through the project.
+        """
+        await self._tasks.resolve(principal, task_id)
+        runs = await self._runs.list_for_task(task_id, limit)
+        return [run for run in runs if principal.owns(run.owner_uid)]
+
     async def undo(self, principal: Principal, run_id: str) -> tuple[AutonomousRun, list[str]]:
         """Reverse the run's board writes. Returns the run and the affected task ids.
 

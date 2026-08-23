@@ -60,6 +60,18 @@ class ReportService:
         task = await self._tasks.resolve(principal, task_id)
         return await self._reports.list_for_task(task.project_id, task_id)
 
+    async def get_for_run(self, project_id: str, run_id: str) -> ResearchReport | None:
+        """The report a run wrote, if it has finished writing one.
+
+        `report_{runId}` is deterministic for every research turn since M8 (every one now
+        carries a run id in state — see `agents/research_tools.py`), so this is a point
+        read rather than a query: no index, no ordering, `None` while the run is still
+        `running` or if it never reaches `post_research_report` at all. Backs
+        `GET /api/runs/{runId}/report` — the research view's way to find a run's report
+        when there is no task to hang `latestReportId` off of.
+        """
+        return await self._reports.get(project_id, f"report_{run_id}")
+
     async def latest_for_task(self, principal: Principal, task: Task) -> ResearchReport | None:
         """The `latestReport` on `GET /api/tasks/{id}`.
 
@@ -107,8 +119,9 @@ class ReportService:
     async def post_report(
         self,
         principal: Principal,
-        task_id: str,
         *,
+        project_id: str,
+        task_id: str | None,
         summary: str,
         required: list[dict[str, Any]],
         optional: list[dict[str, Any]],
@@ -117,13 +130,25 @@ class ReportService:
         run_id: str | None = None,
         session_id: str | None = None,
         report_id: str | None = None,
-    ) -> tuple[ResearchReport, Task]:
-        """Validate, store, and promote. The whole of `post_research_report`'s body.
+    ) -> tuple[ResearchReport, Task | None]:
+        """Validate, store, and — only when `task_id` is set — promote.
 
-        Returns the report and the task as it stands afterwards — the caller needs the
-        second to tell the model whether the task left `draft`.
+        `task_id` is `None` for research kicked off from the project coach's own
+        conversation, about the project as a whole rather than one task
+        (docs/02-data-model.md#projectsprojectidresearch_reportsreportid, added at M8).
+        `required`/`optional`/`budget_minutes` stay exactly as they are either way — the
+        required-vs-optional split still separates the core answer from further reading,
+        and the budget still keeps the model honest about how much it is asking the
+        learner to get through — the only difference is that nothing here has a checklist
+        to become.
+
+        Returns the report and, for a task-scoped call, the task as it stands afterwards —
+        the caller needs the second to tell the model whether the task left `draft`. `None`
+        for a project-scoped report, since there is no task.
         """
-        task = await self._tasks.resolve(principal, task_id)
+        task: Task | None = None
+        if task_id is not None:
+            task = await self._tasks.resolve(principal, task_id)
 
         required_items = _validate_items(required, "required")
         optional_items = _validate_items(optional, "optional")
@@ -140,8 +165,8 @@ class ReportService:
 
         report = ResearchReport(
             id=report_id or new_report_id(),
-            project_id=task.project_id,
-            owner_uid=task.owner_uid,
+            project_id=project_id,
+            owner_uid=principal.uid,
             task_id=task_id,
             run_id=run_id,
             session_id=session_id,
@@ -154,26 +179,29 @@ class ReportService:
         )
         stored = await self._reports.create(report)
 
-        # Promotion, and then the pointer. In that order: `replace_items` runs the
-        # derivation that takes the task out of `draft` (invariant 1), and a task pointing
-        # at a report whose items had not landed yet would render an empty checklist beside
-        # a "materials ready" badge.
-        updated = await self._tasks.replace_items(
-            principal,
-            task_id,
-            [_as_checklist_item(item) for item in required_items],
-            source_report_id=stored.id,
-        )
-        updated = await self._tasks.set_research(
-            principal,
-            task_id,
-            status=ResearchStatus.DONE,
-            latest_report_id=stored.id,
-        )
+        updated: Task | None = task
+        if task_id is not None:
+            # Promotion, and then the pointer. In that order: `replace_items` runs the
+            # derivation that takes the task out of `draft` (invariant 1), and a task
+            # pointing at a report whose items had not landed yet would render an empty
+            # checklist beside a "materials ready" badge.
+            updated = await self._tasks.replace_items(
+                principal,
+                task_id,
+                [_as_checklist_item(item) for item in required_items],
+                source_report_id=stored.id,
+            )
+            updated = await self._tasks.set_research(
+                principal,
+                task_id,
+                status=ResearchStatus.DONE,
+                latest_report_id=stored.id,
+            )
         logger.info(
             "research report posted",
             extra={
                 "task_id": task_id,
+                "project_id": project_id,
                 "report_id": stored.id,
                 "run_id": run_id,
                 "required": len(required_items),

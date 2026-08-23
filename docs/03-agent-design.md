@@ -172,38 +172,40 @@ says.
 ```
                        ┌────────────────────────┐
    interactive,       │      project_coach      │  LlmAgent, thinking_level=high
-   taskId: null ─────▶│   (Socratic guide,      │
-                       │  the board as a whole)  │
-                       └───────┬────────────────┘
-                               │ tools
-        ┌──────────────────────┼────────────────────────────┐
-        ▼                      ▼                            ▼
-  board-level tools      memory tools               AgentTool(research_agent)
-  (add_task, discard_     load_memory,
-  task, reorder_task, …)  update_learner_profile
-
-                       ┌────────────────────────┐
-   interactive,        │      task_teacher       │  LlmAgent, thinking_level=high
-   taskId: set ───────▶│  (Socratic guide,      │
-                       │   one task's checklist) │
-                       └───────┬────────────────┘
-                               │ tools
-        ┌──────────────────────┼────────────────────────────┐
-        ▼                      ▼                            ▼
-  checklist tools         memory tools               AgentTool(research_agent)
-  (add_subtask,           load_memory,
-  add_task_items, …)      update_learner_profile
-
-                       ┌────────────────────────┐
-   scheduled ─────────▶│  autonomous_workflow   │  SequentialAgent
-                       └───────┬────────────────┘
-                               │
-        ┌──────────┬───────────┼───────────┬──────────────┐
-        ▼          ▼           ▼           ▼              ▼
-  select_next_  research_agent  post_    propose_tasks  reprioritize
-  task          (LlmAgent)      report   (LlmAgent)     (code)
-  (code, not                    (code)
-   an LLM)
+   taskId: null ─────▶│   (Socratic guide,      │──── "Research this" button ────┐
+                       │  the board as a whole)  │     (a REST trigger, not a tool)│
+                       └───────┬────────────────┘                                │
+                               │ tools                                           │
+                  ┌────────────┴────────────┐                                    │
+                  ▼                         ▼                                    │
+            board-level tools         memory tools                               │
+            (add_task, discard_       load_memory,                               │
+            task, reorder_task, …)    update_learner_profile                     │
+                                                                                  │
+                       ┌────────────────────────┐                                │
+   interactive,        │      task_teacher       │  LlmAgent, thinking_level=high │
+   taskId: set ───────▶│  (Socratic guide,      │──── "Research this" button ────┤
+                       │   one task's checklist) │     (a REST trigger, not a tool)│
+                       └───────┬────────────────┘                                │
+                               │ tools                                           │
+                  ┌────────────┴────────────┐                                    │
+                  ▼                         ▼                                    │
+            checklist tools           memory tools                               │
+            (add_subtask,             load_memory,                               │
+            add_task_items, …)        update_learner_profile                     │
+                                                                                  │
+                       ┌────────────────────────┐                                │
+   scheduled ─────────▶│  autonomous_workflow   │  SequentialAgent               │
+                       └───────┬────────────────┘                                │
+                               │                                                 │
+        ┌──────────┬───────────┼───────────┬──────────────┐                     │
+        ▼          ▼           ▼           ▼              ▼                     │
+  select_next_  research_agent  post_    propose_tasks  reprioritize             │
+  task          (LlmAgent)      report   (LlmAgent)     (code)                  │
+  (code, not                    (code)                                          │
+   an LLM)             ▲                                                        │
+                       └────────────────────────────────────────────────────────┘
+                       in a fresh session created for the run, never the caller's own (M8)
 
                        ┌────────────────────────┐
                        │     research_agent     │  LlmAgent, thinking_level=high
@@ -218,6 +220,17 @@ says.
                        │  tools: google_search   │  built-in google_search tool
                        └────────────────────────┘
 ```
+
+**`research_agent` is not a tool either `project_coach` or `task_teacher` can call.** An
+earlier version of this diagram drew `AgentTool(research_agent)` as one of their tool
+branches, which never matched the tool catalogue below — neither agent has ever listed it.
+The relationship is real but indirect: a button in either agent's screen calls
+`POST /api/sessions/{sid}/research` ([04-api-contract.md](04-api-contract.md#post-apisessionssidresearch)),
+a plain REST endpoint outside the model's own turn, which starts `research_agent` in a
+session of its own. The learner's conversation and the research run are two separate
+generations that happen to share a trigger, not one agent handing off to another
+mid-turn — which is also why `research_agent` never appears in either coach's context and
+neither coach can be asked to "just call the research tool".
 
 ### Why `search_agent` is separate
 
@@ -321,8 +334,39 @@ the prompt cache-friendly.
 
 ### `research_agent`
 
-Input: `{ taskId, budgetMinutes, projectGoal, prefs, learnerProfile }`.
+Input: `{ taskId, budgetMinutes, projectGoal, prefs, learnerProfile }`. `taskId` is `null`
+for a run kicked off from the project coach's own conversation, about the project as a
+whole rather than one task — see below.
 Output: exactly one `post_research_report` call.
+
+**Since M8, every run gets its own session, created fresh and never reused**
+([02-data-model.md](02-data-model.md#sessions--events-adk-owned-layout),
+[09-roadmap.md](09-roadmap.md#m8--research-sessions-ui-rework-and-usage-quotas)). Before
+M8 a research run was a turn inside the task's own session, chosen for reuse of the
+disconnect guarantee, checkpoints, and broker; M8 keeps all of that but stops writing the
+turn into the conversation the learner has with `task_teacher`. `ResearchService` and
+`RunExecutor` create the session (`CoachSessionService.create_session(..., kind=
+"research", task_id=…, run_id=run.id)`), start the turn against *that* session id, and
+record it on the run (`autonomous_runs/{id}.sessionId`) and, once
+`post_research_report` runs, on the report (`research_reports/{id}.sessionId`). The
+project/task linkage this session carries is exactly what `agents/prompt.py`'s
+`before_agent_callback` already reads to assemble `research_agent`'s context — nothing
+there changed, because it already handled a session with `taskId: null`
+(`render_focus(None)`, `render_budget(None, prefs)`): the pre-M8 code rendered that
+branch for a code path that could not yet reach it, and M8 is what reaches it.
+
+**A task-less run is a new capability, not only a new session.** `project_coach` cannot
+call `research_agent` as a tool mid-conversation; the trigger is still
+`POST /api/sessions/{sid}/research` (`docs/04-api-contract.md`), now also accepted on the
+project's own intake session (`taskId: null`) rather than only on a task's. The learner's
+`reason` — "what's a good way to compare these three frameworks" — is the thing being
+researched, sent as the turn's opening message exactly as a task's "prepare the materials
+I need for this task" is; there is no separate mechanism for the taskless case. Any files
+the learner attached to that request ride the same `attachments` argument
+`POST /api/sessions/{sid}/turns` already takes, resolved by `uploadId` the same way — an
+upload is addressable by anyone holding its id, regardless of which session asked for it,
+so "the research session can see files referenced in the scope" needs no new plumbing:
+the caller just has to pass the same `uploadId` again.
 
 Workflow it is instructed to follow:
 1. `search_agent("…")` for authoritative material; note grounding citations.
@@ -405,7 +449,7 @@ the point: `project_coach` has no item-level tool, and `task_teacher` has no `ad
 | `complete_task_item` | `task_teacher` | `(item_id, note)` | **requires user confirmation**, on the same ADK handshake as `discard_task` — an item completing can complete the whole task ([02-data-model.md](02-data-model.md#task-items)), so the last word before that stays the learner's. Scoped to the session's own task; the tool takes no task id |
 | `add_task_items` | `task_teacher` | `(items[], subtask_id?)` | appends items. Leaf tasks only; refused on a task with subtasks. Used when the conversation turns up work the report did not anticipate |
 | `update_project_prefs` | `project_coach` | `(default_task_minutes?, research_depth?, allow_videos?)` | one named argument per writable key — spelling them out *is* the whitelist, where a patch object would let the model invent fields |
-| `post_research_report` | — (`research_agent`) | `(task_id, summary, required[], optional[])` | validates `Σ required.minutes ≤ budget`, assigns `itemId`s, writes the report, and promotes `required[]` into `tasks/{id}.items[]` in one transaction |
+| `post_research_report` | — (`research_agent`) | `(summary, required[], optional[])` — `task_id` is read from the invocation, not an argument, and may be `null` | validates `Σ required.minutes ≤ budget`, assigns `itemId`s, writes the report, and — only when the invocation names a task — promotes `required[]` into `tasks/{id}.items[]` in the same transaction. A task-less call (M8: research about the project as a whole) writes the report and stops there; there is no checklist to promote into |
 
 ### Asking the learner something
 

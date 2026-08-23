@@ -16,7 +16,8 @@ what runs, in which order, and why the order matters.
 | `/login` | Google sign-in (Identity Platform popup) |
 | `/` | Project list — cards with progress, open minutes, "coach updated this" badge |
 | `/projects/:projectId` | **Task board** — ordered task list, filters, next-up highlight |
-| `/projects/:projectId/tasks/:taskId` | **Task workspace** — split view: task detail + research report on the left, session chat on the right |
+| `/projects/:projectId/tasks/:taskId` | **Task workspace** — split view: task detail + checklist on the left, session chat on the right |
+| `/projects/:projectId/research/:runId` | + M8. **Research view** — split view: the research session's own transcript on the left, the final report and citations on the right. See [Research view](#research-view-projectsprojectidresearchrunid) below |
 | `/projects/:projectId/settings` | Project preferences (task duration, research depth, videos) |
 | `/settings` | Global prefs, appearance ([theme](#theme-light-dark-system)) + **"What your coach knows about you"** (learner profile, editable) |
 
@@ -140,6 +141,15 @@ A single module owns the socket:
 - **Parent cards show `rollup.subtaskCount` and `rollup.totalEstimatedMinutes`** ("4
   subtasks · 2 h 30 m") with a progress ring for `completedSubtasks`. Expanding reveals
   subtasks inline.
+- **The board shows one "Latest research" card, added at M8, separate from the task
+  list.** It is the project's most recent research job — the first entry of
+  `GET /api/projects/{id}/runs` whose steps include `research`, whether that job is about
+  one task or, since M8, the project as a whole — rendered as a brief description (the
+  report's `summary`, truncated to a line or two, or "Your coach is researching…" /
+  "Couldn't finish — try again" while it has none yet) plus its creation date and status.
+  Clicking it opens the [research view](#research-view-projectsprojectidresearchrunid).
+  This is the board-level echo of the same card the task workspace shows for one task's
+  own research, below — same component, different feed.
 - Filters: `Hide completed` (default **on**), `Hide discarded` (default on), `Hide
   postponed` (default off). Persisted per project in `useBoardUiStore`.
 - Drag-and-drop reordering (dnd-kit), optimistic, disabled while an autonomous run holds
@@ -178,7 +188,7 @@ Left — **task detail**:
   `subtasks[]` with their items, so it still costs no extra request. No budget meter on
   these: the meter compares a checklist against the report that produced it, and the report
   fetched here is the *parent's*.
-- **The checklist and the report, as two clearly separated blocks:**
+- **The checklist:**
 
 ```
 ┌ To complete this task ─────────────── 38 of 45 min ┐
@@ -186,16 +196,15 @@ Left — **task detail**:
 │ ☐ Watch "Nurseries explained"              14 min  │  ← unguided: YouTube, channel
 │ ☐ Work through the cancellation exercise   12 min  │  ← guided: "with your coach"
 └────────────────────────────────────────────────────┘
-┌ Optional, if you want to go deeper ────────────────┐
-│ ▸ Article · 30 min · …                             │
-└────────────────────────────────────────────────────┘
 ```
 
-  The top block is `task.items[]` — the checklist, in array order, each with a checkbox
-  writing `PATCH /api/tasks/{id}/items/{itemId}`. The bottom is the latest report's
-  `optional[]`, which has **no checkboxes at all**: the affordance itself encodes the
-  distinction, and it is now structural rather than conventional, since the two blocks read
-  from different documents.
+  `task.items[]`, in array order, each with a checkbox writing
+  `PATCH /api/tasks/{id}/items/{itemId}`. Before M8 this sat beside an inline block
+  rendering the latest report's `optional[]` and citations directly on this screen; M8
+  moves that block into its own view (below), because it is exactly the content a
+  tool-heavy research turn used to write into this task's own transcript, and the split
+  that stopped the transcript from interleaving it does the same for the workspace's
+  layout.
 - **A guided item and an unguided one look different, because they ask for different
   things.** An unguided item renders its `details` — the link, the section, the video's
   channel and duration — because that is the instruction, and it carries a "Mark done"
@@ -203,15 +212,22 @@ Left — **task detail**:
   `shortDescription` and a "with your coach" marker; its `details` are the coach's teaching
   notes and showing them to the learner would hand over the answer to the exercise. **Do not
   render `item.details` for a guided item**, in this screen or any future one.
-- Different container styling, different heading, and a running "X of Y min" budget meter
-  over the checklist.
-- Citations list from grounding metadata, on the report block.
-- **Report history is collapsed.** Q4 ([10-risks.md](10-risks.md#open-questions)) settles
-  reports as accumulating: the newest renders expanded, older ones as a "3 earlier runs"
-  disclosure. The checklist is not versioned this way — there is one, and it is current.
-- "Research this task now" button → `POST /api/sessions/{sid}/research`, with progress from
-  the turn's tool chips. On a `draft` task this is the screen's primary action; once
-  materials exist it moves into the report block's header as "Research again."
+- A running "X of Y min" budget meter over the checklist.
+- **A "Latest research" card, below the checklist, added at M8.** The same component the
+  board shows, fed by `GET /api/tasks/{id}/runs` instead of the project route — the most
+  recent run whose steps include `research`. Brief description (the report's `summary`,
+  truncated) plus creation date and status; clicking it opens the
+  [research view](#research-view-projectsprojectidresearchrunid) for that run. Earlier
+  research is not inlined here at all now that each run has its own session and its own
+  report to look at — reaching one is "open the research view for that job", not
+  expanding a disclosure on this screen. Absent entirely for a task that has never been
+  researched.
+- "Research this task now" button → `POST /api/sessions/{sid}/research`, then navigates
+  straight into the research view for the run it started — that screen is where the
+  turn's progress (tool chips, streamed generation) is watched, since the turn no longer
+  runs in this screen's own session. On a `draft` task this is the screen's primary
+  action; once materials exist it moves into the research card's header as "Research
+  again."
 - **Beside it, "Have my coach prepare this"** → `POST /api/tasks/{id}/research-request`.
   The same research, queued instead of watched: the learner marks the task, closes the tab,
   and the next tick runs it headless with priority over auto-scheduled work
@@ -300,6 +316,58 @@ Right — **session chat**:
   lost — your coach is still working. Reconnecting…" then the stream continues from where
   it left off.
 - Cancel button (the only thing that stops generation).
+
+### Research view (`/projects/:projectId/research/:runId`)
+
+Added at M8, once research runs got their own sessions
+([03-agent-design.md](03-agent-design.md#research_agent)). Two panes, stacked on mobile,
+reached from the "Latest research" card on the board or a task workspace, or directly
+after starting a run from either screen.
+
+A header above both panes names what is being researched — the task's title, linked back
+to its workspace, or "Research for this project" when `taskId` is `null` — plus the run's
+status and creation date, the same facts the card that led here already showed.
+
+Left — **the research session**, read from `GET /api/runs/{runId}` for `sessionId` and
+then rendered by the same `SessionPane` the task workspace and the board's intake
+conversation use — streamed markdown, tool-activity chips, reconnect handling, all of it
+unchanged. **It has no composer, and that is a deliberate difference from every other use
+of `SessionPane`.** This pane is a record of what the coach did to prepare the material —
+the searches, the pages it read, the video it checked the length of — not a conversation
+the learner is having; `research_agent` has no tool that asks the learner anything, so a
+composer here would invite a message nothing is instructed to read. A **cancel** button is
+still offered while the run is `running`, on the same reasoning the task workspace's chat
+cancel has: it is the only thing that stops generation, and this is generation like any
+other.
+
+Right — **the final report**, once there is one. Three states, read from `GET
+/api/runs/{runId}` and, once it exists, `GET /api/tasks/{id}/reports` or the project-level
+equivalent:
+
+- **Running** — "Your coach is researching…", no report yet. The pane does not poll for
+  one; `post_research_report` pushes `board_update`, which is what flips this state the
+  moment the report exists, same as the task workspace's checklist appearing today.
+- **Failed** — the run's `error`, and a "Try again" action that starts a fresh run (a new
+  `runId`, a new session) rather than retrying this one in place — consistent with a
+  failed run being terminal everywhere else in the ledger.
+- **Complete** — the report: `summary` rendered as markdown
+  ([below](#markdown-in-the-transcript)) — the full write-up M8 asks the model for, not
+  the two-or-three-sentence blurb it used to be — then `required[]` and `optional[]` (for
+  a task-scoped report; a project-scoped one has both but nothing was promoted anywhere),
+  then citations from grounding metadata. This is exactly the content `ResearchReport.tsx`
+  rendered inline in the task workspace before M8; M8 relocates the component rather than
+  rewriting it. Item feedback (thumbs up/down) stays available on a task-scoped report's
+  `optional[]` items, reached the same way it always was —
+  `PATCH /api/reports/{reportId}/items/{itemId}`. **A project-scoped report renders
+  without the feedback control** — that endpoint checks ownership through the task
+  (`ReportItemFeedback.taskId`), which a `taskId: null` report has none of, and adding a
+  second ownership path for a thumbs-up on further reading is not worth doing until
+  project-scoped research is more than a first cut.
+
+A run with `taskId: null` renders identically, minus anything that would name a task: the
+header reads "Research for this project" with no link back to a task, and the
+required/optional lists read as a plan for the question the learner asked rather than for
+a checklist nothing here promotes into.
 
 ### Settings — "What your coach knows about you"
 

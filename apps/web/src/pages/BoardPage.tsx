@@ -33,6 +33,8 @@ import { Link, useParams } from 'react-router-dom';
 import { BoardFilters } from '@/components/board/BoardFilters';
 import { CoachUpdateBanner } from '@/components/board/CoachUpdateBanner';
 import { TaskCard } from '@/components/board/TaskCard';
+import { ResearchCard } from '@/components/research/ResearchCard';
+import { StartProjectResearch } from '@/components/research/StartProjectResearch';
 import { SessionPane } from '@/components/session/SessionPane';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -146,6 +148,18 @@ export default function BoardPage() {
           tasks={tasks}
           undoing={undoRun.isPending}
           onUndo={(runId) => undoRun.mutate(runId)}
+        />
+
+        {/*
+          The project's most recent research job, if it has one — added at M8
+          (docs/06-frontend.md#task-board-projectsprojectid). `runs` is already fetched
+          for the banner above; `[0]` is "newest first" from the same query.
+        */}
+        <ResearchCard projectId={projectId} run={runs.data?.[0]} />
+
+        <StartProjectResearch
+          projectId={projectId}
+          intakeSessionId={intake.data?.id ?? project.data?.intakeSessionId ?? null}
         />
 
         <BoardFilters

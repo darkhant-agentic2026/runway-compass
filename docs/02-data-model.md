@@ -408,8 +408,11 @@ collision or exhaustion, `TaskService` rebalances the whole project in one batch
 
 ```jsonc
 {
-  "taskId": "…", "runId": "…", "sessionId": "…",
-  "summary": "…",
+  "taskId": "…" | null,                // + null since M8: a report from research kicked
+                                        //   off in the project coach's own conversation,
+                                        //   about the project rather than one task
+  "runId": "…", "sessionId": "…",      // sessionId is the run's own dedicated session (M8)
+  "summary": "…",                      // + since M8: a full markdown write-up, not a blurb
   "required": [                        // counts toward task completion
     { "itemId": "i_01J…",              // stable; per-item completion and feedback key on it
       "kind": "article" | "video" | "exercise" | "doc" | "code_scaffold",
@@ -454,6 +457,23 @@ that overruns the budget and asks the model to move items to `optional`. Only `r
 is promoted; an optional item is material the learner may want and is not a thing they owe
 the task, which is exactly the distinction a checkbox would erase.
 
+**A `taskId: null` report is project-scoped research, added at M8.** Research kicked off
+from the project coach's own conversation — "what's a good way to compare these three
+frameworks" — is not about any one task, so there is nothing for `required[]` to become a
+checklist for. The shape stays identical anyway rather than dropping to prose-only:
+`required` vs `optional` still separates "what actually answers the question" from
+"further reading", and validating the budget still keeps the model honest about how much
+it is asking the learner to get through, even though nothing here is promoted into
+`tasks/{id}.items[]`. The budget is the project's `defaultTaskMinutes` — the same fallback
+`render_budget(None, prefs)` already computed for a task-less invocation before M8 could
+reach one ([03-agent-design.md](03-agent-design.md#research_agent)).
+`budgetMinutesOverride` on the request is accepted and recorded on the run for both a
+task-scoped and a task-less request, exactly as before M8; it is not yet threaded into the
+model's own budget in either case; wiring it is a pre-existing gap, not one M8 opens.
+A scheduled or requested (queued) run is always task-scoped — the scheduler always
+researches a specific task, never an open-ended project question — so `taskId: null` only
+ever appears on a `trigger: "manual"` report.
+
 `kind` survives the promotion as far as the item's `guided` flag: an `exercise` or a
 `code_scaffold` is guided, an `article`, `video`, or `doc` is not. The model may override
 per item — some readings genuinely want walking through — but the default falls out of the
@@ -472,7 +492,10 @@ adds; everything else is the shipped shape and must not be renamed.
   "createTime": ts, "updateTime": ts,
   "revision": 42,                         // optimistic-concurrency counter; +1 per appended event
   "status": "DELETING",                   // present only mid-delete
-  "projectId": "…", "taskId": null | "…"  // + linkage; taskId is null for a project intake session
+  "projectId": "…", "taskId": null | "…", // + linkage; taskId is null for a project intake
+                                           //   session, and for research kicked off from one
+  "kind": "coach" | "research",           // + since M8, default "coach"
+  "runId": null | "…"                     // + since M8, set iff kind == "research"
 }
 
 // …/sessions/{sessionId}/events/{eventId}
@@ -506,6 +529,40 @@ Two things to note, both consequences of subclassing rather than hand-rolling:
   rather than hand-writing a fixture.
 
 Only finalized events are persisted — `append_event` returns early on `event.partial`.
+
+**A research session is minted fresh for every run, and never reused — added at M8.**
+Every other session is get-or-create-once: a task has exactly one conversation for its
+whole life, a project has exactly one intake conversation. Research is different: a task
+researched five times gets five research sessions, one per run, each holding nothing but
+that run's own tool-heavy turn (the searches, the fetches, the `post_research_report`
+call) — which is the entire point of the split, stated in
+[09-roadmap.md](09-roadmap.md#m8--research-sessions-ui-rework-and-usage-quotas): the
+task's own conversation with `task_teacher` stops interleaving with research the learner
+never took part in.
+
+Two consequences:
+
+- **`kind` exists because `taskId` is no longer enough to tell sessions apart.** A
+  research session carries the same `projectId`/`taskId` linkage a task's own session
+  does — `taskId` is the task the run was researching, or `null` for research kicked off
+  from the project coach's conversation about the project as a whole. Without `kind`,
+  `find_session_id_for_task`'s single-field query on `taskId` would return an arbitrary
+  one of a task's several research sessions instead of its one real conversation, the
+  first time a task was researched twice. Both `find_session_id_for_task` and
+  `find_intake_session_id` filter `kind == "coach"` in the same Python pass that already
+  checks `appName` — no new index, for the reason those methods' docstrings give for the
+  filters already there.
+- **A research session is found by `runId`, never by scanning.** `run.sessionId`
+  ([05-autonomous-runs.md](05-autonomous-runs.md#run-ledger)) is the pointer, written once
+  when the session is created; nothing needs a `sessions` query keyed on `runId` because
+  nothing ever looks up a research session except through the run that owns it.
+
+Agent routing does not need `kind` at all: `_resolve_agent`
+([03-agent-design.md](03-agent-design.md#project_coach-and-task_teacher)) only branches on
+`taskId` for the interactive `"coach"` choice, and a research turn always names the
+`"research"` agent explicitly (`TurnService.start(..., agent="research")`), never `"coach"`
+— so a research session's `taskId` being reused for linkage never risks routing a turn to
+`task_teacher` by mistake.
 
 ADK `user:`-prefixed state lives on `user_states/{appName}/users/{uid}` and `app:` state on
 `app_states/{appName}`. `get_user_state()` reads the former directly so cross-session facts
@@ -570,9 +627,10 @@ See [05-autonomous-runs.md](05-autonomous-runs.md) for the full schema and seman
 | Stuck runs | `autonomous_runs`: `status ASC, leaseExpiresAt ASC` |
 | Session events | `events`: `seq ASC` — single-field, ascending; the collection is nested under one session, so no composite is needed |
 | Memory search | `memories`: `keywords ARRAY_CONTAINS_ANY, createdAt DESC` |
-| Session by task | `sessions` collection group: `taskId ASC` — resolves a task to its session without storing the reverse pointer twice |
+| Session by task | `sessions` collection group: `taskId ASC` — resolves a task to its session without storing the reverse pointer twice. Since M8, `kind == "coach"` is filtered in Python for the reason the row above gives: a second `where` would need an index nobody declared |
 | Task by bare id | collection group `tasks`: `id ASC` — `GET /api/tasks/{id}` and friends address a task without its project (see below) |
-| Session by project | `sessions` collection group: `projectId ASC` — the fallback in `get_or_create_intake`, for a project created before `intakeSessionId` existed. **One filter**: `taskId is None` is applied in Python, because a second `where` makes this a composite collection-group query that the emulator answers and Firestore refuses |
+| Session by project | `sessions` collection group: `projectId ASC` — the fallback in `get_or_create_intake`, for a project created before `intakeSessionId` existed. **One filter**: `taskId is None` and, since M8, `kind == "coach"` are both applied in Python, because a second `where` makes this a composite collection-group query that the emulator answers and Firestore refuses |
+| A task's own recent runs | `autonomous_runs`: `taskId ASC, createdAt DESC` — added at M8 for the task workspace's research card (`GET /api/tasks/{id}/runs`), the same shape as the reports index above and for the same reason |
 
 ## Access model
 

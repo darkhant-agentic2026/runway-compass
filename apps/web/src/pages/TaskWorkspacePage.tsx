@@ -3,7 +3,9 @@
  *
  * docs/06-frontend.md#task-workspace-projectsprojectidtaskstaskid: two panes, stacked on
  * mobile. Left is the task detail, then either its subtasks (composite) or its checklist
- * (leaf), then the research report; right is the session chat.
+ * (leaf), then a compact "latest research" card; right is the session chat. Since M8 the
+ * full report — summary, optional material, citations — lives on its own research view,
+ * reached through that card, rather than rendering inline here.
  *
  * The left pane's order is the order the work happens in: what to do, then the material
  * behind it. `Checklist` and `SubtaskList` are never both present — a task's plan is one or
@@ -16,26 +18,25 @@
  */
 
 import { useEffect } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 
 import { STATE_LABELS } from '@/components/board/task-state';
+import { ResearchCard } from '@/components/research/ResearchCard';
 import { SessionPane } from '@/components/session/SessionPane';
 import { Checklist } from '@/components/task/Checklist';
-import { ResearchReport } from '@/components/task/ResearchReport';
 import { SubtaskList } from '@/components/task/SubtaskList';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
   useCreateSubtask,
-  useReportFeedback,
-  useReportHistory,
   useResearchRequest,
   useSetSubtaskState,
   useStartResearch,
   useSubtaskItemMutation,
   useTask,
   useTaskItemMutation,
+  useTaskRuns,
   useTaskSession,
 } from '@/features/queries';
 import { ApiError } from '@/lib/api';
@@ -45,6 +46,7 @@ import { newestTurnFor, useStreamStore } from '@/stores/stream';
 
 export default function TaskWorkspacePage() {
   const { projectId = '', taskId = '' } = useParams();
+  const navigate = useNavigate();
 
   const detail = useTask(taskId);
   const task = detail.data?.task;
@@ -57,8 +59,7 @@ export default function TaskWorkspacePage() {
   const addSubtask = useCreateSubtask(taskId, projectId);
   const startResearch = useStartResearch(taskId, projectId);
   const researchRequest = useResearchRequest(taskId, projectId);
-  const feedback = useReportFeedback(taskId);
-  const history = useReportHistory(taskId);
+  const runs = useTaskRuns(taskId);
 
   const isComposite = (task?.subtasks.length ?? 0) > 0;
 
@@ -95,6 +96,12 @@ export default function TaskWorkspacePage() {
     startResearch.mutate(
       { sessionId, force },
       {
+        // Since M8 the turn runs in a session of its own — navigate straight to its
+        // research view, which is where progress is watched now
+        // (docs/06-frontend.md#research-view-projectsprojectidresearchrunid).
+        onSuccess(run) {
+          navigate(`/projects/${projectId}/research/${run.runId}`);
+        },
         onError(error) {
           // A 409 carrying a `runId` means the coach is already working on this project.
           // Saying so is the difference between an actionable answer and an invitation to
@@ -182,15 +189,12 @@ export default function TaskWorkspacePage() {
           />
         ) : null}
 
-        {report ? (
-          <ResearchReport
-            report={report}
-            earlier={(history.data ?? []).filter((old) => old.id !== report.id)}
-            onFeedback={(itemId, value) =>
-              feedback.mutate({ reportId: report.id, itemId, feedback: value })
-            }
-          />
-        ) : null}
+        {/*
+          The latest research job for this task, if it has one — a compact card since M8,
+          linking into its own research view rather than rendering the full report inline
+          (docs/06-frontend.md#task-workspace-projectsprojectidtaskstaskid).
+        */}
+        <ResearchCard projectId={projectId} run={runs.data?.[0]} />
 
         {/*
           "Research this task now" is the screen's primary action on a task with no

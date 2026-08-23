@@ -32,6 +32,7 @@ function makeRun(overrides: Partial<AutonomousRun> = {}): AutonomousRun {
     maxAttempts: 3,
     steps: [],
     turnId: null,
+    sessionId: null,
     changes: [],
     undoneAt: null,
     createdAt: null,

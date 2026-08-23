@@ -95,6 +95,21 @@ class RunRepository:
         )
         return [_to_run(doc) async for doc in query.stream()]
 
+    async def list_for_task(self, task_id: str, limit: int = 20) -> list[AutonomousRun]:
+        """Recent runs for one task, newest first — the task workspace's research card,
+        added at M8 on the same shape `list_for_project` already uses.
+
+        Two indexed fields (`taskId ASC, createdAt DESC`), so it needs the composite
+        docs/02-data-model.md#indexes adds for this query.
+        """
+        query = (
+            self._db.client.collection(AUTONOMOUS_RUNS)
+            .where(filter=FieldFilter("taskId", "==", task_id))
+            .order_by("createdAt", direction=Query.DESCENDING)
+            .limit(limit)
+        )
+        return [_to_run(doc) async for doc in query.stream()]
+
     async def list_stuck(self, at: datetime, limit: int = 50) -> list[AutonomousRun]:
         """Runs whose executing instance died: `running` with an expired lease.
 

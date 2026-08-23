@@ -286,17 +286,24 @@ class ResearchRequest(RequestModel):
     budget_minutes_override: Minutes | None = None
     #: Re-run even when the task already has materials.
     force: bool = False
+    #: + M8: files the learner attached to the question, forwarded into the research
+    #: session's opening turn exactly as `TurnRequest.attachments` are — an upload is
+    #: addressable by `uploadId` from any session, so this needs no new plumbing beyond
+    #: accepting the same shape here.
+    attachments: list[TurnAttachment] = Field(default_factory=list)
 
 
 class ResearchResponse(ResponseModel):
     """The 202 from `POST /api/sessions/{sid}/research`.
 
-    `turnId` is what the client subscribes to: a manual run has one, and subscribing by
-    `runId` is M5 (docs/04-api-contract.md#post-apisessionssidresearch).
+    `turnId` is what the client subscribes to. `sessionId` (+ M8) is the run's own fresh
+    session — never the `sid` the request was made against — and is what the research view
+    reads to render that run's transcript (docs/04-api-contract.md#post-apisessionssidresearch).
     """
 
     run_id: str
     turn_id: str | None
+    session_id: str
     mode: str
 
 

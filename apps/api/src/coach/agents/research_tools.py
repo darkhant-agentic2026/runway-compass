@@ -215,23 +215,22 @@ class ResearchTools:
         optional: list[dict[str, Any]],
         tool_context: ToolContext,
     ) -> dict[str, Any]:
-        if context.task_id is None:
-            raise ValidationProblem(
-                "This research run is not attached to a task, so there is nothing to post "
-                "a report against."
-            )
         budget = int(
             tool_context.state.get(RESEARCH_BUDGET_KEY) or context.default_task_minutes
         )
         # `report_{runId}` is what makes the `research` step idempotent: a step that posted
         # its report and then failed writing the closing prose is retried by Cloud Tasks,
         # and the retry has to *overwrite* rather than leave the learner with two reports
-        # for one run (docs/05-autonomous-runs.md#execution-semantics). An interactive or
-        # manual run has no run id in state and keeps a minted one.
+        # for one run (docs/05-autonomous-runs.md#execution-semantics). It is also, since
+        # M8, how a client resolves "the report for this run" without a second index:
+        # every research turn — manual or scheduled — now runs with a run id in state, so
+        # this is never the minted fallback in practice, but the fallback stays in case a
+        # future caller starts a research turn outside that machinery.
         run_id = str(tool_context.state.get(RUN_ID_KEY) or "") or None
         report, task = await self._reports.post_report(
             context.principal,
-            context.task_id,
+            project_id=context.project_id,
+            task_id=context.task_id,
             summary=summary,
             required=required,
             optional=optional,
@@ -243,17 +242,17 @@ class ResearchTools:
         await self._hub.publish(
             context.principal.uid,
             project_id=context.project_id,
-            task_ids=[task.id],
+            task_ids=[task.id] if task is not None else [],
             origin="agent",
         )
         return {
             "ok": True,
             "reportId": report.id,
-            "taskId": task.id,
-            "taskState": task.state.value,
+            "taskId": task.id if task is not None else None,
+            "taskState": task.state.value if task is not None else None,
             "requiredMinutes": report.total_required_minutes,
             "budgetMinutes": report.budget_minutes,
-            "checklistLength": len(task.items),
+            "checklistLength": len(task.items) if task is not None else 0,
         }
 
     async def _guarded(

@@ -244,7 +244,9 @@ export const researchReportSchema = z.object({
   id: z.string(),
   projectId: z.string(),
   ownerUid: z.string(),
-  taskId: z.string(),
+  /** `null` since M8: a report from research about the project as a whole, kicked off
+   * with no parent task — nothing is promoted into any task's checklist for one. */
+  taskId: z.string().nullable().default(null),
   runId: z.string().nullable().default(null),
   sessionId: z.string().nullable().default(null),
   summary: z.string().default(''),
@@ -261,12 +263,14 @@ export const researchReportSchema = z.object({
 });
 export type ResearchReport = z.infer<typeof researchReportSchema>;
 
-export const reportListSchema = z.object({ reports: z.array(researchReportSchema) });
 export const reportResponseSchema = z.object({ report: researchReportSchema });
 
 export const researchAcceptedSchema = z.object({
   runId: z.string(),
   turnId: z.string().nullable(),
+  /** + M8: the run's own dedicated session — the research view watches this one, not
+   * the session the request was made from. */
+  sessionId: z.string(),
   mode: z.string(),
 });
 
@@ -312,6 +316,8 @@ export const autonomousRunSchema = z.object({
   maxAttempts: z.number().int().default(3),
   steps: z.array(runStepSchema).default([]),
   turnId: z.string().nullable().default(null),
+  /** + M8: the run's own dedicated research session, never the caller's. */
+  sessionId: z.string().nullable().default(null),
   changes: z.array(runChangeSchema).default([]),
   undoneAt: z.string().nullable().default(null),
   createdAt: z.string().nullable().default(null),

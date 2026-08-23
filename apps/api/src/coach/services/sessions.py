@@ -144,6 +144,31 @@ class SessionService:
         await self._task_repository.patch(task.project_id, task_id, {"sessionId": session.id})
         return SessionSummary(id=session.id, project_id=task.project_id, task_id=task_id)
 
+    async def create_research_session(
+        self,
+        principal: Principal,
+        *,
+        project_id: str,
+        run_id: str,
+        task_id: str | None = None,
+    ) -> SessionSummary:
+        """A fresh session for one research run — never get-or-create, never reused.
+
+        docs/02-data-model.md#sessions--events-adk-owned-layout. `task_id` is the run's
+        *parent* task, or `None` for research kicked off from the project coach's own
+        conversation about the project as a whole. Called once per run by
+        `ResearchService` and `RunExecutor`, never looked up again by anything other than
+        the run that owns it (`autonomous_runs/{id}.sessionId`).
+        """
+        session = await self._sessions.create_research_session(
+            app_name=APP_NAME,
+            user_id=principal.uid,
+            project_id=project_id,
+            task_id=task_id,
+            run_id=run_id,
+        )
+        return SessionSummary(id=session.id, project_id=project_id, task_id=task_id)
+
     async def create_intake(self, principal: Principal, project_id: str) -> SessionSummary:
         """The session `POST /api/projects` opens: a session with `taskId: null`.
 
