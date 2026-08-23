@@ -9,7 +9,7 @@
  * to inheriting.
  */
 
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -46,11 +46,21 @@ export default function ProjectSettingsPage() {
   const globalMinutes = me.data?.globalPrefs.defaultTaskMinutes;
 
   if (!prefs) {
-    return <p className="p-6 text-muted-foreground">Loading project settings…</p>;
+    return (
+      <div className="mx-auto w-full max-w-2xl space-y-6 p-4 sm:p-6">
+        <Button variant="ghost" size="sm" render={<Link to={`/projects/${projectId}`} />}>
+          ← Back to the board
+        </Button>
+        <p className="text-muted-foreground">Loading project settings…</p>
+      </div>
+    );
   }
 
   return (
     <div className="mx-auto w-full max-w-2xl space-y-6 p-4 sm:p-6">
+      <Button variant="ghost" size="sm" render={<Link to={`/projects/${projectId}`} />}>
+        ← Back to the board
+      </Button>
       <h1 className="text-2xl font-semibold">{project.data?.title} — settings</h1>
 
       <Card>

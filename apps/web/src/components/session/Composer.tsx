@@ -9,6 +9,13 @@
  * (docs/04-api-contract.md#uploads): ask for a signed URL, PUT to it, then finalize so the
  * server can check what actually landed. An attachment is not sendable until that third
  * step succeeds — see `PendingAttachment.ready`.
+ *
+ * **The text area is its own row, full width, with a second row below it for controls** —
+ * a textarea sharing a row with buttons has less room to grow and reads as an input field
+ * with icons bolted on rather than the primary surface it is. That control row splits by
+ * side rather than by kind: attachment-related actions (today just the paperclip; more are
+ * expected to land beside it) sit left, and send/cancel — the one action that actually
+ * dispatches the message — sits right, on its own, where a reader's eye lands last.
  */
 
 import { Paperclip, Send, X } from 'lucide-react';
@@ -99,54 +106,58 @@ export function Composer({
         </ul>
       ) : null}
 
-      <div className="flex items-end gap-2">
-        <label className="sr-only" htmlFor="composer">
-          Message your coach
-        </label>
-        <textarea
-          id="composer"
-          rows={2}
-          value={draft}
-          placeholder="Ask a question, or paste your work…"
-          className="min-h-16 flex-1 resize-y rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-          onChange={(event) => setDraft(sessionId, event.target.value)}
-          onPaste={(event: ClipboardEvent) => {
-            // Paste-image support: a screenshot in the clipboard arrives as a file item.
-            const files = Array.from(event.clipboardData.items)
-              .filter((item) => item.kind === 'file')
-              .map((item) => item.getAsFile())
-              .filter((file): file is File => file !== null);
-            if (files.length > 0) uploadAll(files);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-              event.preventDefault();
-              submit();
-            }
-          }}
-        />
+      <label className="sr-only" htmlFor="composer">
+        Message your coach
+      </label>
+      <textarea
+        id="composer"
+        rows={2}
+        value={draft}
+        placeholder="Ask a question, or paste your work…"
+        className="min-h-16 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        onChange={(event) => setDraft(sessionId, event.target.value)}
+        onPaste={(event: ClipboardEvent) => {
+          // Paste-image support: a screenshot in the clipboard arrives as a file item.
+          const files = Array.from(event.clipboardData.items)
+            .filter((item) => item.kind === 'file')
+            .map((item) => item.getAsFile())
+            .filter((file): file is File => file !== null);
+          if (files.length > 0) uploadAll(files);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+            event.preventDefault();
+            submit();
+          }
+        }}
+      />
 
-        <input
-          ref={filePicker}
-          type="file"
-          multiple
-          accept={ACCEPTED_MIME_TYPES.join(',')}
-          className="hidden"
-          onChange={(event: ChangeEvent<HTMLInputElement>) => {
-            uploadAll(event.target.files);
-            // Cleared so that re-picking the same file fires `change` again.
-            event.target.value = '';
-          }}
-        />
-        <Button
-          type="button"
-          variant="outline"
-          size="icon"
-          aria-label="Attach a file"
-          onClick={() => filePicker.current?.click()}
-        >
-          <Paperclip className="size-4" aria-hidden="true" />
-        </Button>
+      <div className="flex items-center justify-between gap-2">
+        {/* Attachment-related controls, left-aligned — where a future one joins the
+            paperclip, not beside the button that sends the message. */}
+        <div className="flex items-center gap-2">
+          <input
+            ref={filePicker}
+            type="file"
+            multiple
+            accept={ACCEPTED_MIME_TYPES.join(',')}
+            className="hidden"
+            onChange={(event: ChangeEvent<HTMLInputElement>) => {
+              uploadAll(event.target.files);
+              // Cleared so that re-picking the same file fires `change` again.
+              event.target.value = '';
+            }}
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            aria-label="Attach a file"
+            onClick={() => filePicker.current?.click()}
+          >
+            <Paperclip className="size-4" aria-hidden="true" />
+          </Button>
+        </div>
 
         {streaming ? (
           <Button type="button" variant="outline" onClick={onCancel}>

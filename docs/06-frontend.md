@@ -18,7 +18,7 @@ what runs, in which order, and why the order matters.
 | `/projects/:projectId` | **Task board** — ordered task list, filters, next-up highlight |
 | `/projects/:projectId/tasks/:taskId` | **Task workspace** — split view: task detail + checklist on the left, session chat on the right |
 | `/projects/:projectId/research/:runId` | + M8. **Research view** — split view: the research session's own transcript on the left, the final report and citations on the right. See [Research view](#research-view-projectsprojectidresearchrunid) below |
-| `/projects/:projectId/settings` | Project preferences (task duration, research depth, videos) |
+| `/projects/:projectId/settings` | Project preferences (task duration, research depth, videos), with the same "← Back to the board" link the task workspace and the research view carry |
 | `/settings` | Global prefs, appearance ([theme](#theme-light-dark-system)) + **"What your coach knows about you"** (learner profile, editable) |
 
 Routes are lazy-loaded per screen. Auth is a route guard resolving the Identity Platform
@@ -310,6 +310,12 @@ Right — **session chat**:
   two-line strip is a target people miss, and missing it is worse than having none,
   because the browser's default action for a file dropped on a page is to navigate away
   from the app.
+- **The text area is its own full-width row, with a second row of controls below it**,
+  added shortly after M8 — a textarea sharing a row with buttons had less room to grow and
+  read as a text field with icons bolted on. That control row splits by side: attachment
+  actions (the paperclip today, more expected to join it) sit left, and send/cancel sits
+  right, alone — the one action that actually dispatches the message, where a reader's eye
+  lands last.
 - **Attachments in the transcript render as thumbnails when they are images**, and as a
   named chip otherwise. Added at M2 rather than specified here originally; a conversation
   about a screenshot reads badly when the screenshot is a word.

@@ -292,6 +292,10 @@ test('the completion gate can be silenced from the dialog it interrupts', async 
   await expect(
     page.getByRole('switch', { name: 'Ask before your coach ticks off a step' }),
   ).not.toBeChecked();
+
+  // Settings has its own way back, symmetric with the workspace's.
+  await page.getByRole('link', { name: '← Back to the board' }).click();
+  await expect(page.getByLabel('New task')).toBeVisible();
 });
 
 test('M8: research with no task, from the board, produces a taskless report and a board card', async ({
