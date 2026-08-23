@@ -169,10 +169,27 @@ A single module owns the socket:
 
 ### Task workspace (`/projects/:projectId/tasks/:taskId`)
 
-Two panes, stacked on mobile.
+**Above both panes, always visible — breadcrumbs and a compact info strip**, added
+shortly after M8. Breadcrumbs (`Projects / {project title} / {task title}`) sit beside the
+existing "← Back to the board" link rather than replacing it — the two answer different
+questions, "where can I go" and "where am I". Below them, a narrow strip echoes a
+`TaskCard` row: the estimate chip, the state badge, and either the subtask rollup or the
+item-completion count, whichever applies — **with no title**, since the breadcrumb right
+above it already carries one and repeating it would be the same fact twice in adjacent
+elements. The strip is not part of the collapsible column below; it is the thing that
+stays on screen when that column is hidden.
 
-Left — **task detail**:
-- Title, description, estimate, state control.
+Two panes below that, stacked on mobile.
+
+Left — **task detail, collapsible**:
+- A "Hide details" / "Show details" toggle, remembered per task
+  (`useWorkspaceUiStore`) and expanded by default always — nothing collapses on its own.
+  The column is reference material once a learner is mostly working a checklist through
+  conversation with the coach rather than by clicking checkboxes directly, and hiding it
+  hands that width to the chat; the info strip above keeps "how far along is this"
+  visible either way.
+- Description. The estimate and state badges moved to the always-visible info strip
+  above, since M8, rather than being duplicated in both places.
 - **A composite task shows its subtasks as cards**, between the detail and the research
   report. `GET /api/tasks/{id}` already returns `subtasks[]`, so this costs no request.
 
