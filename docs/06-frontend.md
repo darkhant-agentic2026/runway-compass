@@ -150,6 +150,13 @@ A single module owns the socket:
   Clicking it opens the [research view](#research-view-projectsprojectidresearchrunid).
   This is the board-level echo of the same card the task workspace shows for one task's
   own research, below — same component, different feed.
+- **Beside it, "View previous research (N)"** reveals the rest of `GET
+  /api/projects/{id}/runs`, each rendered as the same card. Collapsed by default and
+  fetching nothing until opened — a project with a long research history costs no extra
+  requests until the learner actually asks to see it. This is what closed the scope cut
+  recorded at the end of M8 ([09-roadmap.md](09-roadmap.md#status-after-m8)): reports
+  already accumulated in Firestore, and this is what makes the older ones reachable from
+  the UI rather than only by URL.
 - Filters: `Hide completed` (default **on**), `Hide discarded` (default on), `Hide
   postponed` (default off). Persisted per project in `useBoardUiStore`.
 - Drag-and-drop reordering (dnd-kit), optimistic, disabled while an autonomous run holds
@@ -217,11 +224,9 @@ Left — **task detail**:
   board shows, fed by `GET /api/tasks/{id}/runs` instead of the project route — the most
   recent run whose steps include `research`. Brief description (the report's `summary`,
   truncated) plus creation date and status; clicking it opens the
-  [research view](#research-view-projectsprojectidresearchrunid) for that run. Earlier
-  research is not inlined here at all now that each run has its own session and its own
-  report to look at — reaching one is "open the research view for that job", not
-  expanding a disclosure on this screen. Absent entirely for a task that has never been
-  researched.
+  [research view](#research-view-projectsprojectidresearchrunid) for that run. Absent
+  entirely for a task that has never been researched. Beside it, "View previous research
+  (N)" reveals the task's earlier runs the same way the board's does — see below.
 - "Research this task now" button → `POST /api/sessions/{sid}/research`, then navigates
   straight into the research view for the run it started — that screen is where the
   turn's progress (tool chips, streamed generation) is watched, since the turn no longer

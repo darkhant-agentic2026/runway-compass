@@ -41,8 +41,13 @@ import {
 } from '@/features/queries';
 import { ApiError } from '@/lib/api';
 import { formatMinutes } from '@/lib/format';
+import type { AutonomousRun } from '@/lib/schemas';
 import { getSocket } from '@/lib/socket';
 import { newestTurnFor, useStreamStore } from '@/stores/stream';
+
+/** As `BoardPage`'s: a fresh `[]` on every render of an unsettled query is a new value
+ * as far as anything memoizing on it is concerned. */
+const EMPTY_RUNS: AutonomousRun[] = [];
 
 export default function TaskWorkspacePage() {
   const { projectId = '', taskId = '' } = useParams();
@@ -194,7 +199,7 @@ export default function TaskWorkspacePage() {
           linking into its own research view rather than rendering the full report inline
           (docs/06-frontend.md#task-workspace-projectsprojectidtaskstaskid).
         */}
-        <ResearchCard projectId={projectId} run={runs.data?.[0]} />
+        <ResearchCard projectId={projectId} runs={runs.data ?? EMPTY_RUNS} />
 
         {/*
           "Research this task now" is the screen's primary action on a task with no

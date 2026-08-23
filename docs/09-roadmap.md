@@ -816,12 +816,14 @@ report that validates the same way a task-scoped one does but promotes nothing a
 The dedicated research view (`/projects/:projectId/research/:runId`) renders the run's own
 transcript (read-only `SessionPane`) beside its report once there is one; the board and
 the task workspace each show a compact "latest research" card (`ResearchCard`, fed by
-`GET /api/projects/{id}/runs` and the new `GET /api/tasks/{id}/runs`) linking into it. The
-inline report block the task workspace used to render — including the "N earlier runs"
-disclosure — is gone; reports still accumulate in Firestore exactly as before (Q4,
-[10-risks.md](10-risks.md#open-questions)), but there is no browsable history across runs
-yet, which is a scope cut for this slice rather than a reversal. 619 backend tests, 292 web
-tests, the e2e suite (chromium) green including two new specs for the taskless path.
+`GET /api/projects/{id}/runs` and the new `GET /api/tasks/{id}/runs`) linking into it,
+with a "View previous research (N)" toggle beside it listing the rest of that same feed —
+each earlier run's report fetched lazily, only once the toggle is opened. The inline report
+block the task workspace used to render is gone; reports still accumulate in Firestore
+exactly as before (Q4, [10-risks.md](10-risks.md#open-questions)), and the toggle is what
+keeps that history browsable from the UI rather than only reachable by URL. 619 backend
+tests, 292 web tests, the e2e suite (chromium) green including two new specs for the
+taskless path.
 
 Two things worth a future reader's attention, neither large enough to hold up the exit:
 

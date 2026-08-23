@@ -151,11 +151,12 @@ export default function BoardPage() {
         />
 
         {/*
-          The project's most recent research job, if it has one — added at M8
+          The project's research jobs, newest first — added at M8
           (docs/06-frontend.md#task-board-projectsprojectid). `runs` is already fetched
-          for the banner above; `[0]` is "newest first" from the same query.
+          for the banner above; `ResearchCard` renders the first as the card and the rest
+          behind a "View previous research" toggle.
         */}
-        <ResearchCard projectId={projectId} run={runs.data?.[0]} />
+        <ResearchCard projectId={projectId} runs={runs.data ?? EMPTY_RUNS} />
 
         <StartProjectResearch
           projectId={projectId}

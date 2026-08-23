@@ -184,6 +184,13 @@ test('flow #5: a second research run replaces the checklist without losing finis
   // (docs/02-data-model.md#task-items).
   await expect(page.getByTestId('checklist-budget')).toContainText('1 of 2 done');
   await expect(checklist.getByRole('checkbox')).toHaveCount(2);
+
+  // The first run did not vanish — it is reachable from "View previous research" beside
+  // the card for the one that replaced it.
+  await page.getByTestId('toggle-previous-research').click();
+  const previous = page.getByTestId('previous-research').getByTestId('research-card');
+  await expect(previous).toHaveCount(1);
+  await expect(previous).toHaveAttribute('href', new URL(firstRunUrl).pathname);
 });
 
 test('flow #5: the board shows a leaf task’s checklist progress', async ({
