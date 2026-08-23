@@ -50,6 +50,28 @@ async def _task(client: httpx.AsyncClient, **body: Any) -> dict[str, Any]:
     return {"project": project, "task": task, "sessionId": session["id"]}
 
 
+async def _staged_upload(
+    client: httpx.AsyncClient, container, content: bytes = b"the rubric"
+) -> str:
+    """Create an upload, pretend the browser's PUT landed, and finalize it."""
+    created = (
+        await client.post(
+            "/api/uploads",
+            json={
+                "filename": "rubric.pdf",
+                "mimeType": "application/pdf",
+                "sizeBytes": max(len(content), 1),
+            },
+        )
+    ).json()
+    record = await container.upload_repository.get(created["uploadId"])
+    container.uploads._store.declare(
+        record["objectName"], len(content), "application/pdf", content
+    )
+    await client.post(f"/api/uploads/{created['uploadId']}/finalize")
+    return str(created["uploadId"])
+
+
 async def _await_run(client: httpx.AsyncClient, turn_id: str) -> dict[str, Any]:
     async with asyncio.timeout(TURN_TIMEOUT_SECONDS):
         while True:
@@ -278,6 +300,58 @@ async def test_the_research_agent_posts_a_report_that_fits_the_task(
     assert len(task["items"]) == len(report["required"])
     # One of each rendering, which is what the workspace has to tell apart.
     assert sorted(i["guided"] for i in task["items"]) == [False, True]
+
+
+async def test_research_reads_a_file_already_uploaded_in_the_tasks_own_conversation(
+    client: httpx.AsyncClient, container, stub_model: StubModel
+) -> None:
+    """Read-only access to the originating session's own uploads.
+
+    A file sent earlier in the task's conversation reaches the research turn
+    automatically — no need to re-attach it to the research request itself — because
+    `ResearchService.start_manual` carries forward whatever
+    `SessionService.list_attachments` finds in that conversation's own history.
+    """
+    fixture = await _task(client)
+    upload_id = await _staged_upload(client, container)
+
+    sent = await client.post(
+        f"/api/sessions/{fixture['sessionId']}/turns",
+        json={
+            "text": "here's the rubric",
+            "attachments": [{"uploadId": upload_id, "mimeType": "application/pdf"}],
+        },
+    )
+    assert sent.status_code == 202, sent.text
+    await _await_run(client, sent.json()["turnId"])
+    task_events_before = (
+        await client.get(f"/api/sessions/{fixture['sessionId']}/events")
+    ).json()["events"]
+
+    started = await client.post(
+        f"/api/sessions/{fixture['sessionId']}/research", json={"reason": ""}
+    )
+    body = started.json()
+    turn = await _await_run(client, body["turnId"])
+    assert turn["status"] == "complete"
+
+    research_events = (await client.get(f"/api/sessions/{body['sessionId']}/events")).json()[
+        "events"
+    ]
+    file_uris = {
+        (part.get("file_data") or part.get("fileData") or {}).get("file_uri")
+        for event in research_events
+        for part in (event["event"].get("content") or {}).get("parts", [])
+        if part.get("file_data") or part.get("fileData")
+    }
+
+    upload = await container.upload_repository.get(upload_id)
+    assert upload["artifactUri"] in file_uris
+    # And it never touched the task's own session — this is a read of it, not a write.
+    task_events_after = (
+        await client.get(f"/api/sessions/{fixture['sessionId']}/events")
+    ).json()["events"]
+    assert task_events_after == task_events_before
 
 
 async def test_the_run_is_recorded_in_the_ledger(

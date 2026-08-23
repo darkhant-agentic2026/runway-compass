@@ -21,6 +21,7 @@ judgement.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import httpx
@@ -80,6 +81,28 @@ async def _board(
         )
         tasks.append(response.json()["task"])
     return {"project": project, "tasks": tasks}
+
+
+async def _staged_upload(
+    client: httpx.AsyncClient, container, content: bytes = b"the rubric"
+) -> str:
+    """Create an upload, pretend the browser's PUT landed, and finalize it."""
+    created = (
+        await client.post(
+            "/api/uploads",
+            json={
+                "filename": "rubric.pdf",
+                "mimeType": "application/pdf",
+                "sizeBytes": max(len(content), 1),
+            },
+        )
+    ).json()
+    record = await container.upload_repository.get(created["uploadId"])
+    container.uploads._store.declare(
+        record["objectName"], len(content), "application/pdf", content
+    )
+    await client.post(f"/api/uploads/{created['uploadId']}/finalize")
+    return str(created["uploadId"])
 
 
 # --- the happy path ----------------------------------------------------------------------
@@ -151,6 +174,52 @@ async def test_the_report_is_keyed_on_the_run_so_a_retry_overwrites(
 
     reports = await container.reports.list_for_task(alice, board["tasks"][0]["id"])
     assert len(reports) == 1
+
+
+async def test_a_scheduled_run_reads_a_file_already_in_the_tasks_conversation(
+    client: httpx.AsyncClient, container, alice, scheduler: SchedulerService, stub_model
+) -> None:
+    """Read-only access to the originating session's own uploads, on the scheduled path.
+
+    A learner who attaches a file while chatting about a task and then closes the tab
+    should not get worse research than one who watches it run: `RunExecutor._research`
+    carries the task's own conversation history into the run the same way the manual
+    trigger does.
+    """
+    board = await _board(client)
+    task_id = board["tasks"][0]["id"]
+    conversation = (await client.post(f"/api/tasks/{task_id}/session")).json()["session"]
+    upload_id = await _staged_upload(client, container)
+
+    sent = await client.post(
+        f"/api/sessions/{conversation['id']}/turns",
+        json={
+            "text": "here's the rubric",
+            "attachments": [{"uploadId": upload_id, "mimeType": "application/pdf"}],
+        },
+    )
+    assert sent.status_code == 202, sent.text
+    async with asyncio.timeout(15.0):
+        while True:
+            turn = (await client.get(f"/api/turns/{sent.json()['turnId']}")).json()
+            if turn["status"] != "running":
+                break
+            await asyncio.sleep(0.02)
+
+    run_id = (await scheduler.tick()).scheduled[0]
+    run = await container.executor.execute(run_id)
+    assert run is not None and run.session_id is not None
+
+    research_events = await container.sessions.list_events(alice, run.session_id)
+    file_uris = {
+        (part.get("file_data") or part.get("fileData") or {}).get("file_uri")
+        for event in research_events
+        for part in (event.event_data.get("content") or {}).get("parts", [])
+        if part.get("file_data") or part.get("fileData")
+    }
+
+    upload = await container.upload_repository.get(upload_id)
+    assert upload["artifactUri"] in file_uris
 
 
 # --- resume ------------------------------------------------------------------------------

@@ -233,6 +233,15 @@ Behaviour:
   ([02-data-model.md](02-data-model.md#sessions--events-adk-owned-layout)) — and runs the
   **same** `autonomous_workflow` steps against it, so manual and scheduled research cannot
   drift.
+- **Carries `sid`'s own uploads into the research turn automatically**, added shortly
+  after M8. `SessionService.list_attachments(sid)` scans `sid`'s stored events for every
+  distinct file the learner has ever sent in that conversation and embeds each one in the
+  research turn's opening message, the same way `attachments` on this request does — so a
+  task description or `reason` that refers to a file already sent ("see the attached
+  rubric") reaches `research_agent` without re-attaching it. `attachments` on this request
+  is additive, for a file being sent for the first time specifically for this call. Purely
+  a read of `sid`'s transcript; nothing is written to it
+  ([03-agent-design.md](03-agent-design.md#research_agent)).
 - Sets `task.researchStatus` to `in_progress` before the first model call and to `done` or
   `failed` at the end, which is what invariant 6
   ([02-data-model.md](02-data-model.md#task-state-machine)) reads to keep a task from

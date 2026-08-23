@@ -111,6 +111,49 @@ class SessionService:
             raise NotFound(f"Event {seq} has no attachment at index {index}.")
         return await self._uploads.bytes_for_artifact_uri(principal, uri)
 
+    async def list_attachments(
+        self, principal: Principal, session_id: str
+    ) -> list[dict[str, str]]:
+        """Every distinct file the user has sent in this conversation, oldest first.
+
+        Read-only, and read from the transcript rather than from a second index: an
+        attachment's `gs://` URI already lives on the stored event that sent it
+        (`TurnService._build_content`), so this is a scan of what is already there, not a
+        new record of it. Used to carry a task's (or a project's intake conversation's)
+        own uploads into a research turn automatically, so the research agent can read a
+        file the task's description or conversation mentions without the learner having
+        to re-attach it to the research request itself
+        (docs/03-agent-design.md#research_agent).
+
+        Pages through the whole session rather than the transcript's usual one-screen
+        limit — an upload from early in a long conversation is exactly the kind research
+        would otherwise silently miss.
+        """
+        await self.require_owned(principal, session_id)
+        attachments: dict[str, dict[str, str]] = {}
+        cursor = 0
+        while True:
+            page = await self._sessions.list_events(
+                app_name=APP_NAME,
+                user_id=principal.uid,
+                session_id=session_id,
+                after_seq=cursor,
+                limit=MAX_EVENTS_PAGE,
+            )
+            if not page:
+                break
+            for stored in page:
+                if stored.event_data.get("author") != "user":
+                    continue
+                for attachment in _attachments_of(stored.event_data):
+                    # First mention wins the display name; a re-send of the same file
+                    # later in the conversation is the same upload, not a new one.
+                    attachments.setdefault(attachment["uri"], attachment)
+            cursor = page[-1].seq
+            if len(page) < MAX_EVENTS_PAGE:
+                break
+        return list(attachments.values())
+
     # --- writes --------------------------------------------------------------------
 
     async def get_or_create_for_task(
@@ -220,8 +263,8 @@ class SessionService:
         return await self.create_intake(principal, project_id)
 
 
-def _attachment_uri(event_data: dict[str, Any], index: int) -> str | None:
-    """The `file_uri` of the `index`-th file part of a stored event.
+def _file_parts(event_data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every `file_data` part of a stored event, in order.
 
     `snake_case`, because that is what `append_event` writes — `Event.model_dump()`
     defaults to `by_alias=False` despite the model's camelCase aliases. Both spellings are
@@ -230,10 +273,10 @@ def _attachment_uri(event_data: dict[str, Any], index: int) -> str | None:
     """
     content = event_data.get("content")
     if not isinstance(content, dict):
-        return None
+        return []
     parts = content.get("parts")
     if not isinstance(parts, list):
-        return None
+        return []
 
     files = []
     for part in parts:
@@ -242,11 +285,33 @@ def _attachment_uri(event_data: dict[str, Any], index: int) -> str | None:
         data = part.get("file_data") or part.get("fileData")
         if isinstance(data, dict):
             files.append(data)
+    return files
 
+
+def _attachment_uri(event_data: dict[str, Any], index: int) -> str | None:
+    """The `file_uri` of the `index`-th file part of a stored event."""
+    files = _file_parts(event_data)
     if not 0 <= index < len(files):
         return None
     uri = files[index].get("file_uri") or files[index].get("fileUri")
     return str(uri) if uri else None
+
+
+def _attachments_of(event_data: dict[str, Any]) -> list[dict[str, str]]:
+    """`{uri, mimeType, displayName}` for every file part of a stored event that has a
+    URI. Skips a part with no URI rather than raising — this feeds an automatic carry-
+    forward into a new turn, and a malformed one part must not cost the rest."""
+    attachments = []
+    for file_data in _file_parts(event_data):
+        uri = file_data.get("file_uri") or file_data.get("fileUri")
+        if not uri:
+            continue
+        mime_type = file_data.get("mime_type") or file_data.get("mimeType") or ""
+        display_name = file_data.get("display_name") or file_data.get("displayName") or ""
+        attachments.append(
+            {"uri": str(uri), "mimeType": str(mime_type), "displayName": str(display_name)}
+        )
+    return attachments
 
 
 __all__ = ["MAX_EVENTS_PAGE", "SessionService"]

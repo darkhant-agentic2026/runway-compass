@@ -303,12 +303,24 @@ class RunExecutor:
             # resolves the request unconditionally, but this guard would skip it anyway.
             return _SKIPPED
         session_id = await self._ensure_session(principal, run, task_id)
+        # Whatever the learner has already uploaded in the task's own conversation,
+        # carried into the research turn the same way the manual trigger does
+        # (`ResearchService.start_manual`) — a scheduled run reads the same task
+        # description a learner does, and a description that mentions an attached file
+        # deserves the same access to it whether or not anyone was watching this run
+        # start.
+        context_attachments = (
+            await self._sessions.list_attachments(principal, task.session_id)
+            if task.session_id
+            else []
+        )
         turn = await self._run_turn(
             principal,
             session_id,
             text=_research_message(task),
             agent="research",
             run_id=run.id,
+            context_attachments=context_attachments,
         )
         if turn.status is not TurnStatus.COMPLETE:
             raise StepFailed(
@@ -476,6 +488,7 @@ class RunExecutor:
         text: str,
         agent: AgentChoice,
         run_id: str,
+        context_attachments: list[dict[str, str]] | None = None,
     ) -> Turn:
         """Start a turn and wait for it, without ever awaiting the generation task.
 
@@ -494,6 +507,7 @@ class RunExecutor:
             principal,
             session_id,
             text=text,
+            context_attachments=context_attachments,
             agent=agent,
             state_delta={RUN_ID_KEY: run_id},
             on_finished=signal,

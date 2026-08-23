@@ -173,12 +173,20 @@ class ResearchService:
         await self._runs.patch(run_id, {"sessionId": research_session.id})
         run = run.model_copy(update={"session_id": research_session.id})
 
+        # Whatever the learner has already uploaded in *this* conversation — the task's
+        # own, or the project's intake one — carried over automatically, so a scope that
+        # mentions a file already sent does not also require re-attaching it here.
+        # `attachments` (below) is for a file the learner is attaching for the first time,
+        # specifically for this request.
+        context_attachments = await self._sessions.list_attachments(principal, session_id)
+
         try:
             turn = await self._turns.start(
                 principal,
                 research_session.id,
                 text=_opening_message(task, reason),
                 attachments=attachments,
+                context_attachments=context_attachments,
                 agent="research",
                 state_delta={RUN_ID_KEY: run_id},
                 on_finished=lambda: self._close(

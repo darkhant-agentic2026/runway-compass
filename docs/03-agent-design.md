@@ -361,12 +361,25 @@ call `research_agent` as a tool mid-conversation; the trigger is still
 project's own intake session (`taskId: null`) rather than only on a task's. The learner's
 `reason` — "what's a good way to compare these three frameworks" — is the thing being
 researched, sent as the turn's opening message exactly as a task's "prepare the materials
-I need for this task" is; there is no separate mechanism for the taskless case. Any files
-the learner attached to that request ride the same `attachments` argument
+I need for this task" is; there is no separate mechanism for the taskless case. A file the
+learner attaches specifically to that request rides the same `attachments` argument
 `POST /api/sessions/{sid}/turns` already takes, resolved by `uploadId` the same way — an
-upload is addressable by anyone holding its id, regardless of which session asked for it,
-so "the research session can see files referenced in the scope" needs no new plumbing:
-the caller just has to pass the same `uploadId` again.
+upload is addressable by anyone holding its id, regardless of which session asked for it.
+
+**Read-only access to the originating session's own uploads, added shortly after M8.**
+The case `attachments` does not cover is the more common one: a file was uploaded earlier
+in the task's own conversation (or the project's intake one), and the task's description
+or the learner's `reason` refers back to it — "see the attached rubric" — without
+re-attaching anything. `ResearchService.start_manual` and `RunExecutor._research` both
+call `SessionService.list_attachments(principal, session_id)` on the *originating*
+session before starting the research turn — a scan of that session's own stored events
+for `file_data` parts, deduplicated by `gs://` URI — and forward every one it finds as
+`context_attachments`, embedded into the research turn's opening message the same way an
+ordinary attachment is (`TurnService._build_content`). Nothing is written anywhere; this
+is a read of a transcript the caller already owns, which is what makes it safe to do
+unconditionally rather than gating it behind a tool call the model might not think to
+make. `RESEARCH_INSTRUCTION` tells the model these files are the learner's own uploads,
+already in front of it, and to read them before reaching for `search_agent`.
 
 Workflow it is instructed to follow:
 1. `search_agent("…")` for authoritative material; note grounding citations.

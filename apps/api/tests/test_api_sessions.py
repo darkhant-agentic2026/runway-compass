@@ -449,6 +449,68 @@ async def test_a_turn_needs_text_or_an_attachment(client, session_id, scripted_m
     assert response.status_code == 422
 
 
+# --- session attachments (read-only, for research to carry forward) --------------------
+
+
+async def test_list_attachments_finds_a_file_sent_earlier_in_the_conversation(
+    client, container, alice, session_id, scripted_model
+) -> None:
+    """`SessionService.list_attachments` — the read `ResearchService`/`RunExecutor` use to
+    carry a session's own uploads into a research turn automatically."""
+    from coach.services.models import TurnStatus
+
+    upload_id = await _staged_upload(client, container, b"the rubric")
+    await client.post(f"/api/uploads/{upload_id}/finalize")
+
+    sent = await client.post(
+        f"/api/sessions/{session_id}/turns",
+        json={
+            "text": "here's the rubric",
+            "attachments": [{"uploadId": upload_id, "mimeType": "image/png"}],
+        },
+    )
+    await _await_complete(container, sent.json()["turnId"], TurnStatus.COMPLETE)
+
+    attachments = await container.sessions.list_attachments(alice, session_id)
+
+    upload = await container.upload_repository.get(upload_id)
+    assert attachments == [
+        {
+            "uri": upload["artifactUri"],
+            "mimeType": upload["mimeType"],
+            "displayName": "shot.png",
+        }
+    ]
+
+
+async def test_list_attachments_deduplicates_a_file_sent_twice(
+    client, container, alice, session_id, scripted_model
+) -> None:
+    """Sending the same attachment again (a re-send, or a reply that quotes it back) must
+    not carry it into research twice."""
+    from coach.services.models import TurnStatus
+
+    upload_id = await _staged_upload(client, container, b"the rubric")
+    await client.post(f"/api/uploads/{upload_id}/finalize")
+    body = {
+        "text": "here's the rubric",
+        "attachments": [{"uploadId": upload_id, "mimeType": "image/png"}],
+    }
+
+    for _ in range(2):
+        sent = await client.post(f"/api/sessions/{session_id}/turns", json=body)
+        await _await_complete(container, sent.json()["turnId"], TurnStatus.COMPLETE)
+
+    attachments = await container.sessions.list_attachments(alice, session_id)
+    assert len(attachments) == 1
+
+
+async def test_list_attachments_is_empty_for_a_conversation_with_no_files(
+    container, alice, session_id
+) -> None:
+    assert await container.sessions.list_attachments(alice, session_id) == []
+
+
 # --- presence --------------------------------------------------------------------------
 
 

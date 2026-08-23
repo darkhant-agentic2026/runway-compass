@@ -178,12 +178,21 @@ class TurnService:
         *,
         text: str = "",
         attachments: list[dict[str, str]] | None = None,
+        context_attachments: list[dict[str, str]] | None = None,
         confirmation: Confirmation | None = None,
         agent: AgentChoice = "coach",
         state_delta: dict[str, Any] | None = None,
         on_finished: Callable[[], Awaitable[None]] | None = None,
     ) -> Turn:
         """`POST /api/sessions/{sid}/turns` — 202, generation continues in background.
+
+        `context_attachments` is distinct from `attachments`: the latter is `{uploadId,
+        mimeType}`, resolved through `UploadService` because the caller only has an id
+        the learner just sent. The former already carries a resolved `{uri, mimeType,
+        displayName}` — `ResearchService`/`RunExecutor` use it to carry a task's own
+        uploads into a research turn automatically
+        (`SessionService.list_attachments`), where there is no fresh upload to resolve,
+        only files the conversation already has.
 
         `agent` selects which runner the detached task drives. A research run is a turn
         like any other — same checkpointing, same broker, same disconnect guarantee — and
@@ -217,7 +226,9 @@ class TurnService:
         linkage = await self._sessions.require_owned(principal, session_id)
         resolved_agent = _resolve_agent(agent, linkage.task_id)
 
-        content = await self._build_content(principal, text, attachments or [], confirmation)
+        content = await self._build_content(
+            principal, text, attachments or [], confirmation, context_attachments or []
+        )
         if content is None:
             raise ValidationProblem("A turn needs text, an attachment, or both.")
 
@@ -339,6 +350,7 @@ class TurnService:
         text: str,
         attachments: list[dict[str, str]],
         confirmation: Confirmation | None = None,
+        context_attachments: list[dict[str, str]] | None = None,
     ) -> types.Content | None:
         parts: list[types.Part] = []
         if confirmation is not None:
@@ -373,6 +385,16 @@ class TurnService:
             # file was attached but not which one.
             if part.file_data is not None and upload.filename:
                 part.file_data.display_name = upload.filename
+            parts.append(part)
+        for attachment in context_attachments or []:
+            # Already resolved — `SessionService.list_attachments` read these straight off
+            # stored events, so there is no upload id to look up and no ownership check to
+            # repeat: reading the session that produced them already proved that.
+            part = types.Part.from_uri(
+                file_uri=attachment["uri"], mime_type=attachment.get("mimeType") or None
+            )
+            if part.file_data is not None and attachment.get("displayName"):
+                part.file_data.display_name = attachment["displayName"]
             parts.append(part)
         return types.Content(role="user", parts=parts) if parts else None
 
