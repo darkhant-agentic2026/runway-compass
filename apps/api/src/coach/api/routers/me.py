@@ -6,7 +6,12 @@ from fastapi import APIRouter, Depends
 
 from coach.api.deps import CurrentUser, Quotas, Users
 from coach.api.idempotency import idempotency_guard
-from coach.api.schemas import GlobalPrefsPatch, LearnerProfilePatch, MeResponse
+from coach.api.schemas import (
+    GlobalPrefsPatch,
+    LearnerProfilePatch,
+    MeIdentityPatch,
+    MeResponse,
+)
 from coach.services.models import User
 
 router = APIRouter(prefix="/api", tags=["me"])
@@ -34,6 +39,19 @@ async def get_me(principal: CurrentUser, users: Users, quotas: Quotas) -> MeResp
     all work.
     """
     user = await users.get_or_create(principal)
+    return await _me_response(user, quotas)
+
+
+@router.patch("/me", response_model=MeResponse, dependencies=[Depends(idempotency_guard)])
+async def patch_me(
+    patch: MeIdentityPatch, principal: CurrentUser, users: Users, quotas: Quotas
+) -> MeResponse:
+    """The learner's own display name, overriding the one their sign-in token carries.
+
+    `UserService.get_or_create` never syncs `displayName` back from the token for this
+    account again once this has run — see `display_name_customized`.
+    """
+    user = await users.patch_display_name(principal, patch.display_name)
     return await _me_response(user, quotas)
 
 

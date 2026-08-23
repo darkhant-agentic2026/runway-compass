@@ -58,6 +58,7 @@ or a row of user data.
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/api/me` | Profile, `globalPrefs`, `learnerProfile`, plan limits, and — since M8-quotas — `usage`: `{ monthly, daily, fourHour }`, each `{ spent, limit, resetsAt }` |
+| `PATCH` | `/api/me` | `{ displayName }` — the one identity field a learner may override. Once set, `UserService.get_or_create` stops re-syncing it from the sign-in token's own claim |
 | `PATCH` | `/api/me/prefs` | Partial update of `globalPrefs` |
 | `PATCH` | `/api/me/learner-profile` | User edits/resets agent beliefs; bumps `version` |
 | `DELETE` | `/api/me` | Account + data deletion (async cascade job) |

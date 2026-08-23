@@ -115,6 +115,9 @@ collection query and one security boundary.
 ```jsonc
 {
   "email": "…", "displayName": "…", "photoUrl": "…",
+  "displayNameCustomized": false,       // true once set by PATCH /api/me; stops the
+                                         // token-refresh loop in UserService.get_or_create
+                                         // from overwriting it with the sign-in claim
   "createdAt": ts, "lastSeenAt": ts,
   "globalPrefs": {
     "defaultTaskMinutes": 45,

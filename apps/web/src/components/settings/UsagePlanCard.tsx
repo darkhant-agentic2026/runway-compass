@@ -22,13 +22,30 @@ interface UsagePlanCardProps {
   usage: UsageStatus;
 }
 
-const WINDOWS: Array<{ key: keyof UsageStatus; label: string }> = [
-  { key: 'monthly', label: 'Monthly' },
-  { key: 'daily', label: 'Daily' },
-  { key: 'fourHour', label: '4-hour' },
+const WINDOWS: Array<{ key: keyof UsageStatus; label: string; countdown: boolean }> = [
+  { key: 'monthly', label: 'Monthly', countdown: false },
+  { key: 'daily', label: 'Daily', countdown: true },
+  { key: 'fourHour', label: '4-hour', countdown: true },
 ];
 
-function Meter({ label, window }: { label: string; window: UsageWindow }) {
+/** "0h 34m" until `resetsAt`. Rounds up, so "a few seconds left" never reads as "0h 0m". */
+function remainingLabel(resetsAt: string): string {
+  const totalMinutes = Math.max(
+    0,
+    Math.ceil((new Date(resetsAt).getTime() - Date.now()) / 60_000),
+  );
+  return `${Math.floor(totalMinutes / 60)}h ${totalMinutes % 60}m`;
+}
+
+function Meter({
+  label,
+  window,
+  countdown,
+}: {
+  label: string;
+  window: UsageWindow;
+  countdown: boolean;
+}) {
   const fraction = window.limit > 0 ? window.spent / window.limit : 1;
   const exhausted = window.spent >= window.limit;
   const width = `${Math.min(100, Math.max(0, fraction * 100))}%`;
@@ -49,6 +66,12 @@ function Meter({ label, window }: { label: string; window: UsageWindow }) {
       </div>
       <p className="text-xs text-muted-foreground">
         {exhausted ? 'Exhausted — ' : ''}Resets {new Date(window.resetsAt).toLocaleString()}
+        {countdown ? (
+          <>
+            {' '}
+            (in <strong>{remainingLabel(window.resetsAt)}</strong> from now)
+          </>
+        ) : null}
       </p>
     </div>
   );
@@ -75,8 +98,8 @@ export function UsagePlanCard({ usage }: UsagePlanCardProps) {
         <CardTitle>Usage & plan</CardTitle>
       </CardHeader>
       <CardContent className="space-y-5">
-        {WINDOWS.map(({ key, label }) => (
-          <Meter key={key} label={label} window={usage[key]} />
+        {WINDOWS.map(({ key, label, countdown }) => (
+          <Meter key={key} label={label} window={usage[key]} countdown={countdown} />
         ))}
 
         <div className="space-y-1 border-t pt-4">

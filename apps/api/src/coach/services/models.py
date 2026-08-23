@@ -286,6 +286,11 @@ class User(DomainModel):
     uid: str
     email: str | None = None
     display_name: str | None = None
+    #: Once true, `UserService.get_or_create`'s refresh-from-token loop stops touching
+    #: `display_name` — set by `PATCH /api/me`, never by the sign-in token's own claim.
+    #: Without this a learner's chosen name would be silently overwritten by their
+    #: Google account's name on their very next request.
+    display_name_customized: bool = False
     photo_url: str | None = None
     created_at: datetime | None = None
     last_seen_at: datetime | None = None

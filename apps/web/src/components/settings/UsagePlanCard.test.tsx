@@ -38,6 +38,27 @@ describe('UsagePlanCard', () => {
     expect(screen.getAllByText(/^Resets /)).toHaveLength(2);
   });
 
+  it('shows the countdown to reset for daily and 4-hour, but not monthly', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-24T12:00:00Z'));
+
+    renderCard(
+      makeUsageStatus({
+        monthly: { spent: 10, limit: 500, resetsAt: '2026-09-01T00:00:00Z' },
+        daily: { spent: 10, limit: 200, resetsAt: '2026-08-24T12:34:00Z' },
+        fourHour: { spent: 10, limit: 80, resetsAt: '2026-08-24T14:15:00Z' },
+      }),
+    );
+
+    expect(screen.getByText('0h 34m')).toBeInTheDocument();
+    expect(screen.getByText('2h 15m')).toBeInTheDocument();
+    // Monthly resets in over a week — no hours-and-minutes countdown for it.
+    const monthlyMeter = screen.getByText('10 / 500 points').closest('div');
+    expect(monthlyMeter?.textContent).not.toMatch(/from now/);
+
+    vi.useRealTimers();
+  });
+
   it('claims a coupon and clears the input on success', async () => {
     const claimSpy = vi.spyOn(api, 'claimCoupon').mockResolvedValue({
       plan: {

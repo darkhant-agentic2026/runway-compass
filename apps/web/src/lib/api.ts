@@ -131,6 +131,14 @@ export const api = {
       ...(idempotencyKey ? { idempotencyKey } : {}),
     }),
 
+  /** The one identity field a learner may override — the sign-in token supplies the rest. */
+  patchDisplayName: (displayName: string, idempotencyKey?: string) =>
+    request('/api/me', meSchema, {
+      method: 'PATCH',
+      body: { displayName },
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    }),
+
   claimCoupon: (code: string, idempotencyKey?: string) =>
     request('/api/coupons/claim', couponClaimResponseSchema, {
       method: 'POST',

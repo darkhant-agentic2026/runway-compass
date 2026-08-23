@@ -62,6 +62,13 @@ class MeResponse(ResponseModel):
     usage: UsageStatus
 
 
+class MeIdentityPatch(RequestModel):
+    """`PATCH /api/me`. Only `displayName` today — the one identity field a learner may
+    override; `email` and `photoUrl` stay Identity Platform's to set."""
+
+    display_name: str = Field(min_length=1, max_length=100)
+
+
 class CouponClaimRequest(RequestModel):
     code: str = Field(min_length=1, max_length=64)
 

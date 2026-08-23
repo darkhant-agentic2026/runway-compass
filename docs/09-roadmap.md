@@ -958,6 +958,38 @@ before any code changed (this milestone had no specification going in — see
 | A rejected rate-limit attempt is never recorded | Recording it would advance the window's own oldest timestamp, letting a caller who keeps retrying shorten its own wait — the opposite of what the limit is for | `repositories/rate_limits.py` |
 | A wrong coupon guess **is** recorded against the claim-attempt limit | Brute-forcing codes is exactly what that limit exists to slow down; only the *account creation* limit gets the "don't record a refusal" treatment, and for the opposite reason — there the refused action is legitimate traffic, not an attack | `services/coupons.py` |
 
+### Two more UX changes on the same branch, neither its own milestone
+
+Requested after the milestone above was already green, and small enough to land beside it
+rather than opening a second branch.
+
+**The usage meters show a countdown, not only a timestamp.** `UsagePlanCard`'s daily and
+4-hour rows read "Resets 8/25/2026, 12:00:00 AM (in **0h 34m** from now)" — the monthly row
+does not, since a countdown in hours and minutes is the wrong grain for a window that resets
+in days. Computed at render time from `Date.now()` rather than a ticking clock: the value is
+already refreshed on every `GET /api/me` poll, and a settings screen is not somewhere a
+stale minute matters enough to justify a `setInterval`.
+
+**A learner may set their own display name (`PATCH /api/me`), and it replaces email as the
+header's primary, visible identity — email moves to the hover title.** This touches M0's
+own exit criterion above, which the header comment used to state literally ("the signed-in
+user sees their email"): the *proof* that criterion cared about — the token round-tripped
+through `verify_id_token` and the user document resolved — is unchanged and still visible
+(now on `title` rather than as the element's text), but the visible text is not. Rather than
+silently reinterpret a `docs/09-roadmap.md`-referenced comment, this was confirmed with the
+user before changing: keep the round-trip proof, move email to the tooltip, prefer the
+display name. `e2e/board.spec.ts`'s M0 assertion moved with it —
+`getByTestId('signed-in-identity')` is non-empty and its `title` contains `@`, in place of
+the old `signed-in-email` element's own text doing both jobs at once.
+
+**`display_name_customized` is why this doesn't get silently reverted.**
+`UserService.get_or_create` refreshes `displayName` (among other fields) from the sign-in
+token's own claim on every request — the mechanism that follows a Google account's name or
+avatar automatically. Once a learner sets their own, that one field is excluded from the
+refresh for their account, permanently; nothing else about the loop changes. Without this,
+the very next `GET /api/me` — which every screen makes — would silently overwrite the
+learner's choice with whatever the token still says.
+
 ---
 
 ## M9 — Hardening and launch readiness (~1.5 weeks)

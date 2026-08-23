@@ -5,6 +5,7 @@
  * you' (learner profile, editable)".
  */
 
+import { AccountCard } from '@/components/settings/AccountCard';
 import { LearnerProfileEditor } from '@/components/settings/LearnerProfileEditor';
 import { UsagePlanCard } from '@/components/settings/UsagePlanCard';
 import { ThemeToggle } from '@/components/ThemeToggle';
@@ -34,6 +35,19 @@ export default function SettingsPage() {
   return (
     <div className="mx-auto w-full max-w-2xl space-y-6 p-4 sm:p-6">
       <h1 className="text-2xl font-semibold">Settings</h1>
+
+      {me.data ? (
+        <AccountCard me={me.data} />
+      ) : (
+        <Card>
+          <CardHeader>
+            <CardTitle>Account</CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm text-muted-foreground">
+            <p>Loading your account…</p>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>

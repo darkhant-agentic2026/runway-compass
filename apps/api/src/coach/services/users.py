@@ -6,7 +6,7 @@ from datetime import timedelta
 from typing import Any
 
 from coach.core.clock import now
-from coach.core.errors import RateLimited
+from coach.core.errors import RateLimited, ValidationProblem
 from coach.core.principal import Principal
 from coach.repositories.plans import PlanRepository
 from coach.repositories.rate_limits import RateLimitRepository
@@ -84,12 +84,20 @@ class UserService:
                 )
             )
 
-        refresh: dict[str, Any] = {"lastSeenAt": now()}
-        for wire_name, value in (
+        token_fields: list[tuple[str, str | None]] = [
             ("email", principal.email),
             ("displayName", principal.display_name),
             ("photoUrl", principal.photo_url),
-        ):
+        ]
+        if existing.display_name_customized:
+            # The learner has chosen their own — otherwise the very next request would
+            # re-sync it from the sign-in token and silently discard the choice.
+            token_fields = [
+                (name, value) for name, value in token_fields if name != "displayName"
+            ]
+
+        refresh: dict[str, Any] = {"lastSeenAt": now()}
+        for wire_name, value in token_fields:
             if value is not None and getattr(existing, _snake(wire_name)) != value:
                 refresh[wire_name] = value
         await self._users.patch(principal.uid, refresh)
@@ -98,6 +106,23 @@ class UserService:
     async def global_prefs(self, principal: Principal) -> GlobalPrefs:
         user = await self.get_or_create(principal)
         return user.global_prefs
+
+    async def patch_display_name(self, principal: Principal, display_name: str) -> User:
+        """User-chosen display name (`PATCH /api/me`).
+
+        Once set, `get_or_create`'s refresh-from-token loop above stops touching this
+        field for this account — the whole reason `display_name_customized` exists.
+        """
+        trimmed = display_name.strip()
+        if not trimmed:
+            raise ValidationProblem("Display name cannot be empty.")
+        user = await self.get_or_create(principal)
+        await self._users.patch(
+            principal.uid, {"displayName": trimmed, "displayNameCustomized": True}
+        )
+        return user.model_copy(
+            update={"display_name": trimmed, "display_name_customized": True}
+        )
 
     async def apply_coupon_limits(self, principal: Principal, limits: CouponLimits) -> Plan:
         """A claimed coupon **replaces** the account's points limits outright.
