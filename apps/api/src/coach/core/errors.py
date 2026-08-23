@@ -101,3 +101,25 @@ class RateLimited(CoachError):
     status = 429
     title = "Too many requests"
     code = "rate-limited"
+
+
+class QuotaExceeded(CoachError):
+    """A usage window (monthly, daily, or 4-hour points) is spent.
+
+    docs/02-data-model.md#usage-quotas-m8-quotas. Distinct from :class:`RateLimited`: a
+    rate limit bounds how *often* a request may be made; this bounds how *much* work a user
+    may consume before the window resets. Raised before a turn is created, so there is
+    nothing to resume — the client's only affordance is a retry once `resetAt` has passed.
+    """
+
+    status = 429
+    title = "Usage quota exceeded"
+    code = "quota-exceeded"
+
+    def __init__(self, window: str, reset_at: Any) -> None:
+        reset_iso = reset_at.isoformat() if hasattr(reset_at, "isoformat") else str(reset_at)
+        super().__init__(
+            f"Your {window} usage quota is exhausted. It resets at {reset_iso}.",
+            window=window,
+            resetAt=reset_iso,
+        )

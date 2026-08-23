@@ -6,6 +6,7 @@
  */
 
 import { LearnerProfileEditor } from '@/components/settings/LearnerProfileEditor';
+import { UsagePlanCard } from '@/components/settings/UsagePlanCard';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -145,6 +146,8 @@ export default function SettingsPage() {
           )}
         </CardContent>
       </Card>
+
+      {me.data?.usage ? <UsagePlanCard usage={me.data.usage} /> : null}
 
       {profile ? (
         <LearnerProfileEditor profile={profile} />

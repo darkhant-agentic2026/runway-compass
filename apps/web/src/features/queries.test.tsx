@@ -20,7 +20,7 @@ import {
   useSetTaskState,
   useStartTurn,
 } from '@/features/queries';
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
 import { keyBetween } from '@/lib/ordering';
 import type { SessionEvent, TaskDetail, TaskWithSubtasks } from '@/lib/schemas';
 import { getSocket } from '@/lib/socket';
@@ -309,6 +309,32 @@ describe('useStartTurn', () => {
 
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(read()).toEqual([]);
+  });
+
+  it('surfaces a quota-exceeded ApiError as the mutation error', async () => {
+    // M8-quotas: a blocked turn is never created, so the caller (SessionPane's retry
+    // banner) has to learn about it through the mutation's own error, not through a
+    // `turn_error` frame that will never arrive.
+    const problem = {
+      type: '/problems/quota-exceeded',
+      title: 'Usage quota exceeded',
+      status: 429,
+      detail: 'Your daily usage quota is exhausted. It resets at 2026-08-25T00:00:00+00:00.',
+      window: 'daily',
+      resetAt: '2026-08-25T00:00:00+00:00',
+    };
+    vi.spyOn(api, 'startTurn').mockRejectedValue(new ApiError(429, problem));
+
+    const { wrapper } = setupSession();
+    const { result } = renderHook(() => useStartTurn(SESSION), { wrapper });
+
+    result.current.mutate({ text: 'hello' });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    const error = result.current.error;
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).problem.type).toBe('/problems/quota-exceeded');
+    expect((error as ApiError).problem.window).toBe('daily');
   });
 });
 

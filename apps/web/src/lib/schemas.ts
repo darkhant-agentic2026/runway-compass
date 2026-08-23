@@ -176,6 +176,29 @@ export const learnerProfileResponseSchema = z.object({
   learnerProfile: learnerProfileSchema,
 });
 
+export const planLimitsSchema = z.object({
+  autonomousRunsPerDay: z.number().int(),
+  monthlyPoints: z.number().int(),
+  dailyPoints: z.number().int(),
+  fourHourPoints: z.number().int(),
+});
+export type PlanLimits = z.infer<typeof planLimitsSchema>;
+
+/** One usage window (`GET /api/me`'s `usage.{monthly,daily,fourHour}`), M8-quotas. */
+export const usageWindowSchema = z.object({
+  spent: z.number().int(),
+  limit: z.number().int(),
+  resetsAt: z.string(),
+});
+export type UsageWindow = z.infer<typeof usageWindowSchema>;
+
+export const usageStatusSchema = z.object({
+  monthly: usageWindowSchema,
+  daily: usageWindowSchema,
+  fourHour: usageWindowSchema,
+});
+export type UsageStatus = z.infer<typeof usageStatusSchema>;
+
 export const meSchema = z.object({
   uid: z.string(),
   email: z.string().nullable(),
@@ -185,10 +208,16 @@ export const meSchema = z.object({
   learnerProfile: learnerProfileSchema,
   plan: z.object({
     tier: z.string(),
-    limits: z.object({ autonomousRunsPerDay: z.number().int() }),
+    limits: planLimitsSchema,
   }),
+  usage: usageStatusSchema,
 });
 export type Me = z.infer<typeof meSchema>;
+
+export const couponClaimResponseSchema = z.object({
+  plan: z.object({ tier: z.string(), limits: planLimitsSchema }),
+});
+export type CouponClaimResponse = z.infer<typeof couponClaimResponseSchema>;
 
 export const projectListSchema = z.object({ projects: z.array(projectSchema) });
 export const boardSchema = z.object({ tasks: z.array(taskWithSubtasksSchema) });
@@ -397,5 +426,13 @@ export const problemSchema = z.object({
    * (docs/04-api-contract.md#post-apisessionssidresearch).
    */
   runId: z.string().optional(),
+  /**
+   * Present on the `429` from a quota-exceeded turn (M8-quotas): which window
+   * (`"monthly" | "daily" | "4-hour"`) and when it resets, in addition to `detail`'s
+   * human-readable sentence carrying the same information
+   * (docs/04-api-contract.md#usage-quotas-implemented-m8-quotas).
+   */
+  window: z.string().optional(),
+  resetAt: z.string().optional(),
 });
 export type Problem = z.infer<typeof problemSchema>;

@@ -112,6 +112,16 @@ class Settings(BaseSettings):
     #: interactive turns. docs/07-infra-deploy.md
     max_concurrent_agent_runs: int = Field(default=8, ge=1)
 
+    # --- Abuse prevention (M8-quotas) --------------------------------------------------
+    #: docs/04-api-contract.md#abuse-prevention-limits-implemented-m8-quotas. Configurable
+    #: rather than a hardcoded constant for one reason: the e2e harness mints a fresh,
+    #: never-reused uid per *test* (`e2e/fixtures.ts`) as its whole isolation strategy, so
+    #: a real-world default of 4 would fail the fifth spec of every run on a guard that has
+    #: nothing to do with the product behaviour under test. `docker-compose.e2e.yml` raises
+    #: this; production keeps the default.
+    new_user_rate_limit: int = Field(default=4, ge=1)
+    new_user_rate_limit_window_minutes: int = Field(default=30, ge=1)
+
     @property
     def is_local(self) -> bool:
         return self.env == "local"

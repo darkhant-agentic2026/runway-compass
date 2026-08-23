@@ -61,6 +61,12 @@ services:
       # when it does. ~40 ms per word over a couple of dozen words is a comfortable
       # window on a loaded CI runner without making the suite slow.
       STUB_MODEL_DELAY_MS: '40'
+      # `e2e/fixtures.ts` mints a fresh, never-reused uid per *test* as its whole
+      # isolation strategy — dozens of accounts over one suite run, against the same
+      # long-lived stack. The production default (4 / 30 min,
+      # docs/04-api-contract.md#abuse-prevention-limits-implemented-m8-quotas) would fail
+      # the fifth spec on a guard that has nothing to do with what is under test.
+      NEW_USER_RATE_LIMIT: '100000'
       LOG_LEVEL: INFO
     ports:
       - '8080:8080'

@@ -516,6 +516,8 @@ YOUTUBE_API_KEY=sm://youtube-api-key
 ALLOWED_SCHEDULER_SA=coach-scheduler-sa@….iam.gserviceaccount.com
 ALLOWED_TASKS_SA=coach-tasks-sa@….iam.gserviceaccount.com   # /internal/runs/* caller; distinct from the above
 OAUTH_CLIENT_ID=….apps.googleusercontent.com  # Identity Platform Google provider; token audience
+NEW_USER_RATE_LIMIT=4                         # M8-quotas; e2e raises this — see below
+NEW_USER_RATE_LIMIT_WINDOW_MINUTES=30
 ```
 
 `/internal/tick` and `/internal/runs/{id}/execute` are invoked by **two different** service

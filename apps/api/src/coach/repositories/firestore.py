@@ -40,6 +40,9 @@ TURNS = "turns"
 AUTONOMOUS_RUNS = "autonomous_runs"
 PRESENCE = "presence"
 USAGE = "usage"
+PLANS = "plans"  # M8-quotas: preset limits a new account starts from
+COUPONS = "coupons"  # M8-quotas: single-use beta-testing grants
+RATE_LIMITS = "rate_limits"  # M8-quotas: sliding-window abuse counters
 IDEMPOTENCY = "idempotency"
 
 #: Attempts *inside* one `AsyncTransaction`. Firestore's own default is 5 and that is

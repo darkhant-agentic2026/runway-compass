@@ -841,6 +841,20 @@ export function usePatchGlobalPrefs() {
   });
 }
 
+/** `POST /api/coupons/claim`. M8-quotas — replaces `plan.limits` on success. */
+export function useClaimCoupon() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (code: string) => api.claimCoupon(code, newIdempotencyKey()),
+    onSuccess(response) {
+      queryClient.setQueryData<Me>(queryKeys.me, (previous) =>
+        previous ? { ...previous, plan: response.plan } : previous,
+      );
+      void queryClient.invalidateQueries({ queryKey: queryKeys.me });
+    },
+  });
+}
+
 export function usePatchLearnerProfile() {
   const queryClient = useQueryClient();
   return useMutation({

@@ -33,6 +33,7 @@ from coach.services.models import (
     TaskState,
     TaskWithSubtasks,
     TurnStatus,
+    UsageStatus,
     Verbosity,
 )
 
@@ -55,6 +56,17 @@ class MeResponse(ResponseModel):
     photo_url: str | None
     global_prefs: GlobalPrefs
     learner_profile: LearnerProfile
+    plan: Plan
+    #: docs/02-data-model.md#usage-quotas-m8-quotas. Spend, limit, and reset time for all
+    #: three windows, regardless of whether any is exhausted.
+    usage: UsageStatus
+
+
+class CouponClaimRequest(RequestModel):
+    code: str = Field(min_length=1, max_length=64)
+
+
+class CouponClaimResponse(ResponseModel):
     plan: Plan
 
 

@@ -57,11 +57,12 @@ or a row of user data.
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET` | `/api/me` | Profile, `globalPrefs`, `learnerProfile`, plan limits |
+| `GET` | `/api/me` | Profile, `globalPrefs`, `learnerProfile`, plan limits, and — since M8-quotas — `usage`: `{ monthly, daily, fourHour }`, each `{ spent, limit, resetsAt }` |
 | `PATCH` | `/api/me/prefs` | Partial update of `globalPrefs` |
 | `PATCH` | `/api/me/learner-profile` | User edits/resets agent beliefs; bumps `version` |
 | `DELETE` | `/api/me` | Account + data deletion (async cascade job) |
 | `POST` | `/api/ws-ticket` | `→ { ticket, expiresAt }` |
+| `POST` | `/api/coupons/claim` | M8-quotas. `{ code }` → `{ plan }`. Replaces `plan.limits.{monthlyPoints,dailyPoints,fourHourPoints}` with the coupon's grant. `404` unknown code, `409` already claimed, `429` rate-limited (below) |
 
 ### Projects
 
@@ -382,4 +383,48 @@ not wasted.* Mechanism:
 | WebSocket | 3 connections/user, 100 frames/min |
 
 Enforced in Firestore counters with a token-bucket; exceeding returns `429` with
-`Retry-After`.
+`Retry-After`. **Not yet implemented** — this table is the target contract; nothing in
+`services/` enforces it today except the two rows below, added at M8-quotas for a
+narrower reason than general API throttling.
+
+### Abuse-prevention limits (implemented, M8-quotas)
+
+| Scope | Limit | Mechanism |
+| --- | --- | --- |
+| New account creation | 4 / 30 min, **global** (not per-user — a new account has no uid yet) | `rate_limits/new_users`, checked in `UserService.get_or_create`'s creation branch |
+| `POST /api/coupons/claim` | 5 / hour / uid | `rate_limits/coupon_claim:{uid}`, checked before the coupon lookup so a wrong-code guess still counts against the limit |
+
+Both return `429` (`RateLimited`) with no `Retry-After` — the caller has no way to compute
+one from a sliding window without also being told the window's contents, and "try again in
+a while" is what a signup form or a coupon field already reads as. This is a narrower
+concern than the table above: it exists to bound free-tier abuse
+([00-overview.md](00-overview.md), R4 in [10-risks.md](10-risks.md)), not to protect the API
+from load in general.
+
+**The new-account limit is a `Settings` value (`NEW_USER_RATE_LIMIT`,
+`NEW_USER_RATE_LIMIT_WINDOW_MINUTES`), not a hardcoded constant**, for a reason specific to
+this project's own test harness: `e2e/fixtures.ts` mints a fresh, never-reused uid per
+*test* as its whole isolation strategy, against one long-lived compose stack — dozens of
+accounts over a suite run. The production default (4 / 30 min) would fail the fifth e2e
+spec on a guard that has nothing to do with the behaviour under test, so
+`docker-compose.e2e.yml` raises it; every other environment keeps the default.
+
+### Usage quotas (implemented, M8-quotas)
+
+Distinct from rate limiting: a rate limit bounds *how often* a request may be made; a usage
+quota bounds *how much* work a user may consume before it resets. `POST
+/api/sessions/{sid}/turns` (and, through it, every research and autonomous run —
+[05-autonomous-runs.md](05-autonomous-runs.md#candidate-selection-and-guards)) is refused
+with `429` and `type: /problems/quota-exceeded` when the monthly, daily, or 4-hour points
+window is exhausted:
+
+```jsonc
+{ "type": "/problems/quota-exceeded", "title": "Usage quota exceeded", "status": 429,
+  "detail": "Your daily usage quota is exhausted. It resets at 2026-08-25T00:00:00+00:00.",
+  "window": "daily", "resetAt": "2026-08-25T00:00:00+00:00" }
+```
+
+No turn is created, so there is nothing to resume — the client's only affordance is a
+retry once `resetAt` has passed, which is a plain resend of the same message rather than a
+reconnect. See [02-data-model.md](02-data-model.md#usage-quotas-m8-quotas) for the windows,
+the points unit, and why enforcement is one gate.

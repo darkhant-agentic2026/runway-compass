@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 
 from coach.api.idempotency import IdempotencyMiddleware, ReplayedResponse
 from coach.api.routers import (
+    coupons,
     health,
     internal,
     me,
@@ -233,6 +234,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(me.router)
+    app.include_router(coupons.router)
     app.include_router(projects.router)
     app.include_router(tasks.router)
     app.include_router(reports.router)

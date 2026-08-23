@@ -118,6 +118,12 @@ _FAILURE_PATTERN = re.compile(r"\bmake this turn fail\b", re.IGNORECASE)
 #: `services/turns.py` classifies 429 as retryable, so the UI offers "You can try again".
 STUB_FAILURE_MESSAGE = "429 RESOURCE_EXHAUSTED: stub failure requested by the prompt"
 
+#: M8-quotas: a fixed token count on every non-partial response, so a local e2e run (which
+#: never sees a real model) still exercises point deduction — one call, one point, deducted
+#: from all three windows. `TurnService._generate` reads this off `usage_metadata`, never
+#: off a partial chunk, so a multi-call turn (tool loop) charges once per call as intended.
+STUB_USAGE_TOKENS = 1000
+
 #: A reply exercising every construct the transcript renders: a GFM table, an equation, a
 #: fenced code block, and a mermaid diagram (docs/06-frontend.md#markdown-in-the-transcript).
 #:
@@ -340,7 +346,10 @@ class StubModel(BaseLlm):
             # Function calls are not streamed in pieces: a partial function call is not a
             # thing the flow can act on, and ADK aggregates the finalized event anyway.
             yield LlmResponse(
-                content=types.Content(role="model", parts=[types.Part(function_call=call)])
+                content=types.Content(role="model", parts=[types.Part(function_call=call)]),
+                usage_metadata=types.GenerateContentResponseUsageMetadata(
+                    total_token_count=STUB_USAGE_TOKENS
+                ),
             )
             return
 
@@ -358,7 +367,10 @@ class StubModel(BaseLlm):
                 partial=True,
             )
         yield LlmResponse(
-            content=types.Content(role="model", parts=[types.Part(text="".join(chunks))])
+            content=types.Content(role="model", parts=[types.Part(text="".join(chunks))]),
+            usage_metadata=types.GenerateContentResponseUsageMetadata(
+                total_token_count=STUB_USAGE_TOKENS
+            ),
         )
 
 
@@ -610,6 +622,7 @@ __all__ = [
     "STUB_MULTI_QUESTION",
     "STUB_OPTIONS",
     "STUB_QUESTION",
+    "STUB_USAGE_TOKENS",
     "StubModel",
     "budget_minutes",
     "first_task_id",

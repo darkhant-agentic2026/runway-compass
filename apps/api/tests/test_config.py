@@ -38,6 +38,21 @@ def test_local_defaults_are_usable_without_configuration() -> None:
     assert settings.model_name == "gemini-3.7-flash"
     assert settings.adk_firestore_root_collection == "adk-session"
     assert settings.firestore_database == "(default)"
+    # docs/04-api-contract.md#abuse-prevention-limits-implemented-m8-quotas: the
+    # production default. `docker-compose.e2e.yml` overrides it via `NEW_USER_RATE_LIMIT`
+    # for its own reason (a fresh uid per test, not a real signup); nothing else should.
+    assert settings.new_user_rate_limit == 4
+    assert settings.new_user_rate_limit_window_minutes == 30
+
+
+def test_new_user_rate_limit_is_overridable_by_env_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins the exact mechanism `docker-compose.e2e.yml`'s `NEW_USER_RATE_LIMIT` relies
+    on, so a rename here fails a test rather than silently breaking every e2e run."""
+    monkeypatch.setenv("NEW_USER_RATE_LIMIT", "100000")
+    settings = Settings(env="local")
+    assert settings.new_user_rate_limit == 100000
 
 
 @pytest.mark.parametrize("env", ["dev", "prod"])

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import timedelta
 from typing import TYPE_CHECKING, Annotated, cast
 
 from fastapi import Depends, Request
@@ -32,10 +33,13 @@ from coach.integrations.queue import build_job_queue
 from coach.integrations.storage import build_object_store
 from coach.integrations.youtube import YouTubeClient
 from coach.repositories.board_events import BoardEventRepository
+from coach.repositories.coupons import CouponRepository
 from coach.repositories.firestore import Database, LazyAsyncClient
 from coach.repositories.idempotency import IdempotencyRepository
+from coach.repositories.plans import PlanRepository
 from coach.repositories.presence import PresenceRepository
 from coach.repositories.projects import ProjectRepository
+from coach.repositories.rate_limits import RateLimitRepository
 from coach.repositories.reports import ReportRepository
 from coach.repositories.runs import RunRepository
 from coach.repositories.tasks import TaskRepository
@@ -44,8 +48,10 @@ from coach.repositories.turns import TurnRepository
 from coach.repositories.uploads import UploadRepository
 from coach.repositories.usage import UsageRepository
 from coach.repositories.users import UserRepository
+from coach.services.coupons import CouponService
 from coach.services.executor import RunExecutor
 from coach.services.projects import ProjectService
+from coach.services.quotas import QuotaService
 from coach.services.reports import ReportService
 from coach.services.research import ResearchService
 from coach.services.runs import RunService
@@ -94,9 +100,22 @@ class Container:
         self.report_repository = ReportRepository(self.db)
         self.run_repository = RunRepository(self.db)
         self.usage_repository = UsageRepository(self.db)
+        self.plan_repository = PlanRepository(self.db)
+        self.rate_limit_repository = RateLimitRepository(self.db)
+        self.coupon_repository = CouponRepository(self.db)
         self.tickets = TicketRepository(self.db)
 
-        self.users = UserService(self.user_repository)
+        self.users = UserService(
+            self.user_repository,
+            self.plan_repository,
+            self.rate_limit_repository,
+            new_user_limit=settings.new_user_rate_limit,
+            new_user_window=timedelta(minutes=settings.new_user_rate_limit_window_minutes),
+        )
+        self.quotas = QuotaService(self.user_repository, self.usage_repository)
+        self.coupons = CouponService(
+            self.coupon_repository, self.users, self.rate_limit_repository
+        )
         self.projects = ProjectService(self.project_repository, self.users)
         self.tasks = TaskService(
             self.db, self.task_repository, self.project_repository, self.projects
@@ -196,6 +215,7 @@ class Container:
             self.runners,
             self.registry,
             self.broker,
+            self.quotas,
             instance_id=self.instance_id,
         )
         self.research = ResearchService(
@@ -289,6 +309,14 @@ def get_run_service(container: Container = Depends(get_container)) -> RunService
     return container.runs
 
 
+def get_coupon_service(container: Container = Depends(get_container)) -> CouponService:
+    return container.coupons
+
+
+def get_quota_service(container: Container = Depends(get_container)) -> QuotaService:
+    return container.quotas
+
+
 Users = Annotated[UserService, Depends(get_user_service)]
 Projects = Annotated[ProjectService, Depends(get_project_service)]
 Tasks = Annotated[TaskService, Depends(get_task_service)]
@@ -298,6 +326,8 @@ Uploads = Annotated[UploadService, Depends(get_upload_service)]
 Reports = Annotated[ReportService, Depends(get_report_service)]
 Research = Annotated[ResearchService, Depends(get_research_service)]
 Runs = Annotated[RunService, Depends(get_run_service)]
+Coupons = Annotated[CouponService, Depends(get_coupon_service)]
+Quotas = Annotated[QuotaService, Depends(get_quota_service)]
 SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
 #: For the handful of routes that need something the container holds but no service owns —
 #: the `BoardUpdateHub`, chiefly. Reaching for the whole container is a smell in a router,

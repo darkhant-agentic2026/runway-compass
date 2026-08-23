@@ -475,15 +475,23 @@ class SchedulerService:
         return candidates
 
     async def _shared_guards(self, project: Project, owner: User, result: TickResult) -> bool:
-        """The two guards both kinds of work are subject to: the lease and the quota."""
+        """The three guards both kinds of work are subject to: the lease, the run-count
+        quota, and — since M8-quotas — the points quota."""
         holder = await self._runs.lease_holder(project.id)
         if holder is not None:
             result.skip("lease_held")
             return False
-        day = local_day(now(), owner.global_prefs.timezone)
+        at = now()
+        day = local_day(at, owner.global_prefs.timezone)
         spent = await self._usage.autonomous_runs(owner.uid, day)
         if spent >= owner.plan.limits.autonomous_runs_per_day:
             result.skip("quota_exhausted")
+            return False
+        points = await self._usage.points_snapshot(owner.uid, owner.global_prefs.timezone, at)
+        if points.exhausted_window(owner.plan.limits) is not None:
+            # Not retried specially: an exhausted project is simply a candidate again on
+            # the tick after its window resets, same as `cooldown` or `quiet_hours`.
+            result.skip("points_quota_exhausted")
             return False
         return True
 
