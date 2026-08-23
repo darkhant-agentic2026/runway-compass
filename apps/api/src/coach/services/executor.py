@@ -284,11 +284,13 @@ class RunExecutor:
     async def _research(
         self, principal: Principal, run: AutonomousRun, steps: dict[str, RunStep]
     ) -> dict[str, object] | object:
-        """One `research_agent` turn in the task's own session.
+        """One `research_agent` turn in a session created fresh for this run.
 
-        Invariant 3 — "research results are posted into that task's session" — is this
-        method's choice of session, and it is also what gives the run tool-activity chips,
-        checkpointing, and a transcript the learner can read afterwards, all for free.
+        **Since M8**, this is a dedicated session — never the task's own conversation —
+        created once and recorded on the ledger (`run.sessionId`), the same way `turnId`
+        is: docs/02-data-model.md#sessions--events-adk-owned-layout. A resumed run (a
+        retried step, after a crash) must not create a second session for the same run,
+        which is what the `run.session_id` check below is for.
         """
         task_id = _task_id_of(steps, run)
         task = await self._tasks.resolve(principal, task_id)
@@ -300,20 +302,32 @@ class RunExecutor:
             # `needsResearch: false` gets a run that can never succeed: select_next_task
             # resolves the request unconditionally, but this guard would skip it anyway.
             return _SKIPPED
-        session = await self._sessions.get_or_create_for_task(principal, task_id)
+        session_id = await self._ensure_session(principal, run, task_id)
+        # Whatever the learner has already uploaded in the task's own conversation,
+        # carried into the research turn the same way the manual trigger does
+        # (`ResearchService.start_manual`) — a scheduled run reads the same task
+        # description a learner does, and a description that mentions an attached file
+        # deserves the same access to it whether or not anyone was watching this run
+        # start.
+        context_attachments = (
+            await self._sessions.list_attachments(principal, task.session_id)
+            if task.session_id
+            else []
+        )
         turn = await self._run_turn(
             principal,
-            session.id,
+            session_id,
             text=_research_message(task),
             agent="research",
             run_id=run.id,
+            context_attachments=context_attachments,
         )
         if turn.status is not TurnStatus.COMPLETE:
             raise StepFailed(
                 (turn.error.message if turn.error else None)
                 or "the research turn did not finish"
             )
-        return {"turnId": turn.id, "sessionId": session.id}
+        return {"turnId": turn.id, "sessionId": session_id}
 
     # --- 3. post_report ---------------------------------------------------------------
 
@@ -362,6 +376,11 @@ class RunExecutor:
         no `discard_task`, no `update_learner_profile`, no `update_project_prefs`.
         `agents/tools.py` builds that subset; nothing here decides it.
 
+        **Since M8, this turn lands in the run's own research session, not the task's
+        conversation** — the same reasoning that moved `research` there applies here: this
+        step's tool calls are the coach maintaining the board on its own initiative, not a
+        conversation with the learner, and the task session should read as the latter.
+
         Tasks the run creates are recorded on the ledger as `task_created` changes, which
         is what the "Updated by your coach" banner lists and what undo deletes. Recorded by
         **diffing the project's task ids around the turn** rather than by asking the model
@@ -369,11 +388,11 @@ class RunExecutor:
         tasks undo cannot remove.
         """
         task_id = _task_id_of(steps, run)
-        session = await self._sessions.get_or_create_for_task(principal, task_id)
+        session_id = await self._ensure_session(principal, run, task_id)
         before = {task.id for task in await self._task_repository.list_all(run.project_id)}
         turn = await self._run_turn(
             principal,
-            session.id,
+            session_id,
             text=_propose_message(),
             agent="propose",
             run_id=run.id,
@@ -441,6 +460,26 @@ class RunExecutor:
 
     # --- turn plumbing ----------------------------------------------------------------
 
+    async def _ensure_session(
+        self, principal: Principal, run: AutonomousRun, task_id: str
+    ) -> str:
+        """This run's dedicated session, creating it on first use.
+
+        Both `_research` and `_propose_tasks` land their turns in the same session — one
+        run, one session — but `_research` may be skipped (`needsResearch: false`)
+        without ever creating one, so `_propose_tasks` cannot assume `run.session_id` is
+        set even though it runs later in the sequence. Created once and patched onto the
+        ledger the same way `turnId` is, so a resumed run (a retried step, after a crash)
+        reuses it rather than creating a second session for one run.
+        """
+        if run.session_id is not None:
+            return run.session_id
+        session = await self._sessions.create_research_session(
+            principal, project_id=run.project_id, task_id=task_id, run_id=run.id
+        )
+        await self._runs.patch(run.id, {"sessionId": session.id})
+        return session.id
+
     async def _run_turn(
         self,
         principal: Principal,
@@ -449,6 +488,7 @@ class RunExecutor:
         text: str,
         agent: AgentChoice,
         run_id: str,
+        context_attachments: list[dict[str, str]] | None = None,
     ) -> Turn:
         """Start a turn and wait for it, without ever awaiting the generation task.
 
@@ -467,6 +507,7 @@ class RunExecutor:
             principal,
             session_id,
             text=text,
+            context_attachments=context_attachments,
             agent=agent,
             state_delta={RUN_ID_KEY: run_id},
             on_finished=signal,

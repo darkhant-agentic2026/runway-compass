@@ -431,7 +431,10 @@ class ResearchReport(DomainModel):
     id: str
     project_id: str
     owner_uid: str
-    task_id: str
+    #: `None` since M8: research kicked off from the project coach's own conversation,
+    #: about the project as a whole rather than one task. Nothing is promoted into any
+    #: task's `items[]` for such a report (docs/02-data-model.md#task-items).
+    task_id: str | None = None
     run_id: str | None = None
     session_id: str | None = None
     summary: str = ""
@@ -531,6 +534,10 @@ class AutonomousRun(DomainModel):
     #: audit answer to "what was next up before my coach touched this".
     previous_next_up_task_id: str | None = None
     undone_at: datetime | None = None
+    #: Since M8: the research step's own dedicated session — never the task's conversation
+    #: session (docs/02-data-model.md#sessions--events-adk-owned-layout). Written once,
+    #: the same way `turn_id` is, when the session is created.
+    session_id: str | None = None
     #: Also the Firestore TTL field (30 days), touched at every step boundary.
     created_at: datetime | None = None
     updated_at: datetime | None = None

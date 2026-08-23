@@ -759,25 +759,96 @@ respected in checklist guidance. 606 backend tests, 285 web tests.
 
 ## M8 — Research sessions, UI rework, and usage quotas (~1.5 weeks)
 
+Scope settled at the start of the milestone, before any code changed — the three
+sub-sections below are the decisions, not a proposal.
+
 - **Split research runs out of the task session into a session of their own, per research
   job.** A research run currently executes as an ordinary turn inside the task's own
   session — decided at M4 specifically so it could reuse the disconnect guarantee,
   checkpoints, and broker without a second implementation ([status after M4](#status-after-m4):
   "a research run is an ordinary turn … one argument to `TurnService.start` selects the
-  agent"). This milestone keeps that reuse but gives each run its own session, so a task's
-  conversation transcript stops interleaving with tool-heavy research turns the learner
-  never took part in.
-- **UI rework.** Scope decided at the start of the milestone, once the session split above
-  shows what the transcript and the task workspace actually need to display.
-- **Rate limits, per-user daily token and run quotas, `usage/*` counters.** Moved out of the
-  hardening milestone (M9): quota enforcement hangs off the same run/session boundary this
-  milestone is already reworking, so it is cheaper to build against the new shape once than
-  to build it against the old shape and migrate it at M9.
+  agent"). This milestone keeps that reuse but gives each run its own session, created
+  fresh and never reused, so a task's conversation transcript stops interleaving with
+  tool-heavy research turns the learner never took part in
+  ([02-data-model.md](02-data-model.md#sessions--events-adk-owned-layout)).
+- **Research becomes possible with no parent task.** Kicked off from the project coach's
+  own conversation rather than a task's, it researches a free-standing question about the
+  project as a whole; the run and its report carry `taskId: null`, and nothing is promoted
+  into any task's checklist. The dedicated session still carries a `taskId` — the *parent*
+  task for a task-scoped run, `null` for this case — the same field either way
+  ([03-agent-design.md](03-agent-design.md#research_agent)).
+- **UI rework.** A dedicated research view (`/projects/:projectId/research/:runId`), two
+  panes: the research session's own transcript (read-only — no composer, the coach is not
+  conversing with anyone) and the final report with citations, once there is one. The
+  board and the task workspace each show a compact "latest research" card linking into it,
+  replacing the report block the task workspace used to render inline
+  ([06-frontend.md](06-frontend.md#research-view-projectsprojectidresearchrunid)).
+- **Rate limits, per-user daily token and run quotas, `usage/*` counters — deferred to a
+  follow-up slice, not built in this pass.** The roadmap's original reasoning for bundling
+  them here still holds (quota enforcement hangs off the same run/session boundary this
+  milestone reworks, so building it against the new shape once is cheaper than building it
+  against the old shape and migrating at M9) — but the session split and the UI rework were
+  the two items with an actual specification going in, and quotas were not scoped at all.
+  Splitting them out rather than guessing at a design keeps this milestone's exit criteria
+  honest. Still belongs before M9, on the same reasoning as above.
 
-**Exit:** a research run's events live in a session scoped to that run, not the task's; the
-task session's transcript reads as conversation between the learner and the task teacher;
-per-user daily token and run quotas are enforced and backed by `usage/*` counters. The UI
-rework's own exit condition is recorded here once its scope is decided.
+**Exit:** a research run's events live in a session scoped to that run, not the task's;
+the task session's transcript reads as conversation between the learner and the task
+teacher; research can be requested with no task attached and produces a `taskId: null`
+report; the research view renders a run's transcript and its final report side by side;
+the board and task workspace each surface the latest research job as a card. Quotas are
+tracked as a separate follow-up with their own exit criteria, to be written when that slice
+starts.
+
+---
+
+## Status after M8
+
+**Met**, for the two sub-sections that had a specification going in. Research runs —
+manual and scheduled alike — now create a dedicated session per run
+(`CoachSessionService.create_research_session`, `kind: "research"`) and never write into
+a task's own conversation; `propose_tasks` was moved onto the same run session for the
+same reason, since it is board maintenance the learner did not ask for in the moment, not
+a reply to them. Research is now reachable with no parent task, from the project's own
+intake conversation — `POST /api/sessions/{sid}/research` accepts a session with `taskId:
+null` and requires a non-empty `reason` in that case — and produces a `taskId: null`
+report that validates the same way a task-scoped one does but promotes nothing anywhere.
+The dedicated research view (`/projects/:projectId/research/:runId`) renders the run's own
+transcript (read-only `SessionPane`) beside its report once there is one; the board and
+the task workspace each show a compact "latest research" card (`ResearchCard`, fed by
+`GET /api/projects/{id}/runs` and the new `GET /api/tasks/{id}/runs`) linking into it,
+with a "View previous research (N)" toggle beside it listing the rest of that same feed —
+each earlier run's report fetched lazily, only once the toggle is opened. The inline report
+block the task workspace used to render is gone; reports still accumulate in Firestore
+exactly as before (Q4, [10-risks.md](10-risks.md#open-questions)), and the toggle is what
+keeps that history browsable from the UI rather than only reachable by URL. 619 backend
+tests, 292 web tests, the e2e suite (chromium) green including two new specs for the
+taskless path.
+
+Two things worth a future reader's attention, neither large enough to hold up the exit:
+
+- **`budgetMinutesOverride` on the manual research request is still accepted and recorded
+  on the run, and still not threaded into the model's own budget** — a gap that predates
+  this milestone (M4) and that M8 did not have cause to close. A task-scoped run's budget
+  is the task's `estimatedMinutes`; a taskless run's is the project's `defaultTaskMinutes`.
+  Wiring the override properly means also changing what `render_budget`'s prose tells the
+  model, not only what `post_research_report` validates against — the two have to agree,
+  or the model is validated against a number it was never shown. Left alone rather than
+  half-fixed.
+- **A taskless report's `optional[]` items render with no feedback control.**
+  `PATCH /api/reports/{reportId}/items/{itemId}` checks ownership through the task
+  (`ReportItemFeedback.taskId`), which a `taskId: null` report has none of. Giving feedback
+  a second ownership path for a thumbs-up on further reading was not worth doing until
+  project-scoped research is more than a first cut.
+
+**Deliberately deferred, and the milestone that needs it:**
+
+| Item | Needed by | Note |
+| --- | --- | --- |
+| Per-user daily token and run quotas, `usage/*` counters, rate limits | **M8-quotas**, before M9 | Scoped out at the start of this slice because it had no specification going in, unlike the session split and the UI rework. The reasoning for building it against the new run/session shape rather than the old one still holds |
+| Nightly live-API and evalset runs | **M9** | Live API tests against real Gemini/YouTube |
+| Content scanning on finalize | **M9** | Still as recorded after M2 |
+| `prod` environment, `terraform destroy` | before release | Still as recorded after M1 |
 
 ---
 

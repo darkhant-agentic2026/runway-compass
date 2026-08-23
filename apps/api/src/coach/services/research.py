@@ -25,6 +25,7 @@ from __future__ import annotations
 import contextlib
 import logging
 
+from coach.agents.context import RUN_ID_KEY
 from coach.core.clock import now
 from coach.core.errors import Conflict, NotFound, ValidationProblem
 from coach.core.ids import run_id as new_run_id
@@ -82,34 +83,50 @@ class ResearchService:
         reason: str = "",
         budget_minutes_override: int | None = None,
         force: bool = False,
+        attachments: list[dict[str, str]] | None = None,
     ) -> AutonomousRun:
-        """Research the session's task now.
+        """Research the session's task, or — since M8 — the project as a whole.
+
+        `session_id` names the conversation the request came from (a task's own session,
+        or the project's intake session); it is used only to resolve *what* to research
+        and to check ownership. The turn itself always runs in a fresh session created for
+        this run, never in `session_id`
+        (docs/03-agent-design.md#research_agent).
 
         Raises:
-            ValidationProblem: if the session is not attached to a task, or the task is a
-                parent (its subtasks are its plan, and each is researched on its own).
+            ValidationProblem: if the task is a parent (its subtasks are its plan, and
+                each is researched on its own), or if the session has no task and `reason`
+                is empty — there is no task description to research instead.
             Conflict: if the project's agent lease is held — carrying the in-flight
                 `runId`, so the client can attach instead of starting a duplicate — or if
                 the task already has materials and `force` was not set.
         """
         linkage = await self._sessions.require_owned(principal, session_id)
-        if linkage.task_id is None or linkage.project_id is None:
+        if linkage.project_id is None:
             raise ValidationProblem(
-                "This conversation is about the project as a whole. Open a task to research it."
+                "This conversation is not linked to a project, so there is nothing to research."
             )
-        task = await self._tasks.get_with_subtasks(principal, linkage.task_id)
-        if task.subtasks:
+        project_id = linkage.project_id
+
+        task: Task | None = None
+        if linkage.task_id is not None:
+            task = await self._tasks.get_with_subtasks(principal, linkage.task_id)
+            if task.subtasks:
+                raise ValidationProblem(
+                    "This task has been split, and its subtasks are its plan. Research "
+                    "the subtasks instead."
+                )
+            if task.research_status is ResearchStatus.DONE and not force:
+                raise Conflict(
+                    "This task already has materials. Research it again to replace them."
+                )
+        elif not reason.strip():
             raise ValidationProblem(
-                "This task has been split, and its subtasks are its plan. Research the "
-                "subtasks instead."
-            )
-        if task.research_status is ResearchStatus.DONE and not force:
-            raise Conflict(
-                "This task already has materials. Research it again to replace them."
+                "This conversation is about the project as a whole, so say what to "
+                "research — there is no task description to fall back on."
             )
 
         run_id = new_run_id()
-        project_id = linkage.project_id
         try:
             await self._runs.acquire_lease(project_id, run_id, self._instance_id)
         except LeaseHeld as held:
@@ -129,7 +146,7 @@ class ResearchService:
                 id=run_id,
                 owner_uid=principal.uid,
                 project_id=project_id,
-                task_id=task.id,
+                task_id=task.id if task is not None else None,
                 trigger="manual",
                 mode="inline",
                 status=RunStatus.RUNNING,
@@ -140,18 +157,41 @@ class ResearchService:
                 ],
             )
         )
-        # `in_progress` before the first model call, and this is half of invariant 6
-        # (docs/02-data-model.md#task-state-machine): a task whose checklist is already
-        # ticked must not complete itself while a run is about to rewrite that checklist.
-        await self._tasks.set_research(principal, task.id, status=ResearchStatus.IN_PROGRESS)
+        if task is not None:
+            # `in_progress` before the first model call, and this is half of invariant 6
+            # (docs/02-data-model.md#task-state-machine): a task whose checklist is
+            # already ticked must not complete itself while a run is about to rewrite it.
+            await self._tasks.set_research(
+                principal, task.id, status=ResearchStatus.IN_PROGRESS
+            )
+
+        # A fresh session for this run, never `session_id` — docs/02-data-model.md:
+        # "A research session is minted fresh for every run, and never reused."
+        research_session = await self._sessions.create_research_session(
+            principal, project_id=project_id, task_id=(task.id if task else None), run_id=run_id
+        )
+        await self._runs.patch(run_id, {"sessionId": research_session.id})
+        run = run.model_copy(update={"session_id": research_session.id})
+
+        # Whatever the learner has already uploaded in *this* conversation — the task's
+        # own, or the project's intake one — carried over automatically, so a scope that
+        # mentions a file already sent does not also require re-attaching it here.
+        # `attachments` (below) is for a file the learner is attaching for the first time,
+        # specifically for this request.
+        context_attachments = await self._sessions.list_attachments(principal, session_id)
 
         try:
             turn = await self._turns.start(
                 principal,
-                session_id,
+                research_session.id,
                 text=_opening_message(task, reason),
+                attachments=attachments,
+                context_attachments=context_attachments,
                 agent="research",
-                on_finished=lambda: self._close(principal, run_id, project_id, task.id),
+                state_delta={RUN_ID_KEY: run_id},
+                on_finished=lambda: self._close(
+                    principal, run_id, project_id, task.id if task else None
+                ),
             )
         except Exception:
             # The lease is only worth holding while something is using it. A turn that
@@ -160,7 +200,8 @@ class ResearchService:
             # error.
             await self._runs.release_lease(project_id, run_id)
             await self._runs.patch(run_id, {"status": RunStatus.FAILED.value})
-            await self._tasks.set_research(principal, task.id, status=ResearchStatus.FAILED)
+            if task is not None:
+                await self._tasks.set_research(principal, task.id, status=ResearchStatus.FAILED)
             raise
 
         run = run.model_copy(update={"turn_id": turn.id})
@@ -171,7 +212,8 @@ class ResearchService:
             extra={
                 "run_id": run.id,
                 "turn_id": turn.id,
-                "task_id": task.id,
+                "session_id": research_session.id,
+                "task_id": task.id if task else None,
                 "project_id": project_id,
                 "budget_override": budget_minutes_override,
             },
@@ -179,7 +221,7 @@ class ResearchService:
         return run
 
     async def _close(
-        self, principal: Principal, run_id: str, project_id: str, task_id: str
+        self, principal: Principal, run_id: str, project_id: str, task_id: str | None
     ) -> None:
         """Mark the run terminal, settle `researchStatus`, and release the lease.
 
@@ -239,10 +281,11 @@ class ResearchService:
                     "error": detail,
                 },
             )
-        if not succeeded:
+        if not succeeded and task_id is not None:
             # A turn that failed or was cancelled leaves the task looking like research is
             # still running, and invariant 6 reads that field — so a task whose checklist
             # was already finished would stay open forever waiting for a run that is gone.
+            # No task to settle at all for a project-scoped run.
             with contextlib.suppress(Exception):
                 await self._tasks.set_research(principal, task_id, status=ResearchStatus.FAILED)
         await self._runs.release_lease(project_id, run_id)
@@ -252,14 +295,20 @@ class ResearchService:
         )
 
 
-def _opening_message(task: Task, reason: str) -> str:
+def _opening_message(task: Task | None, reason: str) -> str:
     """The message that starts the research turn.
 
-    It is a real user-authored message in the task's transcript, not a hidden prompt, and
-    that is deliberate: the learner pressed a button, and the conversation should show
-    that they did. A run whose materials appear from nowhere reads as the coach acting
-    unprompted, which is the thing docs/10-risks.md#r6 is about.
+    It is a real user-authored message in the research session's transcript, not a hidden
+    prompt, and that is deliberate: the learner pressed a button, and the conversation
+    should show that they did. A run whose materials appear from nowhere reads as the
+    coach acting unprompted, which is the thing docs/10-risks.md#r6 is about.
+
+    `task` is `None` for research kicked off from the project coach's own conversation
+    (M8): the whole message is then the learner's own `reason`, already asserted non-empty
+    by the caller.
     """
+    if task is None:
+        return reason.strip()
     lines = [
         f"Please prepare the materials I need for this task: {task.title}.",
     ]

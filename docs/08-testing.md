@@ -177,9 +177,13 @@ Stack: Vitest, React Testing Library, MSW for HTTP, a fake WebSocket server for 
   output.
 - **Composite task workspace** — a parent renders one card per subtask with its state
   actions, and none of them is a link; a leaf task renders no subtask block at all.
-- **Research report rendering** — the checklist and optional blocks are distinct landmarks;
-  optional items render no completion checkbox; the budget meter sums only checklist items.
-  This is a product requirement, so it gets an explicit regression test.
+- **Research report rendering** (`ResearchReport.tsx`, rendered on the M8 research view) —
+  the checklist and optional blocks are distinct landmarks; optional items render no
+  completion checkbox; the budget meter sums only checklist items. This is a product
+  requirement, so it gets an explicit regression test.
+- **The research card** (board and task workspace) renders brief description, creation
+  date, and status from a run, and links to that run's research view; a taskless run's
+  card renders identically minus anything naming a task.
 - **A guided item does not render its `details`** — the coach's teaching notes are not the
   learner's instructions, and the exercise's answer is in there
   ([06-frontend.md](06-frontend.md#task-workspace-projectsprojectidtaskstaskid)). Asserted
@@ -334,11 +338,12 @@ Golden flows:
    leaving REST requests alive, which is the scenario under test. `context.setOffline()` is
    the fallback when the test wants the whole network gone, but it is a blunter tool — it
    also kills the `POST /turns` and the transcript refetch, so a passing test proves less.
-5. **Manual research trigger** — user creates a task, clicks "Research this task now",
-   sees progress chips, and the report renders with checklist/optional separation. The task
-   was `draft` before the run and is `not_started` after it, which is the visible half of
-   invariant 1; then ticking every checklist item completes the task without the learner
-   touching a state control, which is the visible half of invariant 6.
+5. **Manual research trigger** — user creates a task, clicks "Research this task now", lands
+   on that run's research view and sees progress chips there, then follows "back to task"
+   once it completes and sees the checklist populated and the research card showing the
+   finished job. The task was `draft` before the run and is `not_started` after it, which
+   is the visible half of invariant 1; then ticking every checklist item completes the task
+   without the learner touching a state control, which is the visible half of invariant 6.
 6. **Autonomous update visible on return** — trigger `/internal/tick` from the test,
    assert a `board_update` arrives on an open board and the "Updated by your coach" banner
    lists the change, and that undo reverses it.

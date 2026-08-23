@@ -44,6 +44,7 @@ import { ConfirmationPrompt } from '@/components/session/ConfirmationPrompt';
 import { ConnectionBanner } from '@/components/session/ConnectionBanner';
 import { QuestionPrompt } from '@/components/session/QuestionPrompt';
 import { Transcript } from '@/components/session/Transcript';
+import { Button } from '@/components/ui/button';
 import { useCancelTurn, useSessionEvents, useStartTurn } from '@/features/queries';
 import { useAttachmentUploads } from '@/features/use-uploads';
 import { pendingConfirmation, toMessages } from '@/lib/transcript';
@@ -64,6 +65,22 @@ export interface SessionPaneProps {
   /** Shown above the composer while the conversation is still empty. */
   emptyHint?: string;
   className?: string;
+  /**
+   * No composer, no upload drop target, no confirmation prompts — added at M8 for the
+   * research view (docs/06-frontend.md#research-view-projectsprojectidresearchrunid).
+   * `research_agent` has no tool that asks the learner anything, so this pane is a record
+   * of what the coach did rather than a conversation; the one control still offered while
+   * `readOnly` is the cancel button, because a research turn is generation like any other
+   * and cancelling it is not a thing the composer alone should own.
+   */
+  readOnly?: boolean;
+  /**
+   * Fired once per turn, on the same handoff that refetches the transcript and
+   * invalidates the board — added at M8 for the research view, which has its own
+   * run/report queries this pane knows nothing about and needs refreshed the moment
+   * generation ends, not on the next 2 s poll.
+   */
+  onTurnComplete?: () => void;
 }
 
 const DEFAULT_CLASS =
@@ -75,6 +92,8 @@ export function SessionPane({
   heading,
   emptyHint,
   className = DEFAULT_CLASS,
+  readOnly = false,
+  onTurnComplete,
 }: SessionPaneProps) {
   const queryClient = useQueryClient();
   const events = useSessionEvents(sessionId);
@@ -104,7 +123,8 @@ export function SessionPane({
       void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] });
       void queryClient.invalidateQueries({ queryKey: ['project', projectId] });
     }
-  }, [live, events, clearTurn, projectId, queryClient]);
+    onTurnComplete?.();
+  }, [live, events, clearTurn, projectId, queryClient, onTurnComplete]);
 
   const messages = toMessages(events.data ?? []);
   const streaming = live?.status === 'running';
@@ -118,7 +138,7 @@ export function SessionPane({
       className={className}
       aria-labelledby={headingId}
       onDragEnter={(event) => {
-        if (!hasFiles(event)) return;
+        if (readOnly || !hasFiles(event)) return;
         event.preventDefault();
         // `dragDepth` rather than a boolean, because `dragenter`/`dragleave` fire for
         // every descendant the pointer crosses — a boolean flickers off the moment the
@@ -126,11 +146,13 @@ export function SessionPane({
         setDragDepth((depth) => depth + 1);
       }}
       onDragOver={(event) => {
-        if (hasFiles(event)) event.preventDefault();
+        if (!readOnly && hasFiles(event)) event.preventDefault();
       }}
-      onDragLeave={() => setDragDepth((depth) => Math.max(0, depth - 1))}
+      onDragLeave={() => {
+        if (!readOnly) setDragDepth((depth) => Math.max(0, depth - 1));
+      }}
       onDrop={(event) => {
-        if (!hasFiles(event)) return;
+        if (readOnly || !hasFiles(event)) return;
         event.preventDefault();
         setDragDepth(0);
         uploadAll(event.dataTransfer.files);
@@ -140,7 +162,7 @@ export function SessionPane({
         {heading}
       </h2>
 
-      {dragDepth > 0 ? (
+      {!readOnly && dragDepth > 0 ? (
         <div
           className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-primary bg-background/85"
           data-testid="drop-overlay"
@@ -172,7 +194,7 @@ export function SessionPane({
         payload, not the mechanism — and a payload that fails to parse falls back to the
         buttons rather than rendering nothing.
       */}
-      {pending?.question ? (
+      {!readOnly && pending?.question ? (
         <QuestionPrompt
           question={pending.question}
           disabled={startTurn.isPending}
@@ -191,7 +213,7 @@ export function SessionPane({
             })
           }
         />
-      ) : pending ? (
+      ) : !readOnly && pending ? (
         <ConfirmationPrompt
           pending={pending}
           disabled={startTurn.isPending}
@@ -208,7 +230,21 @@ export function SessionPane({
         />
       ) : null}
 
-      {sessionId ? (
+      {readOnly ? (
+        streaming ? (
+          <div className="flex justify-end border-t p-3">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                if (live) cancelTurn.mutate(live.turnId);
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        ) : null
+      ) : sessionId ? (
         <Composer
           sessionId={sessionId}
           sending={startTurn.isPending}

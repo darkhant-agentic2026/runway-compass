@@ -51,10 +51,20 @@ _STALE_SESSION_ERROR_MESSAGE = (
     "Please reload the session before appending more events."
 )
 
-#: The two linkage fields the subclass adds to the session document
+#: The linkage fields the subclass adds to the session document
 #: (docs/02-data-model.md#sessions--events-adk-owned-layout).
 PROJECT_ID_FIELD = "projectId"
 TASK_ID_FIELD = "taskId"
+#: Since M8: discriminates a research session (its own, created fresh per run) from every
+#: other kind (a task's conversation, a project's intake). Needed because a research
+#: session's `taskId` is the run's *parent* task — the same field a task's own session
+#: uses for its linkage — so `taskId` alone can no longer tell them apart.
+KIND_FIELD = "kind"
+KIND_COACH = "coach"
+KIND_RESEARCH = "research"
+#: Since M8: the `autonomous_runs/{id}` a research session belongs to. Set iff
+#: `kind == "research"`.
+RUN_ID_FIELD = "runId"
 
 #: The per-session event sequence. Top-level on the event document, alongside `timestamp`
 #: — anything nested under `event_data` is read-back-only and cannot be ordered on.
@@ -67,18 +77,29 @@ SEQ_FIELD = "seq"
 #: chosen to be far outside that, not to be exact.
 _INTAKE_SCAN_LIMIT = 200
 
+#: How many of a task's sessions `find_session_id_for_task` will scan before giving up.
+#: Since M8 a task's `taskId` is shared with every research session ever run against it —
+#: `kind` is checked in Python, same as `appName` — so `limit(2)` from before M8 could
+#: return two research sessions and never reach the one real conversation. A task
+#: researched this many times without anyone ever opening its workspace is not a case
+#: worth optimizing for; the ceiling exists so the query is bounded, not to be exact.
+_TASK_SESSION_SCAN_LIMIT = 50
+
 
 @dataclass(frozen=True, slots=True)
 class SessionLinkage:
     """What a session is *about*.
 
     `task_id` is `None` for a project intake session, which is the shape
-    docs/04-api-contract.md gives `POST /api/projects`.
+    docs/04-api-contract.md gives `POST /api/projects` — and, since M8, for a research
+    session started from that same intake conversation rather than from a task.
     """
 
     session_id: str
     project_id: str | None
     task_id: str | None
+    kind: str = KIND_COACH
+    run_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +130,8 @@ class CoachSessionService(FirestoreSessionService):
         session_id: str | None = None,
         project_id: str | None = None,
         task_id: str | None = None,
+        kind: str = KIND_COACH,
+        run_id: str | None = None,
     ) -> Session:
         """Create a session, optionally linked to a project and a task.
 
@@ -118,16 +141,49 @@ class CoachSessionService(FirestoreSessionService):
         app and user state and raises `AlreadyExistsError`, none of which we want to
         restate. The merge does not touch `revision`, so the returned session's
         `_storage_update_marker` stays correct.
+
+        `kind`/`run_id` are M8's addition for a research session — see
+        `create_research_session`, which is the caller that actually passes them.
         """
         session = await super().create_session(
             app_name=app_name, user_id=user_id, state=state, session_id=session_id
         )
-        if project_id is not None or task_id is not None:
+        if project_id is not None or task_id is not None or kind != KIND_COACH:
+            document: dict[str, Any] = {PROJECT_ID_FIELD: project_id, TASK_ID_FIELD: task_id}
+            if kind != KIND_COACH:
+                document[KIND_FIELD] = kind
+            if run_id is not None:
+                document[RUN_ID_FIELD] = run_id
             reference = self._get_sessions_ref(app_name, user_id).document(session.id)
-            await reference.set(
-                {PROJECT_ID_FIELD: project_id, TASK_ID_FIELD: task_id}, merge=True
-            )
+            await reference.set(document, merge=True)
         return session
+
+    async def create_research_session(
+        self,
+        *,
+        app_name: str,
+        user_id: str,
+        project_id: str,
+        run_id: str,
+        task_id: str | None = None,
+        session_id: str | None = None,
+    ) -> Session:
+        """A fresh session for one research run — never reused, one per run.
+
+        docs/02-data-model.md#sessions--events-adk-owned-layout: "A research session is
+        minted fresh for every run". `task_id` is the run's *parent* task, or `None` for
+        research kicked off from the project coach's own conversation about the project as
+        a whole.
+        """
+        return await self.create_session(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            task_id=task_id,
+            kind=KIND_RESEARCH,
+            run_id=run_id,
+        )
 
     async def get_linkage(
         self, *, app_name: str, user_id: str, session_id: str
@@ -147,10 +203,13 @@ class CoachSessionService(FirestoreSessionService):
             session_id=session_id,
             project_id=data.get(PROJECT_ID_FIELD),
             task_id=data.get(TASK_ID_FIELD),
+            kind=str(data.get(KIND_FIELD) or KIND_COACH),
+            run_id=data.get(RUN_ID_FIELD),
         )
 
     async def find_session_id_for_task(self, *, app_name: str, task_id: str) -> str | None:
-        """Resolve a task to its session.
+        """Resolve a task to its session — its **conversation** session, never one of its
+        research sessions.
 
         Uses the `sessions` collection-group index on `taskId`
         (docs/02-data-model.md#indexes), which is what lets the task document hold a
@@ -162,17 +221,22 @@ class CoachSessionService(FirestoreSessionService):
         scope). Adding a second `where` — `appName`, say — turns this into a composite
         collection-group query that needs an index nobody declared, and real Firestore
         answers `FAILED_PRECONDITION` while the emulator answers correctly, so the
-        failure appears only once deployed. `appName` is therefore checked in Python
-        below: same guarantee, no second indexed field.
+        failure appears only once deployed. `appName` and, since M8, `kind` are therefore
+        checked in Python below: same guarantee, no second indexed field. `kind` is what
+        keeps this from returning one of the task's research sessions instead of its one
+        real conversation, once a task has been researched more than once
+        (docs/02-data-model.md#sessions--events-adk-owned-layout).
         """
         query = (
             self.client.collection_group(self.sessions_collection)
             .where(filter=firestore.FieldFilter(TASK_ID_FIELD, "==", task_id))
-            .limit(2)
+            .limit(_TASK_SESSION_SCAN_LIMIT)
         )
         async for document in query.stream():
             data = document.to_dict() or {}
             if data.get("appName") != app_name:
+                continue
+            if data.get(KIND_FIELD, KIND_COACH) != KIND_COACH:
                 continue
             identifier = data.get("id")
             return cast(str | None, identifier) or document.id
@@ -190,7 +254,10 @@ class CoachSessionService(FirestoreSessionService):
         requirements, while real Firestore answers a composite collection-group query with
         `FAILED_PRECONDITION` (docs/09-roadmap.md#what-a-green-local-run-does-not-prove).
         So `projectId` is the indexed filter and `taskId` is checked in Python, which
-        needs the declared single-field index and no more.
+        needs the declared single-field index and no more. Since M8, `kind` is checked the
+        same way — a project-scoped research session also has `taskId: null`, and would
+        otherwise be indistinguishable from the intake conversation this method exists to
+        find.
         """
         query = (
             self.client.collection_group(self.sessions_collection)
@@ -199,7 +266,11 @@ class CoachSessionService(FirestoreSessionService):
         )
         async for document in query.stream():
             data = document.to_dict() or {}
-            if data.get("appName") != app_name or data.get(TASK_ID_FIELD) is not None:
+            if (
+                data.get("appName") != app_name
+                or data.get(TASK_ID_FIELD) is not None
+                or data.get(KIND_FIELD, KIND_COACH) != KIND_COACH
+            ):
                 continue
             identifier = data.get("id")
             return cast(str | None, identifier) or document.id
@@ -416,7 +487,11 @@ class CoachSessionService(FirestoreSessionService):
 
 
 __all__ = [
+    "KIND_COACH",
+    "KIND_FIELD",
+    "KIND_RESEARCH",
     "PROJECT_ID_FIELD",
+    "RUN_ID_FIELD",
     "SEQ_FIELD",
     "TASK_ID_FIELD",
     "CoachSessionService",

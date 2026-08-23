@@ -19,6 +19,7 @@ const LoginPage = lazy(() => import('@/pages/LoginPage'));
 const ProjectsPage = lazy(() => import('@/pages/ProjectsPage'));
 const BoardPage = lazy(() => import('@/pages/BoardPage'));
 const TaskWorkspacePage = lazy(() => import('@/pages/TaskWorkspacePage'));
+const ResearchViewPage = lazy(() => import('@/pages/ResearchViewPage'));
 const ProjectSettingsPage = lazy(() => import('@/pages/ProjectSettingsPage'));
 const SettingsPage = lazy(() => import('@/pages/SettingsPage'));
 
@@ -45,6 +46,10 @@ export default function App() {
               <Route
                 path="/projects/:projectId/tasks/:taskId"
                 element={<TaskWorkspacePage />}
+              />
+              <Route
+                path="/projects/:projectId/research/:runId"
+                element={<ResearchViewPage />}
               />
               <Route path="/projects/:projectId/settings" element={<ProjectSettingsPage />} />
               <Route path="/settings" element={<SettingsPage />} />

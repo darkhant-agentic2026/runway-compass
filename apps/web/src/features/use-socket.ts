@@ -49,7 +49,10 @@ export function useCoachSocket(): void {
       // invalidation would re-issue that get-or-create POST on every board update.
       for (const taskId of frame.taskIds) {
         void queryClient.invalidateQueries({ queryKey: ['task', taskId], exact: true });
-        void queryClient.invalidateQueries({ queryKey: ['task', taskId, 'reports'] });
+        // + M8: the task workspace's "latest research" card reads this key
+        // (`useTaskRuns`), and a research run posting its report is exactly the write
+        // this push exists to announce.
+        void queryClient.invalidateQueries({ queryKey: ['task', taskId, 'runs'] });
       }
     });
     void socket.connect();

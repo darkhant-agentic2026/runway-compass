@@ -151,9 +151,17 @@ collide" true rather than hopeful.
   "cursor": "research",                 // first non-complete step
   "usage": { "inputTokens": 0, "outputTokens": 0, "toolCalls": 0 },
   "turnId": "t_…",                      // present when mode == "inline"
+  "sessionId": "…",                     // + since M8: the research step's own dedicated
+                                         //   session, not the task's conversation session
   "createdAt": ts, "updatedAt": ts, "error": null
 }
 ```
+
+`taskId` is `null` for a run whose research is about the project as a whole rather than
+one task — a manual run only, started from the project coach's conversation
+([04-api-contract.md](04-api-contract.md#post-apisessionssidresearch)). `sessionId` is
+written once, when the `research` step creates its session, the same way `turnId` is
+written once the turn starts; both are absent until then.
 
 ### Execution semantics
 

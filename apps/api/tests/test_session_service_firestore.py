@@ -294,6 +294,87 @@ async def test_find_session_id_for_task(sessions: CoachSessionService) -> None:
     assert await sessions.find_session_id_for_task(app_name=APP, task_id="k_9") is None
 
 
+async def test_create_research_session_round_trips_kind_and_run_id(
+    sessions: CoachSessionService,
+) -> None:
+    """+ M8: `kind`/`runId`, added so a research session can be told apart from the task's
+    own conversation even though both carry the same `taskId`."""
+    await sessions.create_research_session(
+        app_name=APP,
+        user_id=USER,
+        session_id="s_1",
+        project_id="p_1",
+        task_id="k_1",
+        run_id="r_1",
+    )
+
+    linkage = await sessions.get_linkage(app_name=APP, user_id=USER, session_id="s_1")
+
+    assert linkage is not None
+    assert linkage.kind == "research"
+    assert linkage.run_id == "r_1"
+    assert (linkage.project_id, linkage.task_id) == ("p_1", "k_1")
+
+
+async def test_an_ordinary_session_has_kind_coach(sessions: CoachSessionService) -> None:
+    await sessions.create_session(
+        app_name=APP, user_id=USER, session_id="s_1", project_id="p_1", task_id="k_1"
+    )
+
+    linkage = await sessions.get_linkage(app_name=APP, user_id=USER, session_id="s_1")
+
+    assert linkage is not None
+    assert linkage.kind == "coach"
+    assert linkage.run_id is None
+
+
+async def test_find_session_id_for_task_skips_research_sessions(
+    sessions: CoachSessionService,
+) -> None:
+    """The bug M8 would otherwise reintroduce: a task researched more than once has
+    several research sessions sharing its `taskId`, and this query must still resolve to
+    the one real conversation rather than an arbitrary research session."""
+    await sessions.create_research_session(
+        app_name=APP,
+        user_id=USER,
+        session_id="s_research_1",
+        project_id="p_1",
+        task_id="k_1",
+        run_id="r_1",
+    )
+    await sessions.create_session(
+        app_name=APP, user_id=USER, session_id="s_conversation", project_id="p_1", task_id="k_1"
+    )
+    await sessions.create_research_session(
+        app_name=APP,
+        user_id=USER,
+        session_id="s_research_2",
+        project_id="p_1",
+        task_id="k_1",
+        run_id="r_2",
+    )
+
+    assert (
+        await sessions.find_session_id_for_task(app_name=APP, task_id="k_1") == "s_conversation"
+    )
+
+
+async def test_find_intake_session_id_skips_a_taskless_research_session(
+    sessions: CoachSessionService,
+) -> None:
+    """A project-scoped research session also has `taskId: null`, on the same footing as
+    the intake conversation — `kind` is what keeps this query from returning one instead
+    of the other."""
+    await sessions.create_research_session(
+        app_name=APP, user_id=USER, session_id="s_research", project_id="p_1", run_id="r_1"
+    )
+    await sessions.create_session(
+        app_name=APP, user_id=USER, session_id="s_intake", project_id="p_1", task_id=None
+    )
+
+    assert await sessions.find_intake_session_id(app_name=APP, project_id="p_1") == "s_intake"
+
+
 async def test_linkage_survives_an_append(sessions: CoachSessionService) -> None:
     """`append_event` rewrites the session document; the linkage must not be a casualty."""
     session = await sessions.create_session(

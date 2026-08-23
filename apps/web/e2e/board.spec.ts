@@ -251,3 +251,41 @@ test('a composite task shows its subtasks in the workspace, and completing one l
   await expect(parent.getByTestId('rollup')).toContainText('2 subtasks');
   await expect(parent.getByTestId('subtask')).toHaveCount(1);
 });
+
+test('the workspace shows breadcrumbs and a collapsible detail column', async ({
+  signedIn: page,
+}) => {
+  await createProject(page, 'Breadcrumb trail');
+  await addTask(page, 'Read the paper', 30);
+  await page.getByTestId('open-workspace').filter({ hasText: 'Read the paper' }).click();
+
+  const breadcrumb = page.getByRole('navigation', { name: 'Breadcrumb' });
+  await expect(breadcrumb.getByRole('link', { name: 'Breadcrumb trail' })).toBeVisible();
+  await expect(breadcrumb.getByText('Read the paper')).toBeVisible();
+
+  // The narrow info strip — no title, since the breadcrumb already carries it.
+  const strip = page.getByTestId('task-info-strip');
+  await expect(strip).toContainText('30 min');
+  await expect(strip).toContainText('No plan yet');
+  await expect(strip).not.toContainText('Read the paper');
+
+  // Expanded by default: nothing collapses on its own.
+  const details = page.getByRole('region', { name: 'Task details' });
+  await expect(details).toBeVisible();
+
+  const toggle = page.getByTestId('toggle-task-details');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await toggle.click();
+  await expect(details).toBeHidden();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+  // The chat pane takes the room the detail column gave up rather than leaving it empty.
+  await expect(page.getByLabel('Message your coach')).toBeVisible();
+
+  // A reload keeps the learner's choice — it is remembered per task, not per session.
+  await page.reload();
+  await expect(page.getByRole('region', { name: 'Task details' })).toBeHidden();
+
+  await page.getByTestId('toggle-task-details').click();
+  await expect(page.getByRole('region', { name: 'Task details' })).toBeVisible();
+});

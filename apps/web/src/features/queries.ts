@@ -40,12 +40,6 @@ export const queryKeys = {
   task: (taskId: string) => ['task', taskId] as const,
   taskSession: (taskId: string) => ['task', taskId, 'session'] as const,
   /**
-   * Report history. Under the `['task', id]` prefix deliberately, unlike `taskSession`:
-   * a research run adds a report, and the same invalidation that refreshes the task should
-   * refresh the list of runs behind it.
-   */
-  reports: (taskId: string) => ['task', taskId, 'reports'] as const,
-  /**
    * Deliberately *not* under the `['project', id]` prefix. `board_update` and every
    * project mutation invalidate that prefix, and this key is a get-or-create POST — an
    * invalidation would re-issue it on every board change for a value that never moves.
@@ -61,7 +55,13 @@ export const queryKeys = {
    * Keyed the other way, the banner would only ever be seen by someone who reloaded.
    */
   projectRuns: (projectId: string) => ['project', projectId, 'runs'] as const,
+  /** + M8. Under `['task', id]`, on the same reasoning `reports` is: a research run
+   * changes this list, and the invalidation that refreshes the task should refresh it. */
+  taskRuns: (taskId: string) => ['task', taskId, 'runs'] as const,
   run: (runId: string) => ['run', runId] as const,
+  /** + M8. The report a run wrote — a run's own key, since a project-scoped run has no
+   * task to nest it under. */
+  runReport: (runId: string) => ['run', runId, 'report'] as const,
 };
 
 export function createQueryClient(): QueryClient {
@@ -421,34 +421,63 @@ export function useSubtaskItemMutation(parentTaskId: string, projectId: string) 
 }
 
 /**
+ * Registers a just-started research run's turn with the stream store and the socket, so
+ * the research view's `SessionPane` has something to show the moment it mounts.
+ *
+ * Shared by the task-scoped and the project-scoped trigger below: since M8 a research
+ * turn always runs in the run's own fresh session (`run.sessionId`), never the session the
+ * request was made from, so both callers register the same way.
+ */
+function subscribeToResearchRun(run: { turnId: string | null; sessionId: string }): void {
+  if (!run.turnId) return;
+  useStreamStore.getState().begin(run.turnId, run.sessionId);
+  getSocket().subscribe(run.turnId);
+}
+
+/**
  * "Research this task now".
  *
- * Answers 202 with a `turnId`, which the caller subscribes to — a research run is an
- * ordinary turn, so the existing chips and streaming carry it. A `409` means the project's
- * agent lease is held and carries the in-flight `runId` in its problem document; the caller
- * surfaces that rather than inviting a second press.
+ * Answers 202 with a `runId` and the run's own `sessionId` — since M8 the caller
+ * navigates to that run's research view to watch it
+ * (docs/06-frontend.md#research-view-projectsprojectidresearchrunid) rather than seeing
+ * chips inline here. A `409` means the project's agent lease is held and carries the
+ * in-flight `runId` in its problem document; the caller surfaces that rather than
+ * inviting a second press.
  */
 export function useStartResearch(taskId: string, projectId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ sessionId, force }: { sessionId: string; force?: boolean }) =>
       api.startResearch(sessionId, { force }, newIdempotencyKey()),
-    onSuccess(run, { sessionId }) {
-      // Exactly what `useStartTurn` does with its 202, and for the same reason: a research
-      // run *is* a turn (`services/research.py`), so registering it is what makes the
-      // tool-activity chips, the streamed summary, and the reconnect-and-resume path work
-      // here without a second implementation of any of them.
-      //
-      // Easy to leave out, and the omission is quiet: the run still completes and the
-      // report still lands, because the server does not care whether anyone is listening.
-      // What the learner sees is a button that does nothing for thirty seconds.
-      if (!run.turnId) return;
-      useStreamStore.getState().begin(run.turnId, sessionId);
-      getSocket().subscribe(run.turnId);
-    },
+    onSuccess: subscribeToResearchRun,
     onSettled() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.task(taskId), exact: true });
       void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.taskRuns(taskId) });
+    },
+  });
+}
+
+/**
+ * Research kicked off from the project coach's own conversation, about the project as a
+ * whole rather than one task — the M8 capability. `reason` is the question to research,
+ * and the server refuses an empty one: there is no task description to fall back on.
+ */
+export function useStartProjectResearch(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      sessionId,
+      reason,
+      attachments,
+    }: {
+      sessionId: string;
+      reason: string;
+      attachments?: { uploadId: string; mimeType: string }[];
+    }) => api.startResearch(sessionId, { reason, attachments }, newIdempotencyKey()),
+    onSuccess: subscribeToResearchRun,
+    onSettled() {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.projectRuns(projectId) });
     },
   });
 }
@@ -523,11 +552,42 @@ export function useUndoRun(projectId: string) {
   });
 }
 
-export function useReportHistory(taskId: string) {
+/**
+ * Recent runs for one task. Drives the task workspace's "Latest research" card, the same
+ * way `useProjectRuns` drives the board's.
+ */
+export function useTaskRuns(taskId: string) {
   return useQuery({
-    queryKey: queryKeys.reports(taskId),
-    queryFn: () => api.listReports(taskId),
+    queryKey: queryKeys.taskRuns(taskId),
+    queryFn: () => api.listTaskRuns(taskId),
     enabled: taskId.length > 0,
+  });
+}
+
+/**
+ * One run, for the research view. Polls while `running`: unlike the board and the task
+ * workspace, this screen has no `board_update` to tell it the run finished — a
+ * project-scoped run touches no task, so nothing pushes an invalidation here.
+ */
+export function useRun(runId: string) {
+  return useQuery({
+    queryKey: queryKeys.run(runId),
+    queryFn: () => api.getRun(runId),
+    enabled: runId.length > 0,
+    refetchInterval: (query) => (query.state.data?.status === 'running' ? 2000 : false),
+  });
+}
+
+/**
+ * The report a run wrote. `enabled` is the caller's `run.status === 'complete'`: a run
+ * only reaches `complete` after `post_report` succeeds, so a report is there to fetch —
+ * and fetching earlier would be a 404 the research view has nothing useful to do with.
+ */
+export function useRunReport(runId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.runReport(runId),
+    queryFn: () => api.getRunReport(runId),
+    enabled: enabled && runId.length > 0,
   });
 }
 
@@ -545,7 +605,6 @@ export function useReportFeedback(taskId: string) {
     }) => api.setReportItemFeedback(reportId, itemId, taskId, feedback),
     onSettled() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.task(taskId), exact: true });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.reports(taskId) });
     },
   });
 }

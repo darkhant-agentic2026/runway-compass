@@ -73,19 +73,33 @@ describe('ResearchReport', () => {
     expect(onFeedback).toHaveBeenCalledWith('ri_1', 'up');
   });
 
-  it('earlier runs are collapsed rather than dropped', async () => {
+  it('renders required items too, read-only — since M8 this is the research view, not the task workspace', () => {
     render(
       <ResearchReport
-        report={makeReport({ id: 'rep_2', summary: 'The current plan' })}
-        earlier={[makeReport({ id: 'rep_1', summary: 'The first attempt' })]}
+        report={makeReport({
+          required: [makeReportItem({ itemId: 'ri_req', title: 'Read the guide' })],
+        })}
       />,
     );
 
-    // Q4 (docs/10-risks.md): accumulate, newest shown by default, older ones collapsible.
-    expect(screen.getByText('The current plan')).toBeInTheDocument();
-    const disclosure = screen.getByText('1 earlier run');
-    await userEvent.click(disclosure);
-    expect(screen.getByText('The first attempt')).toBeInTheDocument();
+    const required = screen.getByTestId('report-required');
+    expect(within(required).getByText('Read the guide')).toBeInTheDocument();
+    expect(within(required).queryByRole('checkbox')).not.toBeInTheDocument();
+  });
+
+  it('a project-scoped report (no taskId) labels the required block as answering the question', () => {
+    render(
+      <ResearchReport
+        report={makeReport({
+          taskId: null,
+          required: [makeReportItem({ title: 'The framework comparison' })],
+        })}
+      />,
+    );
+
+    expect(
+      within(screen.getByTestId('report-required')).getByText('What answers the question'),
+    ).toBeInTheDocument();
   });
 
   it('renders citations as links', () => {

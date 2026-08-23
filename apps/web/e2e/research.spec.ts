@@ -4,10 +4,18 @@
  * docs/08-testing.md:
  *
  * > 5. **Manual research trigger** — user creates a task, clicks "Research this task now",
- * >    sees progress chips, and the report renders with checklist/optional separation. The
- * >    task was `draft` before the run and is `not_started` after it, which is the visible
- * >    half of invariant 1; then ticking every checklist item completes the task without
- * >    the learner touching a state control, which is the visible half of invariant 6.
+ * >    lands on that run's research view and sees progress chips there, then follows
+ * >    "back to task" once it completes and sees the checklist populated and the research
+ * >    card showing the finished job. The task was `draft` before the run and is
+ * >    `not_started` after it, which is the visible half of invariant 1; then ticking every
+ * >    checklist item completes the task without the learner touching a state control,
+ * >    which is the visible half of invariant 6.
+ *
+ * **Since M8** the research turn runs in a session of its own, watched from its own
+ * `/projects/:projectId/research/:runId` view rather than inline in the task workspace —
+ * see docs/06-frontend.md#research-view-projectsprojectidresearchrunid. `researchTask`
+ * below is the round trip every test in this file now makes: click the button, watch the
+ * run finish on its own screen, and follow "Open task" back.
  *
  * The model is the deterministic stub, which recognises `research_agent` by its tool set
  * and sizes its report from the **research** budget line the prompt carries — the task's
@@ -23,6 +31,39 @@
 import type { Page } from '@playwright/test';
 
 import { expect, test } from './fixtures';
+
+/**
+ * Click the button that starts research on the current task workspace, wait for the run
+ * to finish on its own research view, and follow "Open task" back — the whole M8 round
+ * trip, since the checklist and the report no longer render on the same screen.
+ *
+ * `buttonName` distinguishes "Research this task now" from "Research again", the same
+ * pair the pre-M8 version of this flow drove directly.
+ */
+async function researchTask(
+  page: Page,
+  buttonName = 'Research this task now',
+): Promise<string> {
+  await page.getByRole('button', { name: buttonName }).click();
+  await page.waitForURL(/\/research\//);
+  const researchUrl = page.url();
+
+  // The chips come from the research turn's `tool_call` frames, rendered by the same
+  // `Transcript` the task's own chat uses — a research run is an ordinary turn, which is
+  // what lets it reuse the streaming path unchanged.
+  await expect(page.getByTestId('tool-chips').first()).toBeVisible();
+  const report = page.getByTestId('research-report');
+  await expect(report).toBeVisible();
+
+  // Optional material has no completion checkbox — a distinct landmark from the required
+  // list, which is a product requirement checked wherever the report renders.
+  const optional = page.getByTestId('report-optional');
+  await expect(optional).toBeVisible();
+  await expect(optional.getByRole('checkbox')).toHaveCount(0);
+
+  await page.getByRole('link', { name: 'Open task' }).click();
+  return researchUrl;
+}
 
 /*
   A research run is two model round trips — the `post_research_report` call, then the
@@ -71,11 +112,7 @@ test('flow #5: research fills the checklist, and finishing it completes the task
   await expect(page.getByText('No plan yet')).toBeVisible();
   await expect(page.getByTestId('checklist')).toBeHidden();
 
-  await page.getByRole('button', { name: 'Research this task now' }).click();
-
-  // The chips come from the research turn's `tool_call` frames — a research run is an
-  // ordinary turn, which is what lets it reuse the streaming path unchanged.
-  await expect(page.getByTestId('tool-chips').first()).toBeVisible();
+  await researchTask(page);
 
   const checklist = page.getByTestId('checklist');
   await expect(checklist).toBeVisible();
@@ -85,11 +122,13 @@ test('flow #5: research fills the checklist, and finishing it completes the task
   await expect(page.getByText('No plan yet')).toBeHidden();
 
   // The report's required list became the checklist; its optional list stayed on the
-  // report, with no checkbox. Distinct landmarks, which is the product requirement.
-  const optional = page.getByTestId('report-optional');
-  await expect(optional).toBeVisible();
-  await expect(optional.getByRole('checkbox')).toHaveCount(0);
+  // report, with no checkbox. Distinct landmarks, which is the product requirement —
+  // checked on the research view we just came from, where the report now lives.
   await expect(checklist.getByRole('checkbox')).toHaveCount(2);
+
+  // Since M8 the task's own screen shows a compact card for the run rather than the full
+  // report, linking back into the research view.
+  await expect(page.getByTestId('research-card')).toBeVisible();
 
   // The budget meter sums the checklist against the *task's* 30 minutes, not the project's
   // 45-minute default — the number the stub read out of the rendered instruction.
@@ -124,7 +163,7 @@ test('flow #5: a second research run replaces the checklist without losing finis
 }) => {
   await openWorkspace(page, 'Rust ownership', 'Borrow checker', 30);
 
-  await page.getByRole('button', { name: 'Research this task now' }).click();
+  const firstRunUrl = await researchTask(page);
   const checklist = page.getByTestId('checklist');
   await expect(checklist).toBeVisible();
 
@@ -133,15 +172,25 @@ test('flow #5: a second research run replaces the checklist without losing finis
 
   // "Research again" rather than a second primary button: once materials exist the action
   // is a re-run, and the copy says so (docs/06-frontend.md).
-  await page.getByRole('button', { name: 'Research again' }).click();
+  const secondRunUrl = await researchTask(page, 'Research again');
+
+  // Since M8 each run gets its own session and its own research view — a re-run is a
+  // *different* run, not a revisit of the first one's screen.
+  expect(secondRunUrl).not.toBe(firstRunUrl);
 
   // The stub is deterministic, so the second run produces the same two items — which is
   // exactly the case the identity match exists for. The tick survives, because a re-run
   // that keeps a reading the learner has already done must not ask for it again
   // (docs/02-data-model.md#task-items).
-  await expect(page.getByText('1 earlier run')).toBeVisible();
   await expect(page.getByTestId('checklist-budget')).toContainText('1 of 2 done');
   await expect(checklist.getByRole('checkbox')).toHaveCount(2);
+
+  // The first run did not vanish — it is reachable from "View previous research" beside
+  // the card for the one that replaced it.
+  await page.getByTestId('toggle-previous-research').click();
+  const previous = page.getByTestId('previous-research').getByTestId('research-card');
+  await expect(previous).toHaveCount(1);
+  await expect(previous).toHaveAttribute('href', new URL(firstRunUrl).pathname);
 });
 
 test('flow #5: the board shows a leaf task’s checklist progress', async ({
@@ -149,7 +198,7 @@ test('flow #5: the board shows a leaf task’s checklist progress', async ({
 }) => {
   await openWorkspace(page, 'Board progress', 'A researched task', 30);
 
-  await page.getByRole('button', { name: 'Research this task now' }).click();
+  await researchTask(page);
   await expect(page.getByTestId('checklist')).toBeVisible();
   await page.getByTestId('checklist').getByRole('checkbox').first().click();
   await expect(page.getByTestId('checklist-budget')).toContainText('1 of 2 done');
@@ -177,7 +226,7 @@ test('a subtask’s checklist is visible and tickable inside the parent', async 
   */
   await openWorkspace(page, 'Compilers', 'Write the parser', 30);
 
-  await page.getByRole('button', { name: 'Research this task now' }).click();
+  await researchTask(page);
   await expect(page.getByTestId('checklist')).toBeVisible();
   await page.getByTestId('checklist').getByRole('checkbox').first().click();
   await expect(page.getByTestId('checklist-budget')).toContainText('1 of 2 done');
@@ -217,7 +266,7 @@ test('the completion gate can be silenced from the dialog it interrupts', async 
     process start.
   */
   await openWorkspace(page, 'Drills', 'Quick practice', 30);
-  await page.getByRole('button', { name: 'Research this task now' }).click();
+  await researchTask(page);
   await expect(page.getByTestId('checklist')).toBeVisible();
 
   await send(page, 'mark the first step done');
@@ -243,4 +292,46 @@ test('the completion gate can be silenced from the dialog it interrupts', async 
   await expect(
     page.getByRole('switch', { name: 'Ask before your coach ticks off a step' }),
   ).not.toBeChecked();
+
+  // Settings has its own way back, symmetric with the workspace's.
+  await page.getByRole('link', { name: '← Back to the board' }).click();
+  await expect(page.getByLabel('New task')).toBeVisible();
+});
+
+test('M8: research with no task, from the board, produces a taskless report and a board card', async ({
+  signedIn: page,
+}) => {
+  /*
+    The new capability this milestone adds: a question about the project as a whole,
+    kicked off beside the board rather than from inside a task. Nothing here is promoted
+    onto any task's checklist, because there is no task.
+  */
+  await page.goto('/');
+  await page.getByLabel('New project').fill('Choosing a stack');
+  await page.getByRole('button', { name: 'Create' }).click();
+  await page.getByRole('link', { name: 'Choosing a stack' }).click();
+
+  await page.getByRole('button', { name: 'Research something for this project' }).click();
+  await page
+    .getByLabel('What should your coach research?')
+    .fill('What is a good first project to build?');
+  await page.getByRole('button', { name: 'Research this' }).click();
+
+  await page.waitForURL(/\/research\//);
+  await expect(page.getByRole('heading', { name: 'Research for this project' })).toBeVisible();
+  // No task to open — the affordance every task-scoped run's header carries is absent.
+  await expect(page.getByRole('link', { name: 'Open task' })).toHaveCount(0);
+
+  await expect(page.getByTestId('tool-chips').first()).toBeVisible();
+  const report = page.getByTestId('research-report');
+  await expect(report).toBeVisible();
+  // The required list is a plan for the question, not a checklist — rendered here because
+  // there is no task for it to live on instead.
+  await expect(report.getByTestId('report-required')).toContainText(
+    'What answers the question',
+  );
+
+  await page.getByRole('link', { name: '← Back to the board' }).click();
+  await expect(page.getByTestId('research-card')).toBeVisible();
+  await expect(page.getByTestId('research-card')).toContainText('Project');
 });

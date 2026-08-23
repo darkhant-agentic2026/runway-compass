@@ -197,24 +197,59 @@ a button sends no text and no attachment.
 // request
 { "reason": "I just added this task and want materials now",
   "budgetMinutesOverride": 90,       // optional
-  "force": false }                   // re-run even if researchStatus == done
+  "force": false,                    // re-run even if researchStatus == done
+  "attachments": [ { "uploadId": "…", "mimeType": "application/pdf" } ] }  // + M8, optional
 
 // 202
-{ "runId": "r_01J…", "turnId": "t_01J…", "mode": "inline" }
+{ "runId": "r_01J…", "turnId": "t_01J…", "sessionId": "s_01J…", "mode": "inline" }
 ```
 
+`sid` names the conversation the request came from — a task's own session, or, since M8,
+the project's intake session — and is only ever used to resolve *what* to research and to
+check ownership. The turn itself runs in a **new session created for this run**
+(`sessionId` above), never in `sid`; see below and
+[03-agent-design.md](03-agent-design.md#research_agent).
+
 Behaviour:
-- Resolves the task from the session, verifies ownership.
+- Resolves the linkage from `sid`. A task-linked session researches that task, subject to
+  the same-task rules below. **Since M8, a session with no task (`taskId: null`) is
+  accepted too** — the project's intake session — and researches `reason` as a
+  free-standing question about the project rather than any one task. `reason` must be
+  non-empty in that case: there is no task description to fall back on, and an empty
+  request would have nothing to research. `force` and the "already has materials" check
+  do not apply here — nothing before is a target to re-run; every taskless call opens a
+  fresh question. The budget the model works to is the project's `defaultTaskMinutes`;
+  `budgetMinutesOverride` is accepted and recorded on the run but is not threaded into the
+  model's own budget for either a task-scoped or a taskless request — a pre-existing gap
+  from M4, not one M8 opens or closes.
+- Task-linked behaviour is unchanged from M4/M5: verifies the task is a leaf (a task with
+  subtasks refuses — each subtask is researched on its own), and refuses with `409` if
+  `researchStatus == "done"` and `force` was not set.
 - Acquires the project agent lease. If the lease is held by an autonomous run, returns
   `409` with `{ runId }` of the in-flight run so the UI can attach to it instead of
   starting a duplicate.
-- Creates `autonomous_runs/{runId}` with `trigger: "manual"`, `mode: "inline"`, and runs
-  the **same** `autonomous_workflow` — so manual and scheduled research cannot drift.
+- Creates `autonomous_runs/{runId}` with `trigger: "manual"`, `mode: "inline"`, `taskId`
+  set or `null`, and a fresh `research` session
+  ([02-data-model.md](02-data-model.md#sessions--events-adk-owned-layout)) — and runs the
+  **same** `autonomous_workflow` steps against it, so manual and scheduled research cannot
+  drift.
+- **Carries `sid`'s own uploads into the research turn automatically**, added shortly
+  after M8. `SessionService.list_attachments(sid)` scans `sid`'s stored events for every
+  distinct file the learner has ever sent in that conversation and embeds each one in the
+  research turn's opening message, the same way `attachments` on this request does — so a
+  task description or `reason` that refers to a file already sent ("see the attached
+  rubric") reaches `research_agent` without re-attaching it. `attachments` on this request
+  is additive, for a file being sent for the first time specifically for this call. Purely
+  a read of `sid`'s transcript; nothing is written to it
+  ([03-agent-design.md](03-agent-design.md#research_agent)).
 - Sets `task.researchStatus` to `in_progress` before the first model call and to `done` or
   `failed` at the end, which is what invariant 6
   ([02-data-model.md](02-data-model.md#task-state-machine)) reads to keep a task from
-  completing itself while its checklist is still being written.
-- Streams progress over the WebSocket as the turn identified by `turnId`.
+  completing itself while its checklist is still being written. Not applicable, and not
+  touched, for a taskless run.
+- Streams progress over the WebSocket as the turn identified by `turnId`, in the session
+  identified by `sessionId` — a client watching this run subscribes to that session's
+  transcript, not to `sid`'s.
 
 **What M4 implements of this, and what waits for M5.** The endpoint, the lease, the ledger
 document, and the `research` and `post_report` steps are M4 — they are the whole of the
@@ -233,7 +268,8 @@ is what the client watches.
 | --- | --- | --- |
 | `GET` | `/api/runs/{runId}` | Ledger status: `status`, `steps[]`, `cursor`, `taskId`, `turnId`. Backs the `['run', runId]` query ([06-frontend.md](06-frontend.md)) and the 409 attach path below |
 | `POST` | `/api/runs/{runId}/undo` | Reverses the run's writes; idempotent, returns the affected `taskIds` |
-| `GET` | `/api/projects/{id}/runs` | Recent runs for the project, newest first — backs the "Updated by your coach" banner |
+| `GET` | `/api/projects/{id}/runs` | Recent runs for the project, newest first — backs the "Updated by your coach" banner and, since M8, the board's "latest research" card (the first entry whose steps include `research`) |
+| `GET` | `/api/tasks/{id}/runs` | + M8. Recent runs for one task, newest first — backs the task workspace's research card the same way the project route backs the board's. A query rather than a denormalized pointer, on the same reasoning `list_for_project` already uses: the ledger is the authority, and there is no task-level cache of it to keep in step |
 
 `POST /api/runs/{runId}/undo` is the endpoint behind the one-click undo in
 [05-autonomous-runs.md](05-autonomous-runs.md#what-the-run-is-allowed-to-change) and golden
