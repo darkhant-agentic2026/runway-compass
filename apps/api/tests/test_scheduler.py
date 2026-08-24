@@ -231,6 +231,29 @@ async def test_an_exhausted_quota_stops_a_request_too(
     assert result.skipped["quota_exhausted"] >= 1
 
 
+async def test_an_exhausted_points_quota_stops_a_request_too(
+    client: httpx.AsyncClient, container, scheduler: SchedulerService
+) -> None:
+    """M8-quotas: the points quota is a *second*, independent cost ceiling — checked
+    beside the run-count one in `_shared_guards`, and it applies to a requested run just
+    as much as to an auto-scheduled one."""
+    project = await _project(client)
+    task = await _task(client, project["id"])
+    await client.post(f"/api/tasks/{task['id']}/research-request")
+    me = (await client.get("/api/me")).json()
+    await container.usage_repository.spend_points(
+        "u_alice",
+        me["plan"]["limits"]["fourHourPoints"] * 1000,
+        timezone="UTC",
+        at=now(),
+    )
+
+    result = await scheduler.tick()
+
+    assert result.scheduled == []
+    assert result.skipped["points_quota_exhausted"] >= 1
+
+
 # --- priority ----------------------------------------------------------------------------
 
 

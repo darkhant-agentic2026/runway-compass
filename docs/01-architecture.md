@@ -132,5 +132,6 @@ so the user watches it happen live.
 - **Observability**: structured JSON logs with `uid`, `project_id`, `run_id`, `turn_id`,
   `invocation_id`. OpenTelemetry traces from FastAPI → ADK → Vertex. A `token_usage`
   Firestore doc per user per day for cost tracking (and future quotas).
-- **Cost control**: per-user daily caps on autonomous runs and on total model tokens;
-  exceeding a cap disables autonomous work for the user but never blocks interactive use.
+- **Cost control**: a per-user daily cap on autonomous runs, plus monthly and 4-hour
+  points quotas on total model tokens that block interactive use too, not only autonomous
+  work — see [02-data-model.md](02-data-model.md#usage-quotas-m8-quotas).

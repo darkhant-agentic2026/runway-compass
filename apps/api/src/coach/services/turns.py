@@ -42,6 +42,7 @@ from coach.core.ids import turn_id as new_turn_id
 from coach.core.principal import Principal
 from coach.repositories.turns import TurnRepository
 from coach.services.models import Turn, TurnError, TurnStatus
+from coach.services.quotas import QuotaService
 from coach.services.sessions import SessionService
 from coach.services.uploads import UploadService
 from coach.ws.broker import StreamBroker
@@ -152,6 +153,7 @@ class TurnService:
         runners: RunnerFactory,
         registry: TurnRegistry,
         broker: StreamBroker,
+        quotas: QuotaService,
         *,
         instance_id: str,
     ) -> None:
@@ -162,6 +164,7 @@ class TurnService:
         self._runners = runners
         self._registry = registry
         self._broker = broker
+        self._quotas = quotas
         self._instance_id = instance_id
         # docs/07-infra-deploy.md: "A per-instance asyncio.Semaphore caps concurrent
         # agent runs (default 8) so a burst of background work cannot starve interactive
@@ -225,6 +228,11 @@ class TurnService:
             raise ValidationProblem(f"A turn's text is capped at {MAX_TURN_TEXT} characters.")
         linkage = await self._sessions.require_owned(principal, session_id)
         resolved_agent = _resolve_agent(agent, linkage.task_id)
+        # docs/02-data-model.md#usage-quotas-m8-quotas: the one gate every interactive
+        # turn, research run, and autonomous pass shares, since they all reach here.
+        # Raises `QuotaExceeded` before a turn document exists, so a blocked attempt costs
+        # nothing and there is no turn to resume.
+        await self._quotas.require_available(principal.uid)
 
         content = await self._build_content(
             principal, text, attachments or [], confirmation, context_attachments or []
@@ -410,6 +418,7 @@ class TurnService:
         seq = 0
         event_ids: list[str] = []
         streamed = ""
+        total_tokens = 0
         watcher: asyncio.Task[None] | None = None
 
         await self._broker.publish(
@@ -428,6 +437,13 @@ class TurnService:
                         state_delta=state_delta or None,
                         run_config=RunConfig(streaming_mode=StreamingMode.SSE),
                     ):
+                        # `usage_metadata` lands on the aggregated, non-partial response
+                        # each model call ends with (the same one `_emit` already treats
+                        # as "this call's whole message") — never on a partial chunk, so
+                        # summing it here charges each model call in this turn exactly
+                        # once. docs/02-data-model.md#usage-quotas-m8-quotas.
+                        if not event.partial and event.usage_metadata is not None:
+                            total_tokens += event.usage_metadata.total_token_count or 0
                         seq, streamed = await self._emit(turn, event, seq, streamed, writer)
                         if not event.partial and event.id:
                             event_ids.append(event.id)
@@ -476,6 +492,9 @@ class TurnService:
                 with contextlib.suppress(asyncio.CancelledError):
                     await watcher
             await self._broker.forget(turn.id)
+            # Recorded regardless of outcome — tokens already spent are already spent,
+            # whether the turn ended `complete`, `cancelled`, or `failed`.
+            await self._quotas.record_spend(principal.uid, total_tokens)
 
     async def _emit(
         self,

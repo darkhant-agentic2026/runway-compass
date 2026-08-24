@@ -841,6 +841,31 @@ export function usePatchGlobalPrefs() {
   });
 }
 
+/** `PATCH /api/me` — the display name shown in the header instead of the signed-in email. */
+export function usePatchDisplayName() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (displayName: string) => api.patchDisplayName(displayName, newIdempotencyKey()),
+    onSuccess(me) {
+      queryClient.setQueryData(queryKeys.me, me);
+    },
+  });
+}
+
+/** `POST /api/coupons/claim`. M8-quotas — replaces `plan.limits` on success. */
+export function useClaimCoupon() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (code: string) => api.claimCoupon(code, newIdempotencyKey()),
+    onSuccess(response) {
+      queryClient.setQueryData<Me>(queryKeys.me, (previous) =>
+        previous ? { ...previous, plan: response.plan } : previous,
+      );
+      void queryClient.invalidateQueries({ queryKey: queryKeys.me });
+    },
+  });
+}
+
 export function usePatchLearnerProfile() {
   const queryClient = useQueryClient();
   return useMutation({

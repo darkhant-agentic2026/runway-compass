@@ -87,10 +87,15 @@ test('sign in, create a project, and see it on the list', async ({ page }) => {
 
   await expect(page.getByRole('heading', { name: 'Your projects' })).toBeVisible();
 
-  // M0's exit criterion: the signed-in user sees their own email. It comes from
-  // `GET /api/me`, so rendering it proves the token round-tripped through
-  // `verify_id_token` rather than merely that the client thinks it signed in.
-  await expect(page.getByTestId('signed-in-email')).toContainText('@');
+  // M0's exit criterion: the signed-in user's own identity round-trips through the
+  // server. It comes from `GET /api/me`, so asserting on it proves the token
+  // round-tripped through `verify_id_token` rather than merely that the client thinks
+  // it signed in. The visible text is the display name (the dev auth provider sets it
+  // to the uid, so it is non-empty but has no "@"); the email — proof this came from
+  // the server and not just local state — is on the hover title.
+  const identity = page.getByTestId('signed-in-identity');
+  await expect(identity).not.toBeEmpty();
+  await expect(identity).toHaveAttribute('title', /@/);
   await page.getByLabel('New project').fill('Learn Rust');
   await page.getByRole('button', { name: 'Create' }).click();
 

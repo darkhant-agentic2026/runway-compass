@@ -33,6 +33,7 @@ from coach.services.models import (
     TaskState,
     TaskWithSubtasks,
     TurnStatus,
+    UsageStatus,
     Verbosity,
 )
 
@@ -55,6 +56,24 @@ class MeResponse(ResponseModel):
     photo_url: str | None
     global_prefs: GlobalPrefs
     learner_profile: LearnerProfile
+    plan: Plan
+    #: docs/02-data-model.md#usage-quotas-m8-quotas. Spend, limit, and reset time for both
+    #: windows, regardless of whether either is exhausted.
+    usage: UsageStatus
+
+
+class MeIdentityPatch(RequestModel):
+    """`PATCH /api/me`. Only `displayName` today — the one identity field a learner may
+    override; `email` and `photoUrl` stay Identity Platform's to set."""
+
+    display_name: str = Field(min_length=1, max_length=100)
+
+
+class CouponClaimRequest(RequestModel):
+    code: str = Field(min_length=1, max_length=64)
+
+
+class CouponClaimResponse(ResponseModel):
     plan: Plan
 
 

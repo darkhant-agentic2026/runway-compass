@@ -852,6 +852,144 @@ Two things worth a future reader's attention, neither large enough to hold up th
 
 ---
 
+## M8-quotas — Per-user usage quotas, coupons, and abuse-prevention rate limits (~1 week)
+
+Scoped out of M8 itself for having no specification going in
+([status after M8](#status-after-m8)); the decisions below are that specification, settled
+at the start of this slice rather than mid-flight.
+
+- **Two usage windows per user — monthly, and a 4-hour burst limit — denominated in
+  points, where 1 point = 1,000 tokens.** All LLM API usage counts against both; a new
+  call is refused once either window is exhausted, and each resets independently. The
+  free preset is 500 monthly / 80 four-hour
+  ([02-data-model.md](02-data-model.md#usage-quotas-m8-quotas)).
+- **Enforcement is one gate on `TurnService.start`, covering everything**: interactive
+  coach/task-teacher turns, manual and requested research, and scheduled autonomous work
+  all converge there already (docs/09-roadmap.md#status-after-m4), so the pre-flight check
+  and the post-turn spend recording are written once. The existing
+  `plan.limits.autonomousRunsPerDay` pacing cap on background work is untouched and
+  unrelated — points are a cost ceiling layered on top of it, not a replacement.
+- **A new account's limits are materialized from `plans/{tier}` at creation**, not computed
+  from a formula at read time, so an existing user's limits cannot move under them when the
+  free tier's default changes later.
+- **Coupons.** `coupons/{code}` — single-use, hand-written during beta — grant a *replacement*
+  set of monthly/4-hour limits to the claiming account, letting a trusted beta tester
+  use the service as though subscribed, ahead of real billing. `POST /api/coupons/claim`.
+- **Two abuse-prevention rate limits**, both Firestore sliding-window counters on the same
+  shape `board_events/{uid}` already established for cross-instance state: new account
+  creation (4 / 30 min, global) and coupon-claim attempts (5 / hour / uid, recording wrong
+  guesses too) — the first bounds free-tier signup abuse directly, the second bounds
+  brute-forcing a coupon code, on top of what the first already costs an attacker.
+- **A retry affordance for a quota-blocked send.** Since a blocked turn is never created,
+  there is nothing to resume the way a disconnected turn is resumed — the chat pane instead
+  keeps the message that was refused and offers a plain "Retry" that resends it unchanged,
+  once the reader believes the window has reset.
+
+**Exit:** a fresh account's `plan.limits` matches `plans/free`; a turn is refused with
+`429 quota-exceeded` the moment either window is spent, for an interactive turn exactly as
+for a research or autonomous run; an exhausted auto-scheduled project is simply a candidate
+again on the tick after its window resets, with no special recovery path; claiming a
+coupon replaces the claiming account's points limits and a second claim of the same code
+is refused; more than four accounts created inside 30 minutes, or more than five
+coupon-claim attempts inside an hour for one account, are rate-limited; a chat turn blocked
+by quota shows a retry control that resends the same message.
+
+---
+
+## Status after M8-quotas
+
+**Met.** `plans/free` (500 monthly / 80 four-hour / 20 `autonomousRunsPerDay`) is what
+`UserService.get_or_create` copies onto a new account, falling back to `PlanLimits`'s
+Python defaults — numerically identical — when the preset document is absent, so a fresh,
+unseeded emulator behaves the same as a seeded one. `TurnService.start` calls
+`QuotaService.require_available` before creating a turn and `QuotaService.record_spend`
+once generation ends on every terminal path (`complete`, `cancelled`, `failed`), summing
+`usage_metadata.total_token_count` across the turn's non-partial model-response events;
+`SchedulerService._shared_guards` checks the same two windows before scheduling either
+kind of autonomous work, recording `points_quota_exhausted` distinctly from the
+pre-existing `quota_exhausted` (run-count) skip. `POST /api/coupons/claim` replaces
+`plan.limits.{monthlyPoints,fourHourPoints}` transactionally and is refused a second time
+on the same code; both new rate limits are Firestore sliding-window counters
+(`rate_limits/new_users`, `rate_limits/coupon_claim:{uid}`) that record only what should
+count against the window (a rejected attempt records nothing at registration; a wrong
+coupon guess still records, since brute-forcing wrong codes is exactly what that limit
+exists to slow down). The chat pane keeps a quota-blocked send's text and attachments and
+offers a "Retry" button that resends them unchanged, distinct from the pre-existing "You
+can try again" text for a turn that failed *after* starting. 650 backend tests, 303 web
+tests, 41 Playwright specs (chromium) — all green, including the full e2e suite run
+against the built image with the real quota gate active throughout.
+
+**The e2e harness needed one accommodation, decided at the start of this slice rather than
+found by surprise**: `e2e/fixtures.ts` mints a fresh, never-reused uid per *test* as its
+whole isolation strategy, against one long-lived compose stack — the production default of
+4 new accounts per 30 minutes would have failed the fifth spec of every run on a guard that
+has nothing to do with the behaviour under test. `NEW_USER_RATE_LIMIT` /
+`NEW_USER_RATE_LIMIT_WINDOW_MINUTES` are `Settings` fields rather than module constants for
+exactly this reason; `docker-compose.e2e.yml` raises the limit, every other environment
+keeps the default of 4/30 min
+([04-api-contract.md](04-api-contract.md#abuse-prevention-limits-implemented-m8-quotas)).
+
+**Deliberately deferred, and the milestone that needs it:**
+
+| Item | Needed by | Note |
+| --- | --- | --- |
+| Nightly live-API and evalset runs | **M9** | Live API tests against real Gemini/YouTube |
+| Content scanning on finalize | **M9** | Still as recorded after M2 |
+| `prod` environment, `terraform destroy` | before release | Still as recorded after M1 |
+| Billing (Stripe, plan tiers metered off `usage/*`) | post-v1 | The counters this milestone writes are the ones a metered plan would read; nothing here bills anyone |
+
+**Decisions made during implementation** that the design documents did not fix, settled
+before any code changed (this milestone had no specification going in — see
+[status after M8](#status-after-m8)):
+
+| Decision | Why | Where |
+| --- | --- | --- |
+| 1 point = 1,000 tokens, `ceil`'d | A round, easy-to-explain unit; rounding up rather than down means a turn that used any tokens at all always costs at least one point, so nothing is free by truncation | `repositories/usage.py` |
+| The 4-hour window is six **fixed** timezone-local blocks a day, not a rolling window | One point read and one `Increment`, the same bucketing tradeoff `usage/{uid}_{yyyymmdd}` already made for the daily run-count quota at M5, rather than a query over a trailing range | `repositories/usage.py` |
+| Two windows (monthly, 4-hour), not three | A third, daily window was redundant next to the 4-hour burst limit and made the feature harder for a learner to reason about — two numbers is what fits in a settings screen's meters without a footnote | `services/models.PlanLimits`, `repositories/usage.py` |
+| A coupon's grant is `CouponLimits`, a distinct model from `PlanLimits` | A coupon is about spend; giving it `autonomousRunsPerDay` would let a coupon document imply it also changes pacing, which nothing reads it for | `services/models.py` |
+| `plan.limits.autonomousRunsPerDay` is untouched by everything this milestone added | Kept as the existing pacing cap on background work, independent of the new cost ceiling layered beside it — the two are different guards for different reasons, not one superseding the other | `services/scheduler.py`, `services/coupons.py` |
+| The pre-flight check and the spend recording are both in `TurnService`, nowhere else | Every interactive turn, research run, and autonomous pass already converges on `TurnService.start` (docs/09-roadmap.md#status-after-m4); a second gate anywhere else would be a second place to keep in sync | `services/turns.py` |
+| Token spend is recorded in `_generate`'s `finally`, unconditionally | Tokens already spent are already spent regardless of how the turn ended — the same "counted when spent, not when the outcome is good" reasoning `record_autonomous_run` already applies | `services/turns.py` |
+| A blocked turn gets a **new** `Retry` control, not the existing `turn_error` retry text | A quota-exceeded refusal never creates a turn, so there is no `turn_error` frame to attach "you can try again" to — the chat pane has to keep the message that was refused somewhere of its own | `components/session/SessionPane.tsx` |
+| The new-account rate limit is a `Settings` value, not a constant | `e2e/fixtures.ts` mints a fresh uid per test as its whole isolation strategy; a hardcoded production default would fail the fifth e2e spec of every run. See the paragraph above | `core/config.py`, `docker-compose.e2e.yml` |
+| A rejected rate-limit attempt is never recorded | Recording it would advance the window's own oldest timestamp, letting a caller who keeps retrying shorten its own wait — the opposite of what the limit is for | `repositories/rate_limits.py` |
+| A wrong coupon guess **is** recorded against the claim-attempt limit | Brute-forcing codes is exactly what that limit exists to slow down; only the *account creation* limit gets the "don't record a refusal" treatment, and for the opposite reason — there the refused action is legitimate traffic, not an attack | `services/coupons.py` |
+
+### Two more UX changes on the same branch, neither its own milestone
+
+Requested after the milestone above was already green, and small enough to land beside it
+rather than opening a second branch.
+
+**The usage meters show a countdown, not only a timestamp.** `UsagePlanCard`'s 4-hour row
+reads "Resets 8/24/2026, 8:00:00 PM (in **0h 34m** from now)" — the monthly row does not,
+since a countdown in hours and minutes is the wrong grain for a window that resets in days.
+Computed at render time from `Date.now()` rather than a ticking clock: the value is
+already refreshed on every `GET /api/me` poll, and a settings screen is not somewhere a
+stale minute matters enough to justify a `setInterval`.
+
+**A learner may set their own display name (`PATCH /api/me`), and it replaces email as the
+header's primary, visible identity — email moves to the hover title.** This touches M0's
+own exit criterion above, which the header comment used to state literally ("the signed-in
+user sees their email"): the *proof* that criterion cared about — the token round-tripped
+through `verify_id_token` and the user document resolved — is unchanged and still visible
+(now on `title` rather than as the element's text), but the visible text is not. Rather than
+silently reinterpret a `docs/09-roadmap.md`-referenced comment, this was confirmed with the
+user before changing: keep the round-trip proof, move email to the tooltip, prefer the
+display name. `e2e/board.spec.ts`'s M0 assertion moved with it —
+`getByTestId('signed-in-identity')` is non-empty and its `title` contains `@`, in place of
+the old `signed-in-email` element's own text doing both jobs at once.
+
+**`display_name_customized` is why this doesn't get silently reverted.**
+`UserService.get_or_create` refreshes `displayName` (among other fields) from the sign-in
+token's own claim on every request — the mechanism that follows a Google account's name or
+avatar automatically. Once a learner sets their own, that one field is excluded from the
+refresh for their account, permanently; nothing else about the loop changes. Without this,
+the very next `GET /api/me` — which every screen makes — would silently overwrite the
+learner's choice with whatever the token still says.
+
+---
+
 ## M9 — Hardening and launch readiness (~1.5 weeks)
 
 - Observability: dashboards, alert policies, log-based metrics, trace sampling.
@@ -884,5 +1022,7 @@ overlap once M2 lands (different tool surfaces, shared runner). `M5` depends on 
 research workflow it schedules. `M6` is independent of M4/M5 and can slot in wherever
 convenient. `M7` depends on M6, since its profile-driven prompt changes assume the
 project-coach/task-teacher split already exists. `M8` depends on M4 and M5 for the research
-and run machinery it reworks. `M9` closes out the list. Roughly 13.5 weeks of sequential
-work, ~11.5 with the M3/M4 overlap.
+and run machinery it reworks. `M8-quotas` depends on M8 for the run/session boundary it
+gates and on M5 for the `usage/*` collection and `autonomousRunsPerDay` guard it extends.
+`M9` closes out the list. Roughly 14.5 weeks of sequential work, ~12.5 with the M3/M4
+overlap.

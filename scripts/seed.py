@@ -19,7 +19,8 @@ sys.path.insert(0, str(REPO_ROOT / "apps" / "api" / "src"))
 from coach.api.deps import Container  # noqa: E402
 from coach.core.config import Settings  # noqa: E402
 from coach.core.principal import Principal  # noqa: E402
-from coach.services.models import TaskState  # noqa: E402
+from coach.repositories.plans import FREE_TIER  # noqa: E402
+from coach.services.models import PlanLimits, TaskState  # noqa: E402
 
 DEV_UID = os.environ.get("DEV_UID", "u_dev")
 
@@ -54,6 +55,12 @@ async def main() -> int:
 
     container = Container(settings)
     principal = Principal(uid=DEV_UID, email=f"{DEV_UID}@localhost.dev", source="dev")
+
+    # M8-quotas: written before the dev user, so `get_or_create` copies this preset onto
+    # it rather than falling back to `PlanLimits`'s Python defaults — a fresh emulator
+    # otherwise behaves identically either way, but seeding it here makes `plans/free`
+    # visible in the emulator UI for anyone poking at the collection by hand.
+    await container.plan_repository.set_preset(FREE_TIER, PlanLimits())
 
     await container.users.get_or_create(principal)
     await container.users.patch_global_prefs(principal, {"defaultTaskMinutes": 45})

@@ -19,7 +19,7 @@ what runs, in which order, and why the order matters.
 | `/projects/:projectId/tasks/:taskId` | **Task workspace** — split view: task detail + checklist on the left, session chat on the right |
 | `/projects/:projectId/research/:runId` | + M8. **Research view** — split view: the research session's own transcript on the left, the final report and citations on the right. See [Research view](#research-view-projectsprojectidresearchrunid) below |
 | `/projects/:projectId/settings` | Project preferences (task duration, research depth, videos), with the same "← Back to the board" link the task workspace and the research view carry |
-| `/settings` | Global prefs, appearance ([theme](#theme-light-dark-system)) + **"What your coach knows about you"** (learner profile, editable) |
+| `/settings` | Account (display name, editable — M8-quotas), global prefs, appearance ([theme](#theme-light-dark-system)), usage & plan + coupon redeem (M8-quotas) + **"What your coach knows about you"** (learner profile, editable) |
 
 Routes are lazy-loaded per screen. Auth is a route guard resolving the Identity Platform
 auth state before first render to avoid a login flash.

@@ -23,8 +23,12 @@ export function AppShell() {
           <span className="flex-1" />
 
           {/*
-            The signed-in email, and M0's exit criterion in one element: "a signed-in user
-            sees their email on a deployed dev URL" (docs/09-roadmap.md).
+            The signed-in identity, and M0's exit criterion in one element: originally
+            "a signed-in user sees their email on a deployed dev URL" (docs/09-roadmap.md);
+            since the display-name feature, the *visible* text prefers the learner's chosen
+            name (falling back to email when none is set) and the email moves to the
+            hover title — the round trip the criterion cares about is unchanged, only which
+            field is primary.
 
             Read from `useMe()` — the server's answer — rather than from the auth context,
             which has the same value client-side from the token. Only the server's copy
@@ -36,9 +40,9 @@ export function AppShell() {
           <span
             className="hidden max-w-[16rem] truncate text-sm text-muted-foreground sm:inline"
             title={me.data?.email ?? undefined}
-            data-testid="signed-in-email"
+            data-testid="signed-in-identity"
           >
-            {me.data?.email ?? ''}
+            {me.data?.displayName || me.data?.email || ''}
           </span>
 
           <Button variant="ghost" render={<Link to="/settings" />}>

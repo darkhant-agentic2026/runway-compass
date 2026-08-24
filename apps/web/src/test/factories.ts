@@ -6,6 +6,8 @@ import type {
   Task,
   TaskItem,
   TaskWithSubtasks,
+  UsageStatus,
+  UsageWindow,
 } from '@/lib/schemas';
 
 let counter = 0;
@@ -158,6 +160,18 @@ export function makeLearnerProfile(overrides: Partial<LearnerProfile> = {}): Lea
     updatedAt: null,
     updatedBy: 'user',
     version: 0,
+    ...overrides,
+  };
+}
+
+function makeUsageWindow(overrides: Partial<UsageWindow> = {}): UsageWindow {
+  return { spent: 0, limit: 200, resetsAt: '2026-08-25T00:00:00+00:00', ...overrides };
+}
+
+export function makeUsageStatus(overrides: Partial<UsageStatus> = {}): UsageStatus {
+  return {
+    monthly: makeUsageWindow({ limit: 500 }),
+    fourHour: makeUsageWindow({ limit: 80 }),
     ...overrides,
   };
 }

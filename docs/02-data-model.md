@@ -23,7 +23,10 @@ turns/{turnId}/checkpoint_pages/{page}       ← spill when the turn doc nears 1
 autonomous_runs/{runId}                      ← durable job ledger
 presence/{uid}
 board_events/{uid}                           ← board_update across instances (M5)
-usage/{uid}_{yyyymmdd}                       ← token + run counters
+usage/{uid}_{period}                         ← points + run counters, one doc per window (M8-quotas)
+plans/{tier}                                 ← preset limits a new account starts from (M8-quotas)
+coupons/{code}                               ← single-use beta-testing grants (M8-quotas)
+rate_limits/{key}                            ← sliding-window abuse counters (M8-quotas)
 idempotency/{uid}__{fingerprint}             ← Idempotency-Key replay records, TTL 24 h
 ws_tickets/{ticket}                          ← single-use socket tickets, TTL 60 s
 uploads/{uploadId}                           ← what a signed upload URL was issued for
@@ -112,6 +115,9 @@ collection query and one security boundary.
 ```jsonc
 {
   "email": "…", "displayName": "…", "photoUrl": "…",
+  "displayNameCustomized": false,       // true once set by PATCH /api/me; stops the
+                                         // token-refresh loop in UserService.get_or_create
+                                         // from overwriting it with the sign-in claim
   "createdAt": ts, "lastSeenAt": ts,
   "globalPrefs": {
     "defaultTaskMinutes": 45,
@@ -129,7 +135,13 @@ collection query and one security boundary.
     "feedbackNotes": ["…"],             // capped ring buffer, 20 entries
     "updatedAt": ts, "updatedBy": "agent" | "user", "version": 7
   },
-  "plan": { "tier": "free", "limits": { "autonomousRunsPerDay": 20 } }  // billing hook
+  "plan": {                              // materialized at account creation; see below
+    "tier": "free",
+    "limits": {
+      "autonomousRunsPerDay": 20,          // unchanged since M5: a pacing cap on background work
+      "monthlyPoints": 500, "fourHourPoints": 80   // M8-quotas
+    }
+  }
 }
 ```
 
@@ -613,6 +625,111 @@ Heartbeat every 30 s over the WebSocket. "Owner is working here" =
 
 See [05-autonomous-runs.md](05-autonomous-runs.md) for the full schema and semantics.
 
+## Usage quotas (M8-quotas)
+
+Every user has two usage windows — monthly, and a rolling 4-hour burst limit — denominated
+in **points**, where **1 point = 1,000 tokens** (prompt + completion + thinking, `ceil`'d,
+from `Event.usage_metadata.total_token_count`; a turn that used no tokens spends nothing).
+Both windows are charged by the same spend and checked independently: a turn is refused the
+moment *either* is exhausted, and each resets on its own clock. This is deliberately two
+cheap point-reads and two independent counters rather than one rolling-window query — the
+same bucketing tradeoff `usage/{uid}_{yyyymmdd}` already made for `autonomousRuns` at M5,
+extended to one more period.
+
+```
+usage/{uid}_{yyyy-mm}                        ← monthly counter        { "points": 340 }
+usage/{uid}_{yyyy-mm-dd}-b{0..5}              ← 4-hour block counter   { "points": 40 }
+```
+
+`{uid}_{yyyy-mm-dd}` (no block suffix) is a third document shape in this collection, but it
+holds only `autonomousRuns` (M5's run-count pacing cap on background work) — points are not
+bucketed daily.
+
+The 4-hour document's block index is `hour // 4` **in the user's timezone** (a window that
+resets at an hour the learner cannot predict is not a window they can reason about), giving
+six fixed blocks a day (`00–04`, `04–08`, … `20–24`) rather than a true sliding window. A
+turn that starts at 03:59 and one at 04:01 are in different blocks even though only two
+minutes apart — accepted because one point read and one `Increment` beats a query over a
+trailing window, and a burst limiter's job is to bound concentration, not to be exact about
+which four hours.
+
+**Enforcement is one gate, because generation is one code path.** `TurnService.start` is
+where every interactive turn, every research run (manual, requested, and scheduled), and
+every autonomous `propose` pass already converge (docs/09-roadmap.md#status-after-m4: "a
+research run is an ordinary turn … one argument to `TurnService.start` selects the agent").
+The pre-flight check there is therefore the *only* gate the points system needs; nothing
+about generation has a second entry point to guard separately. It raises
+`QuotaExceeded(window, resetAt)` — rendered `429` — before a turn document is even created,
+so a blocked attempt costs nothing and there is no turn to resume. Token spend is recorded
+once generation ends (whatever the outcome — `complete`, `cancelled`, or `failed`; tokens
+already spent are already spent), from the sum of `usage_metadata.total_token_count` across
+the turn's non-partial model-response events. **This means a handful of turns started in
+the same instant can all pass the pre-flight check and all charge afterward, overshooting a
+window by a small, bounded amount** — accepted because concurrent turns for one user are
+naturally rare (one browser tab, one research run at a time per the project lease) and the
+alternative is reserving an unknown cost before the model has told anyone what it will be.
+
+**`plan.limits.autonomousRunsPerDay` is untouched and unrelated.** It is a pacing cap on how
+often background work may run at all, independent of what each run costs; the points system
+is a cost ceiling on top of it, checked as an additional guard in
+[05-autonomous-runs.md](05-autonomous-runs.md#candidate-selection-and-guards) rather than a
+replacement for the existing one.
+
+**Auto-scheduled research recovers on its own.** A project skipped for `points_quota_exhausted`
+is not retried specially — it is simply a candidate again on the next `/internal/tick` once
+any exhausted window has rolled over, the same as a project skipped for `cooldown` or
+`quiet_hours`. Nothing chases a reset; the tick already runs every 15 minutes regardless.
+
+### `plans/{tier}`
+
+```jsonc
+{ "limits": { "monthlyPoints": 500, "fourHourPoints": 80, "autonomousRunsPerDay": 20 } }
+```
+
+The preset a new account's `plan.limits` is copied from at creation
+(`UserService.get_or_create`), keyed by tier name (`plans/free`). Copied rather than
+referenced: an existing user's limits must not move underneath them when the free tier's
+default changes, and a coupon claim (below) has to be able to raise one user's limits
+without touching anyone else's. A missing preset — the emulator before it is seeded, chiefly
+— falls back to `PlanLimits`'s Python defaults, which are kept numerically equal to the
+`plans/free` document so the two cannot quietly drift apart.
+
+### `coupons/{code}`
+
+```jsonc
+{ "claimed": false, "claimedByUid": null, "claimedAt": null,
+  "limits": { "monthlyPoints": 5000, "fourHourPoints": 800 },
+  "createdAt": ts }
+```
+
+The document id **is** the code a learner types in, on the same footing as `ws_tickets/*`
+using the ticket itself as the key: claiming is then one point read plus one transactional
+check-and-set, never a query. Written by hand (or a small operator script) during beta —
+there is no endpoint that creates one. `claim` is a single transaction: read, refuse if
+missing or already `claimed`, else set `claimed: true` with the claiming uid and timestamp,
+in one round trip, so two requests racing the same code cannot both win
+(`repositories/tickets.py`'s "redeemed and deleted is one operation" is the same shape,
+minus the delete — a claimed coupon is kept, not consumed, since it is also the audit trail
+of who redeemed it and when). A successful claim **replaces**
+`plan.limits.{monthlyPoints,fourHourPoints}` on the claiming user outright — "the new …
+quotas it grants", not an addition to the old ones — and leaves `autonomousRunsPerDay`
+untouched, since a coupon is about spend, not pacing.
+
+### `rate_limits/{key}`
+
+```jsonc
+{ "timestamps": [ts1, ts2, …] }   // entries within the current window, oldest first
+```
+
+A generic sliding-window counter, used for exactly two keys: `new_users` (global — a new
+account has no uid yet to key on) and `coupon_claim:{uid}` (per account). `check_and_record`
+reads the document, drops timestamps older than the window, and — if fewer than `limit`
+remain — appends `now()` and writes; otherwise it refuses without writing, so a rejected
+attempt cannot shorten anyone's wait. One document per key rather than a token-bucket
+service, on the same reasoning as `board_events/{uid}`: this is read and written by
+low-volume, latency-insensitive paths (account creation, a coupon form), so a transactional
+list is simpler than introducing a rate-limiting primitive for two call sites.
+
 ## Indexes
 
 | Query | Index |
@@ -657,3 +774,9 @@ scoped, reviewed change.
 - `autonomous_runs/*` — TTL 30 days on `updatedAt`, which every step boundary touches.
 - `sessions`, `tasks`, `projects`, `memories` — retained; deleted on account deletion via
   a `DELETE /api/me` cascade job.
+- `rate_limits/*` — TTL 1 day (Firestore TTL policy on the newest entry's timestamp field).
+  Generous next to the longest window actually checked (1 hour): the data has no value once
+  every entry has aged out of every window that could ever read it.
+- `usage/*`, `plans/*`, `coupons/*` — retained. `usage/*` is the same counter billing would
+  later meter ([05-autonomous-runs.md](05-autonomous-runs.md#cost-notes)); `coupons/*` is
+  its own audit trail of who claimed what.

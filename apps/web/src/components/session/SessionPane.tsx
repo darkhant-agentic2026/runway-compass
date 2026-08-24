@@ -45,8 +45,14 @@ import { ConnectionBanner } from '@/components/session/ConnectionBanner';
 import { QuestionPrompt } from '@/components/session/QuestionPrompt';
 import { Transcript } from '@/components/session/Transcript';
 import { Button } from '@/components/ui/button';
-import { useCancelTurn, useSessionEvents, useStartTurn } from '@/features/queries';
+import {
+  useCancelTurn,
+  useSessionEvents,
+  useStartTurn,
+  type StartTurnBody,
+} from '@/features/queries';
 import { useAttachmentUploads } from '@/features/use-uploads';
+import { ApiError } from '@/lib/api';
 import { pendingConfirmation, toMessages } from '@/lib/transcript';
 import { useComposerStore } from '@/stores/composer';
 import { newestTurnFor, useStreamStore } from '@/stores/stream';
@@ -105,6 +111,27 @@ export function SessionPane({
   const resetComposer = useComposerStore((state) => state.reset);
   const { uploadAll } = useAttachmentUploads(sessionId);
   const [dragDepth, setDragDepth] = useState(0);
+
+  // M8-quotas: a quota-blocked send never becomes a turn, so there is nothing to
+  // "resume" the way a disconnected one is — this is the chat pane's own record of the
+  // one message that did not go through, kept only long enough to offer a plain resend.
+  const [blockedSend, setBlockedSend] = useState<{
+    body: StartTurnBody;
+    detail: string;
+  } | null>(null);
+
+  function sendTurn(body: StartTurnBody) {
+    startTurn.mutate(body, {
+      onSuccess() {
+        setBlockedSend(null);
+      },
+      onError(error) {
+        if (error instanceof ApiError && error.problem.type === '/problems/quota-exceeded') {
+          setBlockedSend({ body, detail: error.problem.detail });
+        }
+      },
+    });
+  }
 
   // The *newest* turn for this session, never merely the first one found. See
   // `newestTurnFor`: a turn that ended in `turn_error` is not cleared by anything, so a
@@ -245,20 +272,39 @@ export function SessionPane({
           </div>
         ) : null
       ) : sessionId ? (
-        <Composer
-          sessionId={sessionId}
-          sending={startTurn.isPending}
-          streaming={Boolean(streaming)}
-          onSend={(text, attachments) => {
-            // `attachments` carries `filename` for the optimistic echo; `api.startTurn`
-            // strips it, because `TurnAttachment` forbids unknown fields.
-            startTurn.mutate({ text, attachments });
-            resetComposer(sessionId);
-          }}
-          onCancel={() => {
-            if (live) cancelTurn.mutate(live.turnId);
-          }}
-        />
+        <>
+          {blockedSend ? (
+            <div
+              className="flex flex-wrap items-center justify-between gap-2 border-t bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              role="alert"
+            >
+              <p>{blockedSend.detail}</p>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={startTurn.isPending}
+                onClick={() => sendTurn(blockedSend.body)}
+              >
+                Retry
+              </Button>
+            </div>
+          ) : null}
+          <Composer
+            sessionId={sessionId}
+            sending={startTurn.isPending}
+            streaming={Boolean(streaming)}
+            onSend={(text, attachments) => {
+              // `attachments` carries `filename` for the optimistic echo; `api.startTurn`
+              // strips it, because `TurnAttachment` forbids unknown fields.
+              sendTurn({ text, attachments });
+              resetComposer(sessionId);
+            }}
+            onCancel={() => {
+              if (live) cancelTurn.mutate(live.turnId);
+            }}
+          />
+        </>
       ) : null}
     </section>
   );

@@ -15,6 +15,7 @@ import type { z } from 'zod';
 import { getAuthProvider } from '@/lib/auth';
 import {
   boardSchema,
+  couponClaimResponseSchema,
   effectivePrefsResponseSchema,
   learnerProfileResponseSchema,
   meSchema,
@@ -44,7 +45,15 @@ import {
 
 export class ApiError extends Error {
   readonly status: number;
-  readonly problem: { type: string; title: string; status: number; detail: string };
+  readonly problem: {
+    type: string;
+    title: string;
+    status: number;
+    detail: string;
+    /** M8-quotas: which window and when it resets, on a quota-exceeded `429`. */
+    window?: string;
+    resetAt?: string;
+  };
 
   constructor(status: number, problem: ApiError['problem']) {
     super(problem.detail || problem.title);
@@ -119,6 +128,21 @@ export const api = {
     request('/api/me/prefs', meSchema, {
       method: 'PATCH',
       body: patch,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    }),
+
+  /** The one identity field a learner may override — the sign-in token supplies the rest. */
+  patchDisplayName: (displayName: string, idempotencyKey?: string) =>
+    request('/api/me', meSchema, {
+      method: 'PATCH',
+      body: { displayName },
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    }),
+
+  claimCoupon: (code: string, idempotencyKey?: string) =>
+    request('/api/coupons/claim', couponClaimResponseSchema, {
+      method: 'POST',
+      body: { code },
       ...(idempotencyKey ? { idempotencyKey } : {}),
     }),
 

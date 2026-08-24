@@ -516,6 +516,8 @@ YOUTUBE_API_KEY=sm://youtube-api-key
 ALLOWED_SCHEDULER_SA=coach-scheduler-sa@….iam.gserviceaccount.com
 ALLOWED_TASKS_SA=coach-tasks-sa@….iam.gserviceaccount.com   # /internal/runs/* caller; distinct from the above
 OAUTH_CLIENT_ID=….apps.googleusercontent.com  # Identity Platform Google provider; token audience
+NEW_USER_RATE_LIMIT=4                         # M8-quotas; e2e raises this — see below
+NEW_USER_RATE_LIMIT_WINDOW_MINUTES=30
 ```
 
 `/internal/tick` and `/internal/runs/{id}/execute` are invoked by **two different** service
@@ -539,6 +541,8 @@ Dominant costs: Gemini tokens (research turns with grounding are the expensive o
 Cloud Run `min-instances=1` with CPU always allocated, and Firestore writes from event
 and checkpoint persistence. Mitigations already in the design: checkpoint batching
 (400 ms / 512 chars rather than per-token writes), a 6-hour per-project autonomous
-cooldown, a 24-hour YouTube result cache, `thinking_level: low` for mechanical steps, and
-per-user daily run and token caps. A `usage/{uid}_{date}` counter makes actual spend
-visible before it becomes a surprise, and is the same counter billing would later meter.
+cooldown, a 24-hour YouTube result cache, `thinking_level: low` for mechanical steps, a
+per-user daily run cap, and monthly/4-hour token points quotas
+([02-data-model.md](02-data-model.md#usage-quotas-m8-quotas)). A `usage/{uid}_{period}`
+counter makes actual spend visible before it becomes a surprise, and is the same counter
+billing would later meter.

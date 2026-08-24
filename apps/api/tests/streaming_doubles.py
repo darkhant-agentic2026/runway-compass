@@ -40,6 +40,10 @@ class ScriptedModel(BaseLlm):
     fail_with: str | None = None
     #: One entry per `generate_content_async` call. See the module docstring.
     invocations: list[str] = Field(default_factory=list)
+    #: M8-quotas: attached to the final aggregated response's `usage_metadata` when set, so
+    #: a quota test can assert exact point deduction. `None` (the default) means no
+    #: `usage_metadata` at all — every test that predates M8-quotas is unaffected.
+    usage_tokens: int | None = None
 
     async def generate_content_async(
         self, llm_request: Any, stream: bool = False
@@ -55,9 +59,16 @@ class ScriptedModel(BaseLlm):
         if self.fail_with is not None:
             raise RuntimeError(self.fail_with)
         # The aggregated, non-partial response every streaming turn ends with. ADK's own
-        # SSE contract: partial chunks, then one final event carrying the whole message.
+        # SSE contract: partial chunks, then one final event carrying the whole message —
+        # and, per `TurnService._generate`, the one place `usage_metadata` is read from.
+        usage = (
+            types.GenerateContentResponseUsageMetadata(total_token_count=self.usage_tokens)
+            if self.usage_tokens is not None
+            else None
+        )
         yield LlmResponse(
-            content=types.Content(role="model", parts=[types.Part(text="".join(self.chunks))])
+            content=types.Content(role="model", parts=[types.Part(text="".join(self.chunks))]),
+            usage_metadata=usage,
         )
 
     @property

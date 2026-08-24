@@ -2,18 +2,52 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 from coach.core.clock import now
+from coach.core.errors import RateLimited, ValidationProblem
 from coach.core.principal import Principal
+from coach.repositories.plans import PlanRepository
+from coach.repositories.rate_limits import RateLimitRepository
 from coach.repositories.users import UserRepository
-from coach.services.models import GlobalPrefs, LearnerProfile, TechnologyBelief, User
+from coach.services.models import (
+    CouponLimits,
+    GlobalPrefs,
+    LearnerProfile,
+    Plan,
+    TechnologyBelief,
+    User,
+)
 from coach.services.models import snake_case as _snake
+
+#: docs/04-api-contract.md#abuse-prevention-limits-implemented-m8-quotas. Global, not
+#: per-user: a not-yet-created account has no uid to key the counter on. Defaults match
+#: `Settings`' own — restated here because a caller building this service directly (a
+#: test, `scripts/seed.py`) should not have to construct `Settings` just to get them.
+NEW_USER_LIMIT = 4
+NEW_USER_WINDOW = timedelta(minutes=30)
+NEW_USERS_RATE_LIMIT_KEY = "new_users"
 
 
 class UserService:
-    def __init__(self, users: UserRepository) -> None:
+    def __init__(
+        self,
+        users: UserRepository,
+        plans: PlanRepository,
+        rate_limits: RateLimitRepository,
+        *,
+        new_user_limit: int = NEW_USER_LIMIT,
+        new_user_window: timedelta = NEW_USER_WINDOW,
+    ) -> None:
         self._users = users
+        self._plans = plans
+        self._rate_limits = rate_limits
+        # Configurable rather than the module constant, so the e2e harness — which mints a
+        # fresh, never-reused uid per *test* as its whole isolation strategy
+        # (`e2e/fixtures.ts`) — can raise this without the production default moving.
+        self._new_user_limit = new_user_limit
+        self._new_user_window = new_user_window
 
     async def get_or_create(self, principal: Principal) -> User:
         """The caller's user document, created on first sight.
@@ -21,24 +55,49 @@ class UserService:
         There is no separate registration step: a verified Identity Platform token is
         the account. Profile fields come from the token's claims and are refreshed when
         they change, so a new Google display name or avatar follows along.
+
+        Creation is rate-limited globally
+        (docs/04-api-contract.md#abuse-prevention-limits-implemented-m8-quotas) and starts
+        the account on `plans/free`'s preset limits — copied onto the document rather than
+        referenced, so a later change to the preset never moves an existing account's
+        limits (docs/02-data-model.md#plansttier).
         """
         existing = await self._users.get(principal.uid)
         if existing is None:
+            allowed = await self._rate_limits.check_and_record(
+                NEW_USERS_RATE_LIMIT_KEY,
+                limit=self._new_user_limit,
+                window=self._new_user_window,
+            )
+            if not allowed:
+                raise RateLimited(
+                    "Too many new accounts were created recently. Try again in a while."
+                )
+            limits = await self._plans.get_preset()
             return await self._users.create(
                 User(
                     uid=principal.uid,
                     email=principal.email,
                     display_name=principal.display_name,
                     photo_url=principal.photo_url,
+                    plan=Plan(limits=limits),
                 )
             )
 
-        refresh: dict[str, Any] = {"lastSeenAt": now()}
-        for wire_name, value in (
+        token_fields: list[tuple[str, str | None]] = [
             ("email", principal.email),
             ("displayName", principal.display_name),
             ("photoUrl", principal.photo_url),
-        ):
+        ]
+        if existing.display_name_customized:
+            # The learner has chosen their own — otherwise the very next request would
+            # re-sync it from the sign-in token and silently discard the choice.
+            token_fields = [
+                (name, value) for name, value in token_fields if name != "displayName"
+            ]
+
+        refresh: dict[str, Any] = {"lastSeenAt": now()}
+        for wire_name, value in token_fields:
             if value is not None and getattr(existing, _snake(wire_name)) != value:
                 refresh[wire_name] = value
         await self._users.patch(principal.uid, refresh)
@@ -47,6 +106,47 @@ class UserService:
     async def global_prefs(self, principal: Principal) -> GlobalPrefs:
         user = await self.get_or_create(principal)
         return user.global_prefs
+
+    async def patch_display_name(self, principal: Principal, display_name: str) -> User:
+        """User-chosen display name (`PATCH /api/me`).
+
+        Once set, `get_or_create`'s refresh-from-token loop above stops touching this
+        field for this account — the whole reason `display_name_customized` exists.
+        """
+        trimmed = display_name.strip()
+        if not trimmed:
+            raise ValidationProblem("Display name cannot be empty.")
+        user = await self.get_or_create(principal)
+        await self._users.patch(
+            principal.uid, {"displayName": trimmed, "displayNameCustomized": True}
+        )
+        return user.model_copy(
+            update={"display_name": trimmed, "display_name_customized": True}
+        )
+
+    async def apply_coupon_limits(self, principal: Principal, limits: CouponLimits) -> Plan:
+        """A claimed coupon **replaces** the account's points limits outright.
+
+        `autonomousRunsPerDay` is untouched — a coupon is about spend, not the pacing cap
+        on background work (docs/02-data-model.md#couponscode). Called only after
+        `CouponRepository.claim` has already committed the coupon as claimed, so this is
+        never asked to apply the same grant twice for one coupon.
+        """
+        user = await self.get_or_create(principal)
+        await self._users.patch(
+            principal.uid,
+            {
+                "plan.limits.monthlyPoints": limits.monthly_points,
+                "plan.limits.fourHourPoints": limits.four_hour_points,
+            },
+        )
+        merged_limits = user.plan.limits.model_copy(
+            update={
+                "monthly_points": limits.monthly_points,
+                "four_hour_points": limits.four_hour_points,
+            }
+        )
+        return user.plan.model_copy(update={"limits": merged_limits})
 
     async def patch_global_prefs(self, principal: Principal, patch: dict[str, Any]) -> User:
         """Partial update of `globalPrefs` (`PATCH /api/me/prefs`).

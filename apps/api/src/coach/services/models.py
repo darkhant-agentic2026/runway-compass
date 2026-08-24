@@ -199,7 +199,16 @@ class LearnerProfile(DomainModel):
 
 
 class PlanLimits(DomainModel):
+    """docs/02-data-model.md#usage-quotas-m8-quotas.
+
+    The two points fields are kept numerically equal to `plans/free`'s document so that
+    a missing preset (an unseeded emulator, chiefly) falls back to the same numbers a
+    seeded one would hand out — see `PlanRepository.get_preset`.
+    """
+
     autonomous_runs_per_day: int = 20
+    monthly_points: int = 500
+    four_hour_points: int = 80
 
 
 class Plan(DomainModel):
@@ -210,10 +219,73 @@ class Plan(DomainModel):
     limits: PlanLimits = Field(default_factory=PlanLimits)
 
 
+class UsagePoints(DomainModel):
+    """One user's spend so far in each of the two windows (`GET /api/me`'s `usage`,
+    the scheduler's points guard, and `QuotaService`'s pre-flight check all read this)."""
+
+    monthly: int = 0
+    four_hour: int = 0
+
+    def exhausted_window(self, limits: PlanLimits) -> str | None:
+        """Which window is spent, or `None` if both still have room.
+
+        Checked in a fixed order — monthly, then 4-hour — only because that is the order a
+        human reads the two numbers in; a caller refused for any reason gets the same `429`
+        regardless of which window named it.
+        """
+        if self.monthly >= limits.monthly_points:
+            return "monthly"
+        if self.four_hour >= limits.four_hour_points:
+            return "4-hour"
+        return None
+
+
+class UsageWindow(DomainModel):
+    """One window's spend, limit, and reset time — `GET /api/me`'s
+    `usage.{monthly,fourHour}`. Not a stored shape; assembled by `QuotaService.status` on
+    every call."""
+
+    spent: int
+    limit: int
+    resets_at: datetime
+
+
+class UsageStatus(DomainModel):
+    monthly: UsageWindow
+    four_hour: UsageWindow
+
+
+class CouponLimits(DomainModel):
+    """What a coupon grants: a replacement for the two points fields only. Deliberately
+    not `PlanLimits` — a coupon is about spend, not about `autonomousRunsPerDay` pacing, and
+    a coupon document that carried a field it never touches would look like it did."""
+
+    monthly_points: int
+    four_hour_points: int
+
+
+class Coupon(DomainModel):
+    """`coupons/{code}` — docs/02-data-model.md#couponscode. The document id is the code
+    itself, so `code` here is restated for convenience rather than being the only place it
+    lives."""
+
+    code: str
+    claimed: bool = False
+    claimed_by_uid: str | None = None
+    claimed_at: datetime | None = None
+    limits: CouponLimits
+    created_at: datetime | None = None
+
+
 class User(DomainModel):
     uid: str
     email: str | None = None
     display_name: str | None = None
+    #: Once true, `UserService.get_or_create`'s refresh-from-token loop stops touching
+    #: `display_name` — set by `PATCH /api/me`, never by the sign-in token's own claim.
+    #: Without this a learner's chosen name would be silently overwritten by their
+    #: Google account's name on their very next request.
+    display_name_customized: bool = False
     photo_url: str | None = None
     created_at: datetime | None = None
     last_seen_at: datetime | None = None
