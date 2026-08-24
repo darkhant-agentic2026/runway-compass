@@ -13,7 +13,6 @@ from coach.core.errors import QuotaExceeded
 from coach.repositories.usage import (
     RESET_FUNCS,
     UsageRepository,
-    next_daily_reset,
     next_four_hour_reset,
     next_monthly_reset,
 )
@@ -27,7 +26,7 @@ class QuotaService:
         self._usage = usage
 
     async def require_available(self, uid: str) -> None:
-        """Raise `QuotaExceeded` if any of the three windows is spent.
+        """Raise `QuotaExceeded` if either window is spent.
 
         A missing user is not this method's problem to report — every real caller reaches
         it after `UserService.get_or_create`, which is the one place a user document is
@@ -59,8 +58,8 @@ class QuotaService:
         await self._usage.spend_points(uid, total_tokens, timezone=timezone, at=now())
 
     async def status(self, user: User) -> UsageStatus:
-        """`GET /api/me`'s `usage` field: spend, limit, and reset time for all three
-        windows, regardless of whether any is exhausted."""
+        """`GET /api/me`'s `usage` field: spend, limit, and reset time for both windows,
+        regardless of whether either is exhausted."""
         at = now()
         timezone = user.global_prefs.timezone
         snapshot = await self._usage.points_snapshot(user.uid, timezone, at)
@@ -70,11 +69,6 @@ class QuotaService:
                 spent=snapshot.monthly,
                 limit=limits.monthly_points,
                 resets_at=next_monthly_reset(at, timezone),
-            ),
-            daily=UsageWindow(
-                spent=snapshot.daily,
-                limit=limits.daily_points,
-                resets_at=next_daily_reset(at, timezone),
             ),
             four_hour=UsageWindow(
                 spent=snapshot.four_hour,

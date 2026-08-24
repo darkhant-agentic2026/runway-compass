@@ -18,7 +18,6 @@ from coach.core.clock import now
 from coach.core.principal import Principal
 from coach.repositories.usage import (
     local_four_hour_block,
-    next_daily_reset,
     next_four_hour_reset,
     next_monthly_reset,
 )
@@ -42,9 +41,7 @@ async def _me(app, uid: str) -> httpx.Response:
 # --- usage bucketing (repositories/usage.py) --------------------------------------------
 
 
-async def test_spend_points_charges_all_three_windows_by_the_same_ceil_division(
-    container,
-) -> None:
+async def test_spend_points_charges_both_windows_by_the_same_ceil_division(container) -> None:
     at = now()
     charged = await container.usage_repository.spend_points(
         "u_probe", 2001, timezone="UTC", at=at
@@ -52,7 +49,7 @@ async def test_spend_points_charges_all_three_windows_by_the_same_ceil_division(
     assert charged == 3  # ceil(2001 / 1000)
 
     snapshot = await container.usage_repository.points_snapshot("u_probe", "UTC", at)
-    assert (snapshot.monthly, snapshot.daily, snapshot.four_hour) == (3, 3, 3)
+    assert (snapshot.monthly, snapshot.four_hour) == (3, 3)
 
 
 async def test_spending_zero_or_negative_tokens_writes_nothing(container) -> None:
@@ -60,7 +57,7 @@ async def test_spending_zero_or_negative_tokens_writes_nothing(container) -> Non
     charged = await container.usage_repository.spend_points("u_probe", 0, timezone="UTC", at=at)
     assert charged == 0
     snapshot = await container.usage_repository.points_snapshot("u_probe", "UTC", at)
-    assert (snapshot.monthly, snapshot.daily, snapshot.four_hour) == (0, 0, 0)
+    assert (snapshot.monthly, snapshot.four_hour) == (0, 0)
 
 
 def test_four_hour_blocks_are_six_fixed_slices_of_the_local_day() -> None:
@@ -73,13 +70,6 @@ def test_four_hour_blocks_are_six_fixed_slices_of_the_local_day() -> None:
 def test_monthly_reset_rolls_the_year_over_in_december() -> None:
     at = datetime(2026, 12, 15, 10, 0, tzinfo=UTC)
     assert next_monthly_reset(at, "UTC") == datetime(2027, 1, 1, tzinfo=UTC)
-
-
-def test_daily_reset_is_local_midnight_not_utc_midnight() -> None:
-    # 23:00 in UTC+2 is already the next day locally.
-    at = datetime(2026, 8, 24, 23, 0, tzinfo=UTC)
-    reset = next_daily_reset(at, "Europe/Berlin")
-    assert reset == datetime(2026, 8, 25, 22, 0, tzinfo=UTC)
 
 
 def test_four_hour_reset_crosses_midnight_from_the_last_block() -> None:
@@ -128,7 +118,6 @@ async def test_a_new_account_starts_on_plans_free(app) -> None:
     assert response.json()["plan"]["limits"] == {
         "autonomousRunsPerDay": 20,
         "monthlyPoints": 500,
-        "dailyPoints": 200,
         "fourHourPoints": 80,
     }
 
@@ -138,12 +127,7 @@ async def test_a_seeded_preset_is_copied_onto_the_account_not_referenced(
 ) -> None:
     await container.plan_repository.set_preset(
         "free",
-        PlanLimits(
-            autonomous_runs_per_day=7,
-            monthly_points=999,
-            daily_points=111,
-            four_hour_points=22,
-        ),
+        PlanLimits(autonomous_runs_per_day=7, monthly_points=999, four_hour_points=22),
     )
 
     first = await _me(app, "u_fresh_seeded")
@@ -155,14 +139,12 @@ async def test_a_seeded_preset_is_copied_onto_the_account_not_referenced(
     assert second.json()["plan"]["limits"]["monthlyPoints"] == 999
 
 
-async def test_get_me_reports_usage_for_all_three_windows(app) -> None:
+async def test_get_me_reports_usage_for_both_windows(app) -> None:
     response = await _me(app, "u_usage_shape")
     usage = response.json()["usage"]
-    assert usage["monthly"]["spent"] == 0
     assert usage["monthly"]["limit"] == 500
-    assert usage["daily"]["limit"] == 200
     assert usage["fourHour"]["limit"] == 80
-    for window in ("monthly", "daily", "fourHour"):
+    for window in ("monthly", "fourHour"):
         assert usage[window]["spent"] == 0
         assert usage[window]["resetsAt"]  # present and non-empty
 
@@ -198,14 +180,13 @@ async def test_claiming_a_coupon_replaces_points_limits_and_leaves_run_count_alo
     client: httpx.AsyncClient, container
 ) -> None:
     await container.coupon_repository.create(
-        "BETA-GOOD", CouponLimits(monthly_points=5000, daily_points=2000, four_hour_points=800)
+        "BETA-GOOD", CouponLimits(monthly_points=5000, four_hour_points=800)
     )
 
     response = await client.post("/api/coupons/claim", json={"code": "BETA-GOOD"})
     assert response.status_code == 200, response.text
     limits = response.json()["plan"]["limits"]
     assert limits["monthlyPoints"] == 5000
-    assert limits["dailyPoints"] == 2000
     assert limits["fourHourPoints"] == 800
     assert limits["autonomousRunsPerDay"] == 20  # a coupon is about spend, not pacing
 
@@ -217,7 +198,7 @@ async def test_claiming_the_same_coupon_twice_is_a_conflict(
     client: httpx.AsyncClient, container
 ) -> None:
     await container.coupon_repository.create(
-        "BETA-ONCE", CouponLimits(monthly_points=1, daily_points=1, four_hour_points=1)
+        "BETA-ONCE", CouponLimits(monthly_points=1, four_hour_points=1)
     )
     first = await client.post("/api/coupons/claim", json={"code": "BETA-ONCE"})
     assert first.status_code == 200
@@ -275,30 +256,30 @@ async def test_a_completed_turn_spends_points_and_an_exhausted_window_blocks_the
     drain_turns: None,
 ) -> None:
     scripted_model.usage_tokens = 2500  # ceil(2500 / 1000) = 3 points
-    await container.user_repository.patch("u_alice", {"plan.limits.dailyPoints": 2})
+    await container.user_repository.patch("u_alice", {"plan.limits.fourHourPoints": 2})
 
     first = await client.post(f"/api/sessions/{session_id}/turns", json={"text": "hi"})
     assert first.status_code == 202, first.text
     await _await_terminal(container, alice, str(first.json()["turnId"]))
 
     snapshot = await container.usage_repository.points_snapshot("u_alice", "UTC", now())
-    assert snapshot.daily == 3  # over the patched daily limit of 2
+    assert snapshot.four_hour == 3  # over the patched 4-hour limit of 2
 
     second = await client.post(f"/api/sessions/{session_id}/turns", json={"text": "again"})
     assert second.status_code == 429
     problem = second.json()
     assert problem["type"] == "/problems/quota-exceeded"
-    assert problem["window"] == "daily"
+    assert problem["window"] == "4-hour"
     assert problem["resetAt"]
 
 
 async def test_a_blocked_turn_creates_no_turn_document_and_charges_nothing(
     client: httpx.AsyncClient, container, session_id: str
 ) -> None:
-    await container.user_repository.patch("u_alice", {"plan.limits.dailyPoints": 0})
+    await container.user_repository.patch("u_alice", {"plan.limits.fourHourPoints": 0})
 
     response = await client.post(f"/api/sessions/{session_id}/turns", json={"text": "hi"})
 
     assert response.status_code == 429
     snapshot = await container.usage_repository.points_snapshot("u_alice", "UTC", now())
-    assert snapshot.daily == 0  # nothing was ever spent — there was no turn to spend from
+    assert snapshot.four_hour == 0  # nothing was ever spent — there was no turn to spend from

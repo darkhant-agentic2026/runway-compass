@@ -120,7 +120,7 @@ STUB_FAILURE_MESSAGE = "429 RESOURCE_EXHAUSTED: stub failure requested by the pr
 
 #: M8-quotas: a fixed token count on every non-partial response, so a local e2e run (which
 #: never sees a real model) still exercises point deduction — one call, one point, deducted
-#: from all three windows. `TurnService._generate` reads this off `usage_metadata`, never
+#: from both windows. `TurnService._generate` reads this off `usage_metadata`, never
 #: off a partial chunk, so a multi-call turn (tool loop) charges once per call as intended.
 STUB_USAGE_TOKENS = 1000
 

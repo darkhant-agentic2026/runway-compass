@@ -1,10 +1,10 @@
 """`usage/{uid}_{period}` — the per-user counters the quota guards read.
 
-docs/02-data-model.md#usage-quotas-m8-quotas is the specification. Three shapes share one
+docs/02-data-model.md#usage-quotas-m8-quotas is the specification. Two shapes share one
 collection, distinguished by the document id's format:
 
-- `{uid}_{yyyy-mm-dd}` — the daily bucket, carrying both `autonomousRuns` (M5, a run-count
-  pacing cap on background work) and `points` (M8-quotas, a cost ceiling on everything).
+- `{uid}_{yyyy-mm-dd}` — the daily bucket. Holds `autonomousRuns` only (M5's run-count
+  pacing cap on background work, unrelated to points); points are not bucketed daily.
 - `{uid}_{yyyy-mm}` — the monthly points bucket.
 - `{uid}_{yyyy-mm-dd}-b{0..5}` — the 4-hour points bucket, one of six fixed blocks a day.
 
@@ -35,7 +35,8 @@ from coach.services.models import UsagePoints
 POINTS_TOKEN_DIVISOR = 1000
 
 #: Six fixed, timezone-local blocks a day rather than a true rolling window — the same
-#: tradeoff the daily bucket already makes, for the same reason (see the module docstring).
+#: tradeoff the daily run-count bucket already makes, for the same reason (see the module
+#: docstring).
 FOUR_HOUR_BLOCK_HOURS = 4
 
 
@@ -50,7 +51,11 @@ def _zone(timezone: str) -> ZoneInfo:
 
 
 def local_day(at: datetime, timezone: str) -> date:
-    """The calendar day `at` falls on for a user in `timezone`."""
+    """The calendar day `at` falls on for a user in `timezone`.
+
+    Still needed for `autonomousRunsPerDay`'s run-count bucket (M5) even though points are
+    no longer bucketed daily.
+    """
     return at.astimezone(_zone(timezone)).date()
 
 
@@ -69,16 +74,6 @@ def _month_key(day: date) -> str:
 
 def _four_hour_key(day: date, block: int) -> str:
     return f"{day.isoformat()}-b{block}"
-
-
-def next_daily_reset(at: datetime, timezone: str) -> datetime:
-    """The next local midnight in `timezone`, as an aware UTC datetime."""
-    zone = _zone(timezone)
-    local = at.astimezone(zone)
-    next_midnight = (local + timedelta(days=1)).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-    return next_midnight.astimezone(UTC)
 
 
 def next_monthly_reset(at: datetime, timezone: str) -> datetime:
@@ -107,7 +102,6 @@ def next_four_hour_reset(at: datetime, timezone: str) -> datetime:
 #: `UsagePoints.exhausted_window`'s return value, so a caller can dispatch on it directly.
 RESET_FUNCS = {
     "monthly": next_monthly_reset,
-    "daily": next_daily_reset,
     "4-hour": next_four_hour_reset,
 }
 
@@ -150,24 +144,21 @@ class UsageRepository:
 
     async def points_snapshot(self, uid: str, timezone: str, at: datetime) -> UsagePoints:
         """One point read per window — cheap enough for `GET /api/me` and the pre-flight
-        check both, in parallel rather than three round trips in sequence."""
+        check both, in parallel rather than two round trips in sequence."""
         day = local_day(at, timezone)
         block_day, block = local_four_hour_block(at, timezone)
-        monthly, daily, four_hour = await asyncio.gather(
+        monthly, four_hour = await asyncio.gather(
             self._monthly_doc(uid, day).get(),
-            self._daily_doc(uid, day).get(),
             self._four_hour_doc(uid, block_day, block).get(),
         )
-        return UsagePoints(
-            monthly=_points(monthly), daily=_points(daily), four_hour=_points(four_hour)
-        )
+        return UsagePoints(monthly=_points(monthly), four_hour=_points(four_hour))
 
     async def spend_points(
         self, uid: str, total_tokens: int, *, timezone: str, at: datetime
     ) -> int:
-        """Charge `ceil(total_tokens / 1000)` points against all three windows at once.
+        """Charge `ceil(total_tokens / 1000)` points against both windows at once.
 
-        A batch rather than three sequential writes: three independent counters, but one
+        A batch rather than two sequential writes: two independent counters, but one
         round trip is cheaper on the "a turn just finished" path. Charging nothing for
         `total_tokens <= 0` matters for a turn that failed before any model call — there is
         no spend to record and no documents should be touched.
@@ -180,7 +171,6 @@ class UsageRepository:
         batch = self._db.client.batch()
         for reference in (
             self._monthly_doc(uid, day),
-            self._daily_doc(uid, day),
             self._four_hour_doc(uid, block_day, block),
         ):
             batch.set(reference, {"points": Increment(points), "updatedAt": at}, merge=True)
@@ -195,7 +185,6 @@ __all__ = [
     "UsageRepository",
     "local_day",
     "local_four_hour_block",
-    "next_daily_reset",
     "next_four_hour_reset",
     "next_monthly_reset",
 ]

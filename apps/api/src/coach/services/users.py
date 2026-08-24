@@ -137,14 +137,12 @@ class UserService:
             principal.uid,
             {
                 "plan.limits.monthlyPoints": limits.monthly_points,
-                "plan.limits.dailyPoints": limits.daily_points,
                 "plan.limits.fourHourPoints": limits.four_hour_points,
             },
         )
         merged_limits = user.plan.limits.model_copy(
             update={
                 "monthly_points": limits.monthly_points,
-                "daily_points": limits.daily_points,
                 "four_hour_points": limits.four_hour_points,
             }
         )

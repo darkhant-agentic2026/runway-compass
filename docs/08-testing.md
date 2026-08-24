@@ -134,8 +134,8 @@ emits a known delta sequence at controlled intervals:
   unaffected — this guard is scoped to background work only, unchanged since M5.
 - **Points quota exhaustion (M8-quotas) affects everything**, because it is one gate on
   `TurnService.start`: an interactive turn, a manual/requested/scheduled research run, and
-  an autonomous `propose` pass are all refused identically once any of the monthly, daily,
-  or 4-hour windows is spent. Covered by `test_quotas.py` (the gate itself, via
+  an autonomous `propose` pass are all refused identically once either the monthly or the
+  4-hour window is spent. Covered by `test_quotas.py` (the gate itself, via
   `ScriptedModel`'s deterministic token usage) and a `test_scheduler.py` case asserting the
   new `points_quota_exhausted` skip reason alongside the existing `quota_exhausted` one.
 - Postponement sweep: `postponed_until` in the past flips to `not_started`; in the future

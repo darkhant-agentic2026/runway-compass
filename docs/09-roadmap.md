@@ -858,11 +858,10 @@ Scoped out of M8 itself for having no specification going in
 ([status after M8](#status-after-m8)); the decisions below are that specification, settled
 at the start of this slice rather than mid-flight.
 
-- **Three usage windows per user — monthly, daily, and a 4-hour burst limit — denominated
-  in points, where 1 point = 1,000 tokens.** All LLM API usage counts against all three;
-  a new call is refused once any one window is exhausted, and each resets independently.
-  The free preset is 500 monthly / 200 daily / 80 four-hour — the 4-hour number chosen as
-  40% of the daily figure, a burst allowance rather than an even 1/6th split
+- **Two usage windows per user — monthly, and a 4-hour burst limit — denominated in
+  points, where 1 point = 1,000 tokens.** All LLM API usage counts against both; a new
+  call is refused once either window is exhausted, and each resets independently. The
+  free preset is 500 monthly / 80 four-hour
   ([02-data-model.md](02-data-model.md#usage-quotas-m8-quotas)).
 - **Enforcement is one gate on `TurnService.start`, covering everything**: interactive
   coach/task-teacher turns, manual and requested research, and scheduled autonomous work
@@ -874,7 +873,7 @@ at the start of this slice rather than mid-flight.
   from a formula at read time, so an existing user's limits cannot move under them when the
   free tier's default changes later.
 - **Coupons.** `coupons/{code}` — single-use, hand-written during beta — grant a *replacement*
-  set of monthly/daily/4-hour limits to the claiming account, letting a trusted beta tester
+  set of monthly/4-hour limits to the claiming account, letting a trusted beta tester
   use the service as though subscribed, ahead of real billing. `POST /api/coupons/claim`.
 - **Two abuse-prevention rate limits**, both Firestore sliding-window counters on the same
   shape `board_events/{uid}` already established for cross-instance state: new account
@@ -887,39 +886,38 @@ at the start of this slice rather than mid-flight.
   once the reader believes the window has reset.
 
 **Exit:** a fresh account's `plan.limits` matches `plans/free`; a turn is refused with
-`429 quota-exceeded` the moment any one of the three windows is spent, for an interactive
-turn exactly as for a research or autonomous run; an exhausted auto-scheduled project is
-simply a candidate again on the tick after its window resets, with no special recovery
-path; claiming a coupon replaces the claiming account's points limits and a second claim of
-the same code is refused; more than four accounts created inside 30 minutes, or more than
-five coupon-claim attempts inside an hour for one account, are rate-limited; a chat turn
-blocked by quota shows a retry control that resends the same message.
+`429 quota-exceeded` the moment either window is spent, for an interactive turn exactly as
+for a research or autonomous run; an exhausted auto-scheduled project is simply a candidate
+again on the tick after its window resets, with no special recovery path; claiming a
+coupon replaces the claiming account's points limits and a second claim of the same code
+is refused; more than four accounts created inside 30 minutes, or more than five
+coupon-claim attempts inside an hour for one account, are rate-limited; a chat turn blocked
+by quota shows a retry control that resends the same message.
 
 ---
 
 ## Status after M8-quotas
 
-**Met.** `plans/free` (500 monthly / 200 daily / 80 four-hour / 20 `autonomousRunsPerDay`)
-is what `UserService.get_or_create` copies onto a new account, falling back to
-`PlanLimits`'s Python defaults — numerically identical — when the preset document is
-absent, so a fresh, unseeded emulator behaves the same as a seeded one.
-`TurnService.start` calls `QuotaService.require_available` before creating a turn and
-`QuotaService.record_spend` once generation ends on every terminal path (`complete`,
-`cancelled`, `failed`), summing `usage_metadata.total_token_count` across the turn's
-non-partial model-response events; `SchedulerService._shared_guards` checks the same three
-windows before scheduling either kind of autonomous work, recording `points_quota_exhausted`
-distinctly from the pre-existing `quota_exhausted` (run-count) skip. `POST
-/api/coupons/claim` replaces `plan.limits.{monthlyPoints,dailyPoints,fourHourPoints}`
-transactionally and is refused a second time on the same code; both new rate limits are
-Firestore sliding-window counters (`rate_limits/new_users`,
-`rate_limits/coupon_claim:{uid}`) that record only what should count against the window
-(a rejected attempt records nothing at registration; a wrong coupon guess still records,
-since brute-forcing wrong codes is exactly what that limit exists to slow down). The chat
-pane keeps a quota-blocked send's text and attachments and offers a "Retry" button that
-resends them unchanged, distinct from the pre-existing "You can try again" text for a
-turn that failed *after* starting. 645 backend tests, 299 web tests, 41 Playwright specs
-(chromium) — all green, including the full e2e suite run against the built image with the
-real quota gate active throughout.
+**Met.** `plans/free` (500 monthly / 80 four-hour / 20 `autonomousRunsPerDay`) is what
+`UserService.get_or_create` copies onto a new account, falling back to `PlanLimits`'s
+Python defaults — numerically identical — when the preset document is absent, so a fresh,
+unseeded emulator behaves the same as a seeded one. `TurnService.start` calls
+`QuotaService.require_available` before creating a turn and `QuotaService.record_spend`
+once generation ends on every terminal path (`complete`, `cancelled`, `failed`), summing
+`usage_metadata.total_token_count` across the turn's non-partial model-response events;
+`SchedulerService._shared_guards` checks the same two windows before scheduling either
+kind of autonomous work, recording `points_quota_exhausted` distinctly from the
+pre-existing `quota_exhausted` (run-count) skip. `POST /api/coupons/claim` replaces
+`plan.limits.{monthlyPoints,fourHourPoints}` transactionally and is refused a second time
+on the same code; both new rate limits are Firestore sliding-window counters
+(`rate_limits/new_users`, `rate_limits/coupon_claim:{uid}`) that record only what should
+count against the window (a rejected attempt records nothing at registration; a wrong
+coupon guess still records, since brute-forcing wrong codes is exactly what that limit
+exists to slow down). The chat pane keeps a quota-blocked send's text and attachments and
+offers a "Retry" button that resends them unchanged, distinct from the pre-existing "You
+can try again" text for a turn that failed *after* starting. 650 backend tests, 303 web
+tests, 41 Playwright specs (chromium) — all green, including the full e2e suite run
+against the built image with the real quota gate active throughout.
 
 **The e2e harness needed one accommodation, decided at the start of this slice rather than
 found by surprise**: `e2e/fixtures.ts` mints a fresh, never-reused uid per *test* as its
@@ -948,7 +946,7 @@ before any code changed (this milestone had no specification going in — see
 | --- | --- | --- |
 | 1 point = 1,000 tokens, `ceil`'d | A round, easy-to-explain unit; rounding up rather than down means a turn that used any tokens at all always costs at least one point, so nothing is free by truncation | `repositories/usage.py` |
 | The 4-hour window is six **fixed** timezone-local blocks a day, not a rolling window | One point read and one `Increment`, the same bucketing tradeoff `usage/{uid}_{yyyymmdd}` already made for the daily run-count quota at M5, rather than a query over a trailing range | `repositories/usage.py` |
-| The free preset's 4-hour figure (80) is 40% of its daily figure (200), fixed at authoring time | A burst allowance, not a live formula tied to whatever the daily limit happens to be — a coupon or a per-account override changes one number without silently recomputing another | `plans/free`, `services/models.PlanLimits` |
+| Two windows (monthly, 4-hour), not three | A third, daily window was redundant next to the 4-hour burst limit and made the feature harder for a learner to reason about — two numbers is what fits in a settings screen's meters without a footnote | `services/models.PlanLimits`, `repositories/usage.py` |
 | A coupon's grant is `CouponLimits`, a distinct model from `PlanLimits` | A coupon is about spend; giving it `autonomousRunsPerDay` would let a coupon document imply it also changes pacing, which nothing reads it for | `services/models.py` |
 | `plan.limits.autonomousRunsPerDay` is untouched by everything this milestone added | Kept as the existing pacing cap on background work, independent of the new cost ceiling layered beside it — the two are different guards for different reasons, not one superseding the other | `services/scheduler.py`, `services/coupons.py` |
 | The pre-flight check and the spend recording are both in `TurnService`, nowhere else | Every interactive turn, research run, and autonomous pass already converges on `TurnService.start` (docs/09-roadmap.md#status-after-m4); a second gate anywhere else would be a second place to keep in sync | `services/turns.py` |
@@ -963,10 +961,10 @@ before any code changed (this milestone had no specification going in — see
 Requested after the milestone above was already green, and small enough to land beside it
 rather than opening a second branch.
 
-**The usage meters show a countdown, not only a timestamp.** `UsagePlanCard`'s daily and
-4-hour rows read "Resets 8/25/2026, 12:00:00 AM (in **0h 34m** from now)" — the monthly row
-does not, since a countdown in hours and minutes is the wrong grain for a window that resets
-in days. Computed at render time from `Date.now()` rather than a ticking clock: the value is
+**The usage meters show a countdown, not only a timestamp.** `UsagePlanCard`'s 4-hour row
+reads "Resets 8/24/2026, 8:00:00 PM (in **0h 34m** from now)" — the monthly row does not,
+since a countdown in hours and minutes is the wrong grain for a window that resets in days.
+Computed at render time from `Date.now()` rather than a ticking clock: the value is
 already refreshed on every `GET /api/me` poll, and a settings screen is not somewhere a
 stale minute matters enough to justify a `setInterval`.
 

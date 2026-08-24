@@ -1,11 +1,11 @@
 /**
  * Usage & plan — `/settings`. M8-quotas.
  *
- * Three meters (monthly, daily, 4-hour), each a spend against a limit, plus a coupon
- * redeem form. A window at or past its limit is the one place this reaches for the
- * destructive token rather than primary — reserved for that state, never a fourth
- * "series" color, so a learner scanning three bars reads "this one is the problem" from
- * color alone only where that is actually true.
+ * Two meters (monthly, 4-hour), each a spend against a limit, plus a coupon redeem form.
+ * A window at or past its limit is the one place this reaches for the destructive token
+ * rather than primary — reserved for that state, never a third "series" color, so a
+ * learner scanning both bars reads "this one is the problem" from color alone only where
+ * that is actually true.
  */
 
 import { useState } from 'react';
@@ -24,7 +24,6 @@ interface UsagePlanCardProps {
 
 const WINDOWS: Array<{ key: keyof UsageStatus; label: string; countdown: boolean }> = [
   { key: 'monthly', label: 'Monthly', countdown: false },
-  { key: 'daily', label: 'Daily', countdown: true },
   { key: 'fourHour', label: '4-hour', countdown: true },
 ];
 

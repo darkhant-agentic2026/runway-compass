@@ -21,36 +21,32 @@ describe('UsagePlanCard', () => {
     vi.restoreAllMocks();
   });
 
-  it('shows spend against limit for all three windows', () => {
+  it('shows spend against limit for both windows', () => {
     renderCard(
       makeUsageStatus({
         monthly: { spent: 120, limit: 500, resetsAt: '2026-09-01T00:00:00+00:00' },
-        daily: { spent: 40, limit: 200, resetsAt: '2026-08-25T00:00:00+00:00' },
         fourHour: { spent: 80, limit: 80, resetsAt: '2026-08-24T20:00:00+00:00' },
       }),
     );
 
     expect(screen.getByText('120 / 500 points')).toBeInTheDocument();
-    expect(screen.getByText('40 / 200 points')).toBeInTheDocument();
     expect(screen.getByText('80 / 80 points')).toBeInTheDocument();
-    // The one window at its limit is the one labeled exhausted — not all three.
+    // The one window at its limit is the one labeled exhausted — not both.
     expect(screen.getByText(/^Exhausted —/)).toBeInTheDocument();
-    expect(screen.getAllByText(/^Resets /)).toHaveLength(2);
+    expect(screen.getAllByText(/^Resets /)).toHaveLength(1);
   });
 
-  it('shows the countdown to reset for daily and 4-hour, but not monthly', () => {
+  it('shows the countdown to reset for 4-hour, but not monthly', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-24T12:00:00Z'));
 
     renderCard(
       makeUsageStatus({
         monthly: { spent: 10, limit: 500, resetsAt: '2026-09-01T00:00:00Z' },
-        daily: { spent: 10, limit: 200, resetsAt: '2026-08-24T12:34:00Z' },
         fourHour: { spent: 10, limit: 80, resetsAt: '2026-08-24T14:15:00Z' },
       }),
     );
 
-    expect(screen.getByText('0h 34m')).toBeInTheDocument();
     expect(screen.getByText('2h 15m')).toBeInTheDocument();
     // Monthly resets in over a week — no hours-and-minutes countdown for it.
     const monthlyMeter = screen.getByText('10 / 500 points').closest('div');
@@ -66,7 +62,6 @@ describe('UsagePlanCard', () => {
         limits: {
           autonomousRunsPerDay: 20,
           monthlyPoints: 5000,
-          dailyPoints: 2000,
           fourHourPoints: 800,
         },
       },

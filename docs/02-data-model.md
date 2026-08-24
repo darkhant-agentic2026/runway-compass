@@ -139,7 +139,7 @@ collection query and one security boundary.
     "tier": "free",
     "limits": {
       "autonomousRunsPerDay": 20,          // unchanged since M5: a pacing cap on background work
-      "monthlyPoints": 500, "dailyPoints": 200, "fourHourPoints": 80   // M8-quotas
+      "monthlyPoints": 500, "fourHourPoints": 80   // M8-quotas
     }
   }
 }
@@ -627,29 +627,31 @@ See [05-autonomous-runs.md](05-autonomous-runs.md) for the full schema and seman
 
 ## Usage quotas (M8-quotas)
 
-Every user has three usage windows — monthly, daily, and a rolling 4-hour burst limit —
-denominated in **points**, where **1 point = 1,000 tokens** (prompt + completion + thinking,
-`ceil`'d, from `Event.usage_metadata.total_token_count`; a turn that used no tokens spends
-nothing). All three windows are charged by the same spend and checked independently: a turn
-is refused the moment *any one* of them is exhausted, and each resets on its own clock. This
-is deliberately three cheap point-reads and three independent counters rather than one
-rolling-window query — the same bucketing tradeoff `usage/{uid}_{yyyymmdd}` already made for
-`autonomousRuns` at M5, extended to two more periods.
+Every user has two usage windows — monthly, and a rolling 4-hour burst limit — denominated
+in **points**, where **1 point = 1,000 tokens** (prompt + completion + thinking, `ceil`'d,
+from `Event.usage_metadata.total_token_count`; a turn that used no tokens spends nothing).
+Both windows are charged by the same spend and checked independently: a turn is refused the
+moment *either* is exhausted, and each resets on its own clock. This is deliberately two
+cheap point-reads and two independent counters rather than one rolling-window query — the
+same bucketing tradeoff `usage/{uid}_{yyyymmdd}` already made for `autonomousRuns` at M5,
+extended to one more period.
 
 ```
 usage/{uid}_{yyyy-mm}                        ← monthly counter        { "points": 340 }
-usage/{uid}_{yyyy-mm-dd}                      ← daily counter          { "points": 120, "autonomousRuns": 3 }
 usage/{uid}_{yyyy-mm-dd}-b{0..5}              ← 4-hour block counter   { "points": 40 }
 ```
 
-The 4-hour document's block index is `hour // 4` **in the user's timezone** (same
-`local_day` reasoning as the daily bucket: a window that resets at an hour the learner
-cannot predict is not a window they can reason about), giving six fixed blocks a day
-(`00–04`, `04–08`, … `20–24`) rather than a true sliding window. A turn that starts at
-03:59 and one at 04:01 are in different blocks even though only two minutes apart — accepted
-for the same reason the daily bucket accepts a midnight cliff: one point read and one
-`Increment` beats a query over a trailing window, and a burst limiter's job is to bound
-concentration, not to be exact about which four hours.
+`{uid}_{yyyy-mm-dd}` (no block suffix) is a third document shape in this collection, but it
+holds only `autonomousRuns` (M5's run-count pacing cap on background work) — points are not
+bucketed daily.
+
+The 4-hour document's block index is `hour // 4` **in the user's timezone** (a window that
+resets at an hour the learner cannot predict is not a window they can reason about), giving
+six fixed blocks a day (`00–04`, `04–08`, … `20–24`) rather than a true sliding window. A
+turn that starts at 03:59 and one at 04:01 are in different blocks even though only two
+minutes apart — accepted because one point read and one `Increment` beats a query over a
+trailing window, and a burst limiter's job is to bound concentration, not to be exact about
+which four hours.
 
 **Enforcement is one gate, because generation is one code path.** `TurnService.start` is
 where every interactive turn, every research run (manual, requested, and scheduled), and
@@ -681,7 +683,7 @@ any exhausted window has rolled over, the same as a project skipped for `cooldow
 ### `plans/{tier}`
 
 ```jsonc
-{ "limits": { "monthlyPoints": 500, "dailyPoints": 200, "fourHourPoints": 80, "autonomousRunsPerDay": 20 } }
+{ "limits": { "monthlyPoints": 500, "fourHourPoints": 80, "autonomousRunsPerDay": 20 } }
 ```
 
 The preset a new account's `plan.limits` is copied from at creation
@@ -696,7 +698,7 @@ without touching anyone else's. A missing preset — the emulator before it is s
 
 ```jsonc
 { "claimed": false, "claimedByUid": null, "claimedAt": null,
-  "limits": { "monthlyPoints": 5000, "dailyPoints": 2000, "fourHourPoints": 800 },
+  "limits": { "monthlyPoints": 5000, "fourHourPoints": 800 },
   "createdAt": ts }
 ```
 
@@ -708,10 +710,10 @@ missing or already `claimed`, else set `claimed: true` with the claiming uid and
 in one round trip, so two requests racing the same code cannot both win
 (`repositories/tickets.py`'s "redeemed and deleted is one operation" is the same shape,
 minus the delete — a claimed coupon is kept, not consumed, since it is also the audit trail
-of who redeemed it and when). A successful claim **replaces** `plan.limits.{monthlyPoints,
-dailyPoints, fourHourPoints}` on the claiming user outright — "the new … quotas it grants",
-not an addition to the old ones — and leaves `autonomousRunsPerDay` untouched, since a
-coupon is about spend, not pacing.
+of who redeemed it and when). A successful claim **replaces**
+`plan.limits.{monthlyPoints,fourHourPoints}` on the claiming user outright — "the new …
+quotas it grants", not an addition to the old ones — and leaves `autonomousRunsPerDay`
+untouched, since a coupon is about spend, not pacing.
 
 ### `rate_limits/{key}`
 

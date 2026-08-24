@@ -243,7 +243,7 @@ async def test_an_exhausted_points_quota_stops_a_request_too(
     me = (await client.get("/api/me")).json()
     await container.usage_repository.spend_points(
         "u_alice",
-        me["plan"]["limits"]["dailyPoints"] * 1000,
+        me["plan"]["limits"]["fourHourPoints"] * 1000,
         timezone="UTC",
         at=now(),
     )

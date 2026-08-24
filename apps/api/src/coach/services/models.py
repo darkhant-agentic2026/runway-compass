@@ -201,14 +201,13 @@ class LearnerProfile(DomainModel):
 class PlanLimits(DomainModel):
     """docs/02-data-model.md#usage-quotas-m8-quotas.
 
-    The three points fields are kept numerically equal to `plans/free`'s document so that
+    The two points fields are kept numerically equal to `plans/free`'s document so that
     a missing preset (an unseeded emulator, chiefly) falls back to the same numbers a
     seeded one would hand out — see `PlanRepository.get_preset`.
     """
 
     autonomous_runs_per_day: int = 20
     monthly_points: int = 500
-    daily_points: int = 200
     four_hour_points: int = 80
 
 
@@ -221,32 +220,30 @@ class Plan(DomainModel):
 
 
 class UsagePoints(DomainModel):
-    """One user's spend so far in each of the three windows (`GET /api/me`'s `usage`,
+    """One user's spend so far in each of the two windows (`GET /api/me`'s `usage`,
     the scheduler's points guard, and `QuotaService`'s pre-flight check all read this)."""
 
     monthly: int = 0
-    daily: int = 0
     four_hour: int = 0
 
     def exhausted_window(self, limits: PlanLimits) -> str | None:
-        """Which window is spent, or `None` if all three still have room.
+        """Which window is spent, or `None` if both still have room.
 
-        Checked in a fixed order — monthly, then daily, then 4-hour — only because that is
-        the order a human reads the three numbers in; a caller refused for any reason gets
-        the same `429` regardless of which window named it.
+        Checked in a fixed order — monthly, then 4-hour — only because that is the order a
+        human reads the two numbers in; a caller refused for any reason gets the same `429`
+        regardless of which window named it.
         """
         if self.monthly >= limits.monthly_points:
             return "monthly"
-        if self.daily >= limits.daily_points:
-            return "daily"
         if self.four_hour >= limits.four_hour_points:
             return "4-hour"
         return None
 
 
 class UsageWindow(DomainModel):
-    """One window's spend, limit, and reset time — `GET /api/me`'s `usage.{monthly,daily,
-    fourHour}`. Not a stored shape; assembled by `QuotaService.status` on every call."""
+    """One window's spend, limit, and reset time — `GET /api/me`'s
+    `usage.{monthly,fourHour}`. Not a stored shape; assembled by `QuotaService.status` on
+    every call."""
 
     spent: int
     limit: int
@@ -255,17 +252,15 @@ class UsageWindow(DomainModel):
 
 class UsageStatus(DomainModel):
     monthly: UsageWindow
-    daily: UsageWindow
     four_hour: UsageWindow
 
 
 class CouponLimits(DomainModel):
-    """What a coupon grants: a replacement for the three points fields only. Deliberately
+    """What a coupon grants: a replacement for the two points fields only. Deliberately
     not `PlanLimits` — a coupon is about spend, not about `autonomousRunsPerDay` pacing, and
     a coupon document that carried a field it never touches would look like it did."""
 
     monthly_points: int
-    daily_points: int
     four_hour_points: int
 
 

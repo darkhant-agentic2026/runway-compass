@@ -39,7 +39,6 @@ function makeMe(overrides: Partial<Me> = {}): Me {
       limits: {
         autonomousRunsPerDay: 20,
         monthlyPoints: 500,
-        dailyPoints: 200,
         fourHourPoints: 80,
       },
     },

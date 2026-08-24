@@ -53,7 +53,7 @@ Grounded research turns with `thinking_level: high` are the expensive operation,
 scheduler runs them unattended. An unnoticed loop or an enthusiastic `propose_tasks` step
 can multiply spend.
 *Mitigations already in the design:* 6-hour per-project cooldown, per-user daily run caps,
-**per-user monthly/daily/4-hour points quotas covering every LLM call, not only autonomous
+**per-user monthly/4-hour points quotas covering every LLM call, not only autonomous
 ones** ([02-data-model.md](02-data-model.md#usage-quotas-m8-quotas), M8-quotas), a rate
 limit on new account creation (free-tier signup abuse is the cheapest version of this
 risk), ≤ 5 new tasks per run, per-run tool-call and token ceilings, `usage/*` counters,

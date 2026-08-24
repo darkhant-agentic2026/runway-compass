@@ -319,9 +319,9 @@ describe('useStartTurn', () => {
       type: '/problems/quota-exceeded',
       title: 'Usage quota exceeded',
       status: 429,
-      detail: 'Your daily usage quota is exhausted. It resets at 2026-08-25T00:00:00+00:00.',
-      window: 'daily',
-      resetAt: '2026-08-25T00:00:00+00:00',
+      detail: 'Your 4-hour usage quota is exhausted. It resets at 2026-08-24T20:00:00+00:00.',
+      window: '4-hour',
+      resetAt: '2026-08-24T20:00:00+00:00',
     };
     vi.spyOn(api, 'startTurn').mockRejectedValue(new ApiError(429, problem));
 
@@ -334,7 +334,7 @@ describe('useStartTurn', () => {
     const error = result.current.error;
     expect(error).toBeInstanceOf(ApiError);
     expect((error as ApiError).problem.type).toBe('/problems/quota-exceeded');
-    expect((error as ApiError).problem.window).toBe('daily');
+    expect((error as ApiError).problem.window).toBe('4-hour');
   });
 });
 

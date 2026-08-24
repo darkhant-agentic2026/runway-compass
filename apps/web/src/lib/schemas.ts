@@ -179,12 +179,11 @@ export const learnerProfileResponseSchema = z.object({
 export const planLimitsSchema = z.object({
   autonomousRunsPerDay: z.number().int(),
   monthlyPoints: z.number().int(),
-  dailyPoints: z.number().int(),
   fourHourPoints: z.number().int(),
 });
 export type PlanLimits = z.infer<typeof planLimitsSchema>;
 
-/** One usage window (`GET /api/me`'s `usage.{monthly,daily,fourHour}`), M8-quotas. */
+/** One usage window (`GET /api/me`'s `usage.{monthly,fourHour}`), M8-quotas. */
 export const usageWindowSchema = z.object({
   spent: z.number().int(),
   limit: z.number().int(),
@@ -194,7 +193,6 @@ export type UsageWindow = z.infer<typeof usageWindowSchema>;
 
 export const usageStatusSchema = z.object({
   monthly: usageWindowSchema,
-  daily: usageWindowSchema,
   fourHour: usageWindowSchema,
 });
 export type UsageStatus = z.infer<typeof usageStatusSchema>;
@@ -428,7 +426,7 @@ export const problemSchema = z.object({
   runId: z.string().optional(),
   /**
    * Present on the `429` from a quota-exceeded turn (M8-quotas): which window
-   * (`"monthly" | "daily" | "4-hour"`) and when it resets, in addition to `detail`'s
+   * (`"monthly" | "4-hour"`) and when it resets, in addition to `detail`'s
    * human-readable sentence carrying the same information
    * (docs/04-api-contract.md#usage-quotas-implemented-m8-quotas).
    */

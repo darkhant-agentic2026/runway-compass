@@ -171,7 +171,6 @@ function makeUsageWindow(overrides: Partial<UsageWindow> = {}): UsageWindow {
 export function makeUsageStatus(overrides: Partial<UsageStatus> = {}): UsageStatus {
   return {
     monthly: makeUsageWindow({ limit: 500 }),
-    daily: makeUsageWindow({ limit: 200 }),
     fourHour: makeUsageWindow({ limit: 80 }),
     ...overrides,
   };

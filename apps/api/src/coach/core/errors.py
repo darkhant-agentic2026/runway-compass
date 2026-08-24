@@ -104,7 +104,7 @@ class RateLimited(CoachError):
 
 
 class QuotaExceeded(CoachError):
-    """A usage window (monthly, daily, or 4-hour points) is spent.
+    """A usage window (monthly or 4-hour points) is spent.
 
     docs/02-data-model.md#usage-quotas-m8-quotas. Distinct from :class:`RateLimited`: a
     rate limit bounds how *often* a request may be made; this bounds how *much* work a user

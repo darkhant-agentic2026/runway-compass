@@ -57,13 +57,13 @@ or a row of user data.
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET` | `/api/me` | Profile, `globalPrefs`, `learnerProfile`, plan limits, and — since M8-quotas — `usage`: `{ monthly, daily, fourHour }`, each `{ spent, limit, resetsAt }` |
+| `GET` | `/api/me` | Profile, `globalPrefs`, `learnerProfile`, plan limits, and — since M8-quotas — `usage`: `{ monthly, fourHour }`, each `{ spent, limit, resetsAt }` |
 | `PATCH` | `/api/me` | `{ displayName }` — the one identity field a learner may override. Once set, `UserService.get_or_create` stops re-syncing it from the sign-in token's own claim |
 | `PATCH` | `/api/me/prefs` | Partial update of `globalPrefs` |
 | `PATCH` | `/api/me/learner-profile` | User edits/resets agent beliefs; bumps `version` |
 | `DELETE` | `/api/me` | Account + data deletion (async cascade job) |
 | `POST` | `/api/ws-ticket` | `→ { ticket, expiresAt }` |
-| `POST` | `/api/coupons/claim` | M8-quotas. `{ code }` → `{ plan }`. Replaces `plan.limits.{monthlyPoints,dailyPoints,fourHourPoints}` with the coupon's grant. `404` unknown code, `409` already claimed, `429` rate-limited (below) |
+| `POST` | `/api/coupons/claim` | M8-quotas. `{ code }` → `{ plan }`. Replaces `plan.limits.{monthlyPoints,fourHourPoints}` with the coupon's grant. `404` unknown code, `409` already claimed, `429` rate-limited (below) |
 
 ### Projects
 
@@ -416,13 +416,13 @@ Distinct from rate limiting: a rate limit bounds *how often* a request may be ma
 quota bounds *how much* work a user may consume before it resets. `POST
 /api/sessions/{sid}/turns` (and, through it, every research and autonomous run —
 [05-autonomous-runs.md](05-autonomous-runs.md#candidate-selection-and-guards)) is refused
-with `429` and `type: /problems/quota-exceeded` when the monthly, daily, or 4-hour points
-window is exhausted:
+with `429` and `type: /problems/quota-exceeded` when the monthly or 4-hour points window is
+exhausted:
 
 ```jsonc
 { "type": "/problems/quota-exceeded", "title": "Usage quota exceeded", "status": 429,
-  "detail": "Your daily usage quota is exhausted. It resets at 2026-08-25T00:00:00+00:00.",
-  "window": "daily", "resetAt": "2026-08-25T00:00:00+00:00" }
+  "detail": "Your 4-hour usage quota is exhausted. It resets at 2026-08-24T20:00:00+00:00.",
+  "window": "4-hour", "resetAt": "2026-08-24T20:00:00+00:00" }
 ```
 
 No turn is created, so there is nothing to resume — the client's only affordance is a

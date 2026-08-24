@@ -57,8 +57,8 @@ class MeResponse(ResponseModel):
     global_prefs: GlobalPrefs
     learner_profile: LearnerProfile
     plan: Plan
-    #: docs/02-data-model.md#usage-quotas-m8-quotas. Spend, limit, and reset time for all
-    #: three windows, regardless of whether any is exhausted.
+    #: docs/02-data-model.md#usage-quotas-m8-quotas. Spend, limit, and reset time for both
+    #: windows, regardless of whether either is exhausted.
     usage: UsageStatus
 
 
