@@ -100,13 +100,19 @@ async def test_multi_session_adaptation_cycle(
         thinking_style="Learns best from hands-on SQL and concrete examples before theory",
         strengths=["SQL querying", "Relational schemas"],
         gaps=["Columnar storage internals"],
-        technologies=[
+        skills=[
             {
                 "name": "DuckDB",
+                "area": "Databases",
                 "level": "beginner",
                 "evidence": "First time trying in session 1",
             },
-            {"name": "Postgres", "level": "advanced", "evidence": "5 years production DBA"},
+            {
+                "name": "Postgres",
+                "area": "Databases",
+                "level": "advanced",
+                "evidence": "5 years production DBA",
+            },
         ],
         pacing="Fast-paced",
         feedback_note="Grasped OLAP vs OLTP quickly once contrasted with Postgres",
@@ -151,8 +157,8 @@ async def test_multi_session_adaptation_cycle(
     assert "Learns best from hands-on SQL" in learner_prompt
     assert "SQL querying, Relational schemas" in learner_prompt
     assert "Columnar storage internals" in learner_prompt
-    assert "DuckDB (beginner)" in learner_prompt
-    assert "Postgres (advanced)" in learner_prompt
+    assert "DuckDB (Databases, beginner)" in learner_prompt
+    assert "Postgres (Databases, advanced)" in learner_prompt
     assert "Fast-paced" in learner_prompt
 
     # In Session 2, coach recalls memory stored in Session 1
@@ -173,13 +179,19 @@ async def test_multi_session_adaptation_cycle(
         alice.uid, session2_id, project_id, task2["id"], memory_service=container.memory_service
     )
     update_res_2 = await tools.update_learner_profile(
-        technologies=[
+        skills=[
             {
                 "name": "DuckDB",
+                "area": "Databases",
                 "level": "intermediate",
                 "evidence": "Mastered Parquet partitioning",
             },
-            {"name": "Postgres", "level": "advanced", "evidence": "5 years production DBA"},
+            {
+                "name": "Postgres",
+                "area": "Databases",
+                "level": "advanced",
+                "evidence": "5 years production DBA",
+            },
         ],
         feedback_note="Completed partitioning exercise with zero errors",
         tool_context=tool_ctx_2,  # type: ignore[arg-type]
@@ -187,7 +199,7 @@ async def test_multi_session_adaptation_cycle(
     assert update_res_2["ok"] is True
     profile2 = update_res_2["learnerProfile"]
     assert profile2["version"] == 2
-    assert profile2["technologies"][0]["level"] == "intermediate"
+    assert profile2["skills"][0]["level"] == "intermediate"
     assert any(f"[{session2_id}]" in note for note in profile2["feedbackNotes"])
 
     # --- Session 3: User Inspection & Reversal in Settings ---------------------------

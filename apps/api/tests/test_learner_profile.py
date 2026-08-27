@@ -81,8 +81,13 @@ async def test_agent_can_update_learner_profile(
         thinking_style="Bottom-up thinker; prefers working code examples first",
         strengths=["Python fundamentals", "Linear algebra"],
         gaps=["Backpropagation calculus"],
-        technologies=[
-            {"name": "PyTorch", "level": "intermediate", "evidence": "Built CNNs in PyTorch"},
+        skills=[
+            {
+                "name": "PyTorch",
+                "area": "Machine learning",
+                "level": "intermediate",
+                "evidence": "Built CNNs in PyTorch",
+            },
         ],
         pacing="Fast, likes dense reference material",
         feedback_note="Understood gradient descent quickly after the code walkthrough",
@@ -94,7 +99,8 @@ async def test_agent_can_update_learner_profile(
     assert profile["thinkingStyle"] == "Bottom-up thinker; prefers working code examples first"
     assert profile["strengths"] == ["Python fundamentals", "Linear algebra"]
     assert profile["gaps"] == ["Backpropagation calculus"]
-    assert profile["technologies"][0]["name"] == "PyTorch"
+    assert profile["skills"][0]["name"] == "PyTorch"
+    assert profile["skills"][0]["area"] == "Machine learning"
     assert profile["pacing"] == "Fast, likes dense reference material"
     assert profile["updatedBy"] == "agent"
     assert profile["version"] == 1
@@ -182,8 +188,13 @@ async def test_user_can_edit_and_reset_learner_profile(client: httpx.AsyncClient
             "thinkingStyle": "Conceptual first, then code",
             "strengths": ["Architecture design"],
             "gaps": ["CSS animations"],
-            "technologies": [
-                {"name": "TypeScript", "level": "advanced", "evidence": "3 years fulltime"},
+            "skills": [
+                {
+                    "name": "TypeScript",
+                    "area": "Web development",
+                    "level": "advanced",
+                    "evidence": "3 years fulltime",
+                },
             ],
             "pacing": "Moderate",
         },
@@ -192,7 +203,7 @@ async def test_user_can_edit_and_reset_learner_profile(client: httpx.AsyncClient
     profile = patch_res.json()["learnerProfile"]
     assert profile["thinkingStyle"] == "Conceptual first, then code"
     assert profile["strengths"] == ["Architecture design"]
-    assert profile["technologies"][0]["name"] == "TypeScript"
+    assert profile["skills"][0]["name"] == "TypeScript"
     assert profile["updatedBy"] == "user"
     assert profile["version"] >= 1
 

@@ -6,13 +6,32 @@
  * did not offer one, would each be the coach's own instruction quietly ignored by the UI.
  */
 
+import { QueryClientProvider } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ComponentProps, ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ConfirmationPrompt } from '@/components/session/ConfirmationPrompt';
 import { QuestionPrompt } from '@/components/session/QuestionPrompt';
+import { createQueryClient } from '@/features/queries';
 import type { ConfirmationQuestion } from '@/lib/transcript';
+
+function renderConfirmation(
+  props: Omit<
+    ComponentProps<typeof ConfirmationPrompt>,
+    'projectId' | 'sessionId' | 'messages'
+  >,
+) {
+  const queryClient = createQueryClient();
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  );
+  return render(
+    <ConfirmationPrompt projectId="p_1" sessionId="s_1" messages={[]} {...props} />,
+    { wrapper },
+  );
+}
 
 function question(overrides: Partial<ConfirmationQuestion> = {}): ConfirmationQuestion {
   return {
@@ -145,7 +164,7 @@ describe('ConfirmationPrompt’s third option', () => {
 
   it('answers and asks to stop confirming, in one payload', async () => {
     const onAnswer = vi.fn();
-    render(<ConfirmationPrompt pending={pending} disabled={false} onAnswer={onAnswer} />);
+    renderConfirmation({ pending, disabled: false, onAnswer });
 
     await userEvent.click(
       screen.getByRole('button', { name: 'Mark it done and stop asking in this project' }),
@@ -155,7 +174,7 @@ describe('ConfirmationPrompt’s third option', () => {
 
   it('plain approval carries no payload', async () => {
     const onAnswer = vi.fn();
-    render(<ConfirmationPrompt pending={pending} disabled={false} onAnswer={onAnswer} />);
+    renderConfirmation({ pending, disabled: false, onAnswer });
 
     await userEvent.click(screen.getByRole('button', { name: 'Mark it done' }));
     expect(onAnswer).toHaveBeenCalledWith(true);
@@ -165,7 +184,7 @@ describe('ConfirmationPrompt’s third option', () => {
     // "Keep it" is the safe answer to a *discard*; the safe answer to a completion is that
     // they have not finished yet.
     const onAnswer = vi.fn();
-    render(<ConfirmationPrompt pending={pending} disabled={false} onAnswer={onAnswer} />);
+    renderConfirmation({ pending, disabled: false, onAnswer });
 
     await userEvent.click(screen.getByRole('button', { name: 'Not yet' }));
     expect(onAnswer).toHaveBeenCalledWith(false);
@@ -173,13 +192,11 @@ describe('ConfirmationPrompt’s third option', () => {
 
   it('offers no opt-out on the destructive gates', () => {
     // A learner who silenced completions did not ask to silence discarding.
-    render(
-      <ConfirmationPrompt
-        pending={{ ...pending, toolName: 'discard_task', args: { reason: 'obsolete' } }}
-        disabled={false}
-        onAnswer={vi.fn()}
-      />,
-    );
+    renderConfirmation({
+      pending: { ...pending, toolName: 'discard_task', args: { reason: 'obsolete' } },
+      disabled: false,
+      onAnswer: vi.fn(),
+    });
     expect(screen.getByRole('button', { name: 'Keep it' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /stop asking/ })).not.toBeInTheDocument();
   });

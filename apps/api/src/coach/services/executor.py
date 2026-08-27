@@ -39,6 +39,7 @@ import logging
 from datetime import datetime, timedelta
 
 from coach.agents.context import RUN_ID_KEY
+from coach.agents.research_workflow import ModelThrottle
 from coach.core.clock import now
 from coach.core.principal import Principal
 from coach.repositories.presence import PresenceRepository
@@ -58,6 +59,7 @@ from coach.services.models import (
 )
 from coach.services.scheduler import PRESENCE_WINDOW, WORKABLE_STATES, wants_auto_research
 from coach.services.sessions import SessionService
+from coach.services.study_plans import StudyPlanService
 from coach.services.tasks import TaskService
 from coach.services.turns import AgentChoice, TurnService
 from coach.ws.hub import BoardUpdateHub
@@ -87,6 +89,8 @@ class RunExecutor:
         turns: TurnService,
         presence: PresenceRepository,
         board_updates: BoardUpdateHub,
+        research_throttle: ModelThrottle,
+        study_plans: StudyPlanService,
         instance_id: str,
     ) -> None:
         self._runs = runs
@@ -97,6 +101,8 @@ class RunExecutor:
         self._turns = turns
         self._presence = presence
         self._board_updates = board_updates
+        self._research_throttle = research_throttle
+        self._study_plans = study_plans
         self._instance_id = instance_id
 
     async def execute(self, run_id: str) -> AutonomousRun | None:
@@ -220,10 +226,18 @@ class RunExecutor:
         match step:
             case "select_next_task":
                 return await self._select_next_task(principal, run)
+            case "research" if run.trigger == "manual":
+                return await self._manual_research(principal, run)
             case "research":
                 return await self._research(principal, run, steps)
+            case "post_report" if run.trigger == "manual":
+                return await self._manual_post_report(principal, run)
             case "post_report":
                 return await self._post_report(principal, run, steps)
+            case "roadmap":
+                return await self._roadmap(principal, run)
+            case "write_plan":
+                return await self._write_plan(run)
             case "propose_tasks":
                 return await self._propose_tasks(principal, run, steps)
             case "reprioritize":
@@ -279,18 +293,127 @@ class RunExecutor:
         ]
         return min(workable, key=lambda task: task.order, default=None)
 
+    # --- manual research (trigger == "manual", steps "research"/"post_report") --------
+
+    async def _manual_research(
+        self, principal: Principal, run: AutonomousRun
+    ) -> dict[str, object]:
+        """The queued half of `ResearchService.start_manual`.
+
+        Unlike the autonomous `_research` step, there is no `_skip_research` gate here:
+        `ResearchService.start_manual` never consulted `needsResearch` — the learner asked
+        directly — and this step must not start doing so just because it now shares a step
+        id with the autonomous pipeline. There is also no task at all for the M8 taskless
+        case (`run.task_id is None`); `run.pending_text` already carries the whole opening
+        message either way, composed once by `ResearchService` at accept time, since the
+        conversation it was built from is not reachable from here.
+        """
+        try:
+            session_id = await self._ensure_session(principal, run, run.task_id)
+            turn = await self._run_turn(
+                principal,
+                session_id,
+                text=run.pending_text or "",
+                agent="research",
+                run_id=run.id,
+                attachments=run.pending_attachments,
+                context_attachments=run.pending_context_attachments,
+                record_turn_id=True,
+            )
+        finally:
+            self._research_throttle.release_run(run.id)
+        if turn.status is not TurnStatus.COMPLETE:
+            raise StepFailed(
+                (turn.error.message if turn.error else None)
+                or "the research turn did not finish"
+            )
+        return {"turnId": turn.id, "sessionId": session_id}
+
+    async def _manual_post_report(
+        self, principal: Principal, run: AutonomousRun
+    ) -> dict[str, object] | object:
+        """`_post_report`'s manual-trigger sibling — tolerates a taskless run.
+
+        A project-scoped manual run (M8, `run.task_id is None`) has no `researchStatus` to
+        settle and no board card to update; `post_research_report` already wrote its report
+        keyed `report_{runId}`, and `GET /api/runs/{runId}/report` is how a client reads it
+        back, same as a task-scoped run's.
+        """
+        if run.task_id is None:
+            return {"taskless": True}
+        task = await self._tasks.resolve(principal, run.task_id)
+        if task.research_status is not ResearchStatus.DONE:
+            await self._tasks.set_research(principal, run.task_id, status=ResearchStatus.FAILED)
+            raise StepFailed("the research turn produced no report")
+        await self._board_updates.publish(
+            run.owner_uid,
+            project_id=run.project_id,
+            task_ids=[run.task_id],
+            origin="agent",
+            run_id=run.id,
+        )
+        return {"reportId": task.latest_report_id, "checklistLength": len(task.items)}
+
+    # --- roadmap (steps "roadmap"/"write_plan", always trigger == "manual") -----------
+
+    async def _roadmap(self, principal: Principal, run: AutonomousRun) -> dict[str, object]:
+        """The queued half of `ResearchService.start_roadmap` — `build_roadmap_workflow`'s
+        `task_proposer` -> `plan_tailor` turn, taskless by construction.
+        """
+        try:
+            session_id = await self._ensure_session(principal, run, None)
+            turn = await self._run_turn(
+                principal,
+                session_id,
+                text=run.pending_text or "",
+                agent="roadmap",
+                run_id=run.id,
+                attachments=run.pending_attachments,
+                context_attachments=run.pending_context_attachments,
+                record_turn_id=True,
+            )
+        finally:
+            self._research_throttle.release_run(run.id)
+        if turn.status is not TurnStatus.COMPLETE:
+            raise StepFailed(
+                (turn.error.message if turn.error else None)
+                or "the roadmap turn did not finish"
+            )
+        return {"turnId": turn.id, "sessionId": session_id}
+
+    async def _write_plan(self, run: AutonomousRun) -> dict[str, object]:
+        """Settle what `write_study_plan` wrote, the way `_post_report` settles a report.
+
+        `write_study_plan` touches no task and publishes no `board_update` of its own — a
+        roadmap run proposes tasks but never creates or reorders them
+        (`materialize_study_plan` is a separate, not-yet-wired tool) — so there is nothing
+        to publish here either; this step exists to turn "the turn finished" into "a plan
+        actually landed", the same distinction `_post_report` draws for a report.
+        """
+        plan = await self._study_plans.get_for_run(run.project_id, run.id)
+        if plan is None:
+            raise StepFailed("the roadmap turn produced no plan")
+        return {"planId": plan.id}
+
     # --- 2. research ------------------------------------------------------------------
 
     async def _research(
         self, principal: Principal, run: AutonomousRun, steps: dict[str, RunStep]
     ) -> dict[str, object] | object:
-        """One `research_agent` turn in a session created fresh for this run.
+        """One `research_workflow` turn in a session created fresh for this run.
 
         **Since M8**, this is a dedicated session — never the task's own conversation —
         created once and recorded on the ledger (`run.sessionId`), the same way `turnId`
         is: docs/02-data-model.md#sessions--events-adk-owned-layout. A resumed run (a
         retried step, after a crash) must not create a second session for the same run,
         which is what the `run.session_id` check below is for.
+
+        **Since M9**, this one turn drives the whole `research_planner` ->
+        `topic_researcher` fan-out -> `reviewer_writer` graph
+        (docs/03-agent-design.md#the-research-pipeline-since-m9). The throttle's per-run
+        semaphore is dropped here, once the step is over one way or the other — "entries
+        dropped when the run's step ends" is what keeps `ModelThrottle`'s dict from growing
+        for the life of the process.
         """
         task_id = _task_id_of(steps, run)
         task = await self._tasks.resolve(principal, task_id)
@@ -302,26 +425,29 @@ class RunExecutor:
             # `needsResearch: false` gets a run that can never succeed: select_next_task
             # resolves the request unconditionally, but this guard would skip it anyway.
             return _SKIPPED
-        session_id = await self._ensure_session(principal, run, task_id)
-        # Whatever the learner has already uploaded in the task's own conversation,
-        # carried into the research turn the same way the manual trigger does
-        # (`ResearchService.start_manual`) — a scheduled run reads the same task
-        # description a learner does, and a description that mentions an attached file
-        # deserves the same access to it whether or not anyone was watching this run
-        # start.
-        context_attachments = (
-            await self._sessions.list_attachments(principal, task.session_id)
-            if task.session_id
-            else []
-        )
-        turn = await self._run_turn(
-            principal,
-            session_id,
-            text=_research_message(task),
-            agent="research",
-            run_id=run.id,
-            context_attachments=context_attachments,
-        )
+        try:
+            session_id = await self._ensure_session(principal, run, task_id)
+            # Whatever the learner has already uploaded in the task's own conversation,
+            # carried into the research turn the same way the manual trigger does
+            # (`ResearchService.start_manual`) — a scheduled run reads the same task
+            # description a learner does, and a description that mentions an attached file
+            # deserves the same access to it whether or not anyone was watching this run
+            # start.
+            context_attachments = (
+                await self._sessions.list_attachments(principal, task.session_id)
+                if task.session_id
+                else []
+            )
+            turn = await self._run_turn(
+                principal,
+                session_id,
+                text=_research_message(task),
+                agent="research",
+                run_id=run.id,
+                context_attachments=context_attachments,
+            )
+        finally:
+            self._research_throttle.release_run(run.id)
         if turn.status is not TurnStatus.COMPLETE:
             raise StepFailed(
                 (turn.error.message if turn.error else None)
@@ -461,7 +587,7 @@ class RunExecutor:
     # --- turn plumbing ----------------------------------------------------------------
 
     async def _ensure_session(
-        self, principal: Principal, run: AutonomousRun, task_id: str
+        self, principal: Principal, run: AutonomousRun, task_id: str | None
     ) -> str:
         """This run's dedicated session, creating it on first use.
 
@@ -471,6 +597,11 @@ class RunExecutor:
         set even though it runs later in the sequence. Created once and patched onto the
         ledger the same way `turnId` is, so a resumed run (a retried step, after a crash)
         reuses it rather than creating a second session for one run.
+
+        For a manual or roadmap run, `ResearchService` already created this session at
+        accept time — `run.session_id` is set before the row is even enqueued — so this is
+        a no-op read for both; `task_id` is only `None` on that path (a taskless manual or
+        roadmap run) and only reached here at all on a resume that somehow lost the id.
         """
         if run.session_id is not None:
             return run.session_id
@@ -488,7 +619,9 @@ class RunExecutor:
         text: str,
         agent: AgentChoice,
         run_id: str,
+        attachments: list[dict[str, str]] | None = None,
         context_attachments: list[dict[str, str]] | None = None,
+        record_turn_id: bool = False,
     ) -> Turn:
         """Start a turn and wait for it, without ever awaiting the generation task.
 
@@ -497,6 +630,21 @@ class RunExecutor:
         deadline would then cancel inference the run has already paid for — which is the
         exact failure the disconnect guarantee exists to prevent, arriving through a door
         nobody was watching.
+
+        `attachments` is `run.pending_attachments` for a manual or roadmap run — a fresh
+        upload named specifically for this request, as opposed to `context_attachments`,
+        already resolved material the conversation the request came from already had.
+        Every other caller of this method is an autonomous step, which never has the
+        former: nothing types a brand-new upload while the coach is working unattended.
+
+        `record_turn_id` patches `run.turnId` the moment the turn exists — *before*
+        awaiting its completion, so a client polling `GET /api/runs/{runId}` mid-generation
+        gets a `turnId` to subscribe to rather than one that only appears once the work is
+        already over. `False` for every autonomous step: docs/04-api-contract.md's WS
+        protocol section is explicit that "a scheduled run has no `turnId` at all", and a
+        client for one already falls back to subscribing by `runId` instead. `True` only
+        for `_manual_research`/`_roadmap`, the two dispatches where the client is watching
+        the ledger specifically because the 202 that started this run had no `turnId` yet.
         """
         finished = asyncio.Event()
 
@@ -507,11 +655,14 @@ class RunExecutor:
             principal,
             session_id,
             text=text,
+            attachments=attachments,
             context_attachments=context_attachments,
             agent=agent,
             state_delta={RUN_ID_KEY: run_id},
             on_finished=signal,
         )
+        if record_turn_id:
+            await self._runs.patch(run_id, {"turnId": turn.id})
         await finished.wait()
         return await self._turns.get(principal, turn.id)
 

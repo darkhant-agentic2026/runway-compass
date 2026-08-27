@@ -30,6 +30,7 @@ import {
   sessionEventsSchema,
   sessionResponseSchema,
   sessionSummarySchema,
+  studyPlanResponseSchema,
   taskDetailSchema,
   taskMutationSchema,
   turnAcceptedSchema,
@@ -151,7 +152,7 @@ export const api = {
       thinkingStyle: string;
       strengths: string[];
       gaps: string[];
-      technologies: Array<{ name: string; level: string; evidence?: string }>;
+      skills: Array<{ name: string; area?: string; level: string; evidence?: string }>;
       pacing: string;
       feedbackNotes: string[];
     }>,
@@ -171,7 +172,7 @@ export const api = {
       projectListSchema,
     ).then((response) => response.projects),
 
-  createProject: (body: { title: string; goal?: string }, idempotencyKey?: string) =>
+  createProject: (body: { title: string; description?: string }, idempotencyKey?: string) =>
     request('/api/projects', projectSchema, {
       method: 'POST',
       body,
@@ -184,7 +185,7 @@ export const api = {
     projectId: string,
     patch: {
       title?: string;
-      goal?: string;
+      description?: string;
       status?: Project['status'];
       prefs?: Partial<ProjectPrefs>;
     },
@@ -343,6 +344,22 @@ export const api = {
     }),
 
   /**
+   * 202, same shape as `startResearch` — `task_proposer` -> `plan_tailor` instead of
+   * `reviewer_writer`, so several sized tasks come back rather than one report. Taskless
+   * only: `reason` is required, not merely defaulted, and there is no `force`.
+   */
+  startRoadmap: (
+    sessionId: string,
+    body: { reason: string; attachments?: { uploadId: string; mimeType: string }[] },
+    idempotencyKey?: string,
+  ) =>
+    request(`/api/sessions/${sessionId}/roadmap`, researchAcceptedSchema, {
+      method: 'POST',
+      body: { reason: body.reason, attachments: body.attachments ?? [] },
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    }),
+
+  /**
    * Queue research for the next tick to run headless, with priority over auto-scheduled
    * work — the learner's alternative to watching `startResearch` stream
    * (docs/04-api-contract.md#post--delete-apitasksidresearch-request).
@@ -368,6 +385,11 @@ export const api = {
   /** The report a run wrote, once there is one. 404 while it is still working. */
   getRunReport: (runId: string) =>
     request(`/api/runs/${runId}/report`, reportResponseSchema).then((r) => r.report),
+
+  /** The `StudyPlan` a roadmap run wrote, once there is one — `getRunReport`'s sibling for
+   * `build_roadmap_workflow`. 404 while it is still working or for a plain research run. */
+  getRunPlan: (runId: string) =>
+    request(`/api/runs/${runId}/plan`, studyPlanResponseSchema).then((r) => r.plan),
 
   listProjectRuns: (projectId: string) =>
     request(`/api/projects/${projectId}/runs`, runListSchema).then((r) => r.runs),

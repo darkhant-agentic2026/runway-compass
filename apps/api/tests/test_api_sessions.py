@@ -60,6 +60,67 @@ async def test_the_task_document_learns_its_session_id(client) -> None:
     assert task["sessionId"] == session_id
 
 
+async def test_the_first_message_in_a_not_started_task_starts_it(
+    client, container, scripted_model
+) -> None:
+    """docs/02-data-model.md#task-state-machine, invariant 7: sending a message into a
+    task's own conversation is a `start`, the same transition the board row's own button
+    makes — whether or not the button was pressed first."""
+    from coach.services.models import TurnStatus
+
+    _project_id, task_id = await _task(client)
+    await client.post(
+        f"/api/tasks/{task_id}/items", json={"items": [{"shortDescription": "Read §3"}]}
+    )
+    before = (await client.get(f"/api/tasks/{task_id}")).json()["task"]
+    assert before["state"] == "not_started"
+
+    session_id = (await client.post(f"/api/tasks/{task_id}/session")).json()["session"]["id"]
+    response = await client.post(f"/api/sessions/{session_id}/turns", json={"text": "hi"})
+    await _await_complete(container, response.json()["turnId"], TurnStatus.COMPLETE)
+
+    after = (await client.get(f"/api/tasks/{task_id}")).json()["task"]
+    assert after["state"] == "in_progress"
+
+
+async def test_a_draft_tasks_first_message_does_not_start_it(
+    client, container, scripted_model
+) -> None:
+    """`draft`, not `not_started` — a task with no plan yet leaves `draft` only by
+    acquiring one (invariant 1), never by the learner merely opening its conversation."""
+    from coach.services.models import TurnStatus
+
+    _project_id, task_id = await _task(client)
+    assert (await client.get(f"/api/tasks/{task_id}")).json()["task"]["state"] == "draft"
+
+    session_id = (await client.post(f"/api/tasks/{task_id}/session")).json()["session"]["id"]
+    response = await client.post(f"/api/sessions/{session_id}/turns", json={"text": "hi"})
+    await _await_complete(container, response.json()["turnId"], TurnStatus.COMPLETE)
+
+    assert (await client.get(f"/api/tasks/{task_id}")).json()["task"]["state"] == "draft"
+
+
+async def test_a_message_in_a_completed_tasks_session_does_not_error(
+    client, container, scripted_model
+) -> None:
+    """Only `not_started -> in_progress` is "starting by talking about it" — a message
+    into any other state's session must not crash the turn trying to force one."""
+    from coach.services.models import TurnStatus
+
+    _project_id, task_id = await _task(client)
+    await client.post(
+        f"/api/tasks/{task_id}/items", json={"items": [{"shortDescription": "Read §3"}]}
+    )
+    await client.post(f"/api/tasks/{task_id}/state", json={"state": "completed"})
+
+    session_id = (await client.post(f"/api/tasks/{task_id}/session")).json()["session"]["id"]
+    response = await client.post(f"/api/sessions/{session_id}/turns", json={"text": "hi"})
+    assert response.status_code == 202
+    await _await_complete(container, response.json()["turnId"], TurnStatus.COMPLETE)
+
+    assert (await client.get(f"/api/tasks/{task_id}")).json()["task"]["state"] == "completed"
+
+
 async def test_creating_a_project_opens_an_intake_session(client, container, alice) -> None:
     """docs/04-api-contract.md: `POST /api/projects` creates a session with `taskId: null`.
 

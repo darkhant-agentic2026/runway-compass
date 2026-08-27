@@ -30,7 +30,7 @@ function makeRun(overrides: Partial<AutonomousRun> = {}): AutonomousRun {
     projectId: 'p_1',
     taskId: 'k_1',
     trigger: 'manual',
-    mode: 'inline',
+    mode: 'queued',
     status: 'complete',
     attempts: 1,
     maxAttempts: 3,

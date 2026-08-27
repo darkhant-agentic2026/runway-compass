@@ -79,6 +79,68 @@ export function attachmentLabel(attachment: TranscriptAttachment): string {
   return attachment.filename ?? MIME_LABELS[attachment.mimeType] ?? 'Attachment';
 }
 
+/** Where in the transcript one named attachment lives, for `AttachmentPreview`'s
+ * `(sessionId, seq, index)` addressing. */
+export interface AttachmentRef {
+  seq: number;
+  index: number;
+  mimeType: string;
+}
+
+/**
+ * Finds the first attachment matching `name` (case-insensitive), newest message first.
+ *
+ * Used to resolve a roadmap brief's referenced attachment names — plain strings on the
+ * brief document — back to the transcript event that actually carries the bytes, so a
+ * chip for one can offer the same image preview a transcript bubble does.
+ */
+export function findAttachmentRef(
+  messages: TranscriptMessage[],
+  name: string,
+): AttachmentRef | null {
+  const wanted = name.trim().toLowerCase();
+  if (!wanted) return null;
+  for (const message of [...messages].sort((a, b) => b.seq - a.seq)) {
+    const index = message.attachments.findIndex(
+      (attachment) => (attachment.filename ?? '').toLowerCase() === wanted,
+    );
+    const match = index !== -1 ? message.attachments[index] : undefined;
+    if (match) {
+      return { seq: message.seq, index, mimeType: match.mimeType };
+    }
+  }
+  return null;
+}
+
+/**
+ * Every distinct file the user has sent in this conversation, oldest first — the
+ * frontend's own approximation of what `SessionService.list_attachments` computes
+ * server-side, by filename rather than by upload URI (filename is the addressing scheme
+ * `RoadmapBrief.attachments` and everything downstream of it already uses, so matching
+ * the same key here is what lets a selection made from this list round-trip cleanly).
+ *
+ * Backs the roadmap-brief approval dialog's own attachment checklist: every file the
+ * conversation actually has, not just the ones a brief already references, so the
+ * learner can tick or untick any of them right there without another round of
+ * conversation.
+ */
+export function sessionAttachmentNames(messages: TranscriptMessage[]): string[] {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const message of [...messages].sort((a, b) => a.seq - b.seq)) {
+    if (message.role !== 'user') continue;
+    for (const attachment of message.attachments) {
+      const name = attachment.filename;
+      if (!name) continue;
+      const key = name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      names.push(name);
+    }
+  }
+  return names;
+}
+
 /**
  * One part of an event's content, **as stored**.
  *

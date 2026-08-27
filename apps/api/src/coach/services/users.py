@@ -16,7 +16,7 @@ from coach.services.models import (
     GlobalPrefs,
     LearnerProfile,
     Plan,
-    TechnologyBelief,
+    SkillBelief,
     User,
 )
 from coach.services.models import snake_case as _snake
@@ -204,7 +204,7 @@ class UserService:
         thinking_style: str | None = None,
         strengths: list[str] | None = None,
         gaps: list[str] | None = None,
-        technologies: list[dict[str, Any] | TechnologyBelief] | None = None,
+        skills: list[dict[str, Any] | SkillBelief] | None = None,
         pacing: str | None = None,
         feedback_note: str | None = None,
         session_id: str | None = None,
@@ -243,15 +243,15 @@ class UserService:
         if pacing is not None:
             updates["learnerProfile.pacing"] = new_pacing
 
-        if technologies is not None:
-            tech_models = [
-                t if isinstance(t, TechnologyBelief) else TechnologyBelief.model_validate(t)
-                for t in technologies
+        if skills is not None:
+            skill_models = [
+                s if isinstance(s, SkillBelief) else SkillBelief.model_validate(s)
+                for s in skills
             ]
-            updates["learnerProfile.technologies"] = [t.to_document() for t in tech_models]
-            new_technologies = tech_models
+            updates["learnerProfile.skills"] = [s.to_document() for s in skill_models]
+            new_skills = skill_models
         else:
-            new_technologies = current.technologies
+            new_skills = current.skills
 
         new_feedback_notes = list(current.feedback_notes)
         if feedback_note:
@@ -267,7 +267,7 @@ class UserService:
             thinking_style=new_thinking_style,
             strengths=new_strengths,
             gaps=new_gaps,
-            technologies=new_technologies,
+            skills=new_skills,
             pacing=new_pacing,
             feedback_notes=new_feedback_notes,
             updated_at=timestamp,

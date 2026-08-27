@@ -17,6 +17,7 @@ users/{uid}/memories/{memoryId}              ← CoachMemoryService
 projects/{projectId}
 projects/{projectId}/tasks/{taskId}
 projects/{projectId}/research_reports/{reportId}
+projects/{projectId}/study_plans/{planId}    ← the taskless "propose then tailor" pipeline, since a later M9 change
 projects/{projectId}/locks/agent             ← single doc, lease
 turns/{turnId}                               ← streaming checkpoints
 turns/{turnId}/checkpoint_pages/{page}       ← spill when the turn doc nears 1 MiB
@@ -130,7 +131,11 @@ collection query and one security boundary.
   "learnerProfile": {                   // agent-maintained, user-editable
     "thinkingStyle": "…",               // free text, ≤ 500 chars
     "strengths": ["…"], "gaps": ["…"],
-    "technologies": [{ "name": "python", "level": "intermediate", "evidence": "…" }],
+    "skills": [
+      { "name": "type hints", "area": "Python", "level": "intermediate", "evidence": "…" }
+    ],                                   // area scopes a skill to the subject it was
+                                          // observed in, so a belief formed studying one
+                                          // language is never assumed to hold for another
     "pacing": "…",
     "feedbackNotes": ["…"],             // capped ring buffer, 20 entries
     "updatedAt": ts, "updatedBy": "agent" | "user", "version": 7
@@ -155,7 +160,8 @@ approach.
 ```jsonc
 {
   "ownerUid": "…",
-  "title": "…", "goal": "…",            // goal refined through Socratic intake
+  "title": "…", "description": "…",     // one or two sentences, editable in project
+                                         // settings; not used for roadmap research
   "status": "active" | "paused" | "archived",
   "prefs": {                            // null field = inherit from globalPrefs
     "defaultTaskMinutes": 120,
@@ -168,6 +174,14 @@ approach.
   },
   "nextUpTaskId": "…",                  // denormalized pointer, transactional
   "intakeSessionId": "…",               // the session POST /api/projects opens (M3)
+  "roadmapBrief": null | {              // project_coach's in-progress roadmap draft
+    "subject": "…",                     // required: the main subject the learner will learn
+    "specificTopics": ["…"],            // advised
+    "timeBudget": "…",                  // required, learner's own words — "two months"
+    "additionalNotes": "…",             // advised
+    "attachments": ["…"],               // display names of referenced uploads, advised
+    "updatedAt": ts
+  },
   "counts": { "total": 12, "completed": 5, "openMinutes": 340 },
   "lastAutonomousRunAt": ts,
   "createdAt": ts, "updatedAt": ts
@@ -179,11 +193,71 @@ used identically by the API, the UI (via `GET /api/projects/{id}/effective-prefs
 the agent's prompt builder. The example from the brief — global default 45 min, project
 override 2 h — is exactly this: `prefs.defaultTaskMinutes = 120`.
 
+**`description` replaced `goal`, since M9.** A project's goal was never actually used by
+roadmap research — `PROJECT_KEY`/`render_project` are gone from `agents/prompt.py`
+entirely (below) — so the field is named for what it is: a short, human-readable
+description of the project, editable in project settings at any time and refined through
+the intake conversation (`update_project_plan`'s own `description` argument) or set from
+an approved study plan (`materialize_study_plan`'s "Also update project description"
+checkbox, below). Pre-launch, local-only data, so this was a rename rather than an
+additive field with a migration.
+
 `intakeSessionId` was added at M3. `POST /api/projects` creates a session with
 `taskId: null` and nothing pointed back at it, so every later visit to the project would
 have had to find it by scanning the project's sessions. It is a denormalized pointer on
 the same footing as `nextUpTaskId`: the collection-group scan above is still the
 authority, and it repairs the pointer when it runs.
+
+**`roadmapBrief`, added once `project_coach` could initiate a roadmap run itself**
+([03-agent-design.md](03-agent-design.md#the-taskless-case-task_proposer-and-plan_tailor-replace-reviewer_writer)),
+is the structured intake `write_roadmap_brief`/`read_roadmap_brief` draft across turns —
+one in-progress draft per project, on the same reasoning `intakeSessionId`/`nextUpTaskId`
+are single pointers rather than a subcollection: only one roadmap conversation is ever in
+progress for a project at a time. `subject` and `timeBudget` are required before
+`propose_roadmap_brief` will act on it; `specificTopics`/`additionalNotes` are advisory.
+`propose_roadmap_brief`'s approval renders the brief into the free-text `reason`
+`ResearchService.start_roadmap` takes, schedules the run, and clears the field — a later
+roadmap conversation starts from nothing rather than from an already-used draft.
+
+**`attachments` names files the learner referenced while drafting the brief** — a
+syllabus, a job posting, prior notes — not every upload `project_coach`'s conversation has
+ever seen. That distinction matters here in a way it does not for a task's own research:
+a task's session is scoped to one topic, so `ResearchService.start_manual`/`start_roadmap`
+carrying over everything the session has seen (`SessionService.list_attachments`) is
+already the right file set. The project coach's conversation is not scoped that way — it
+is the one ongoing chat for the whole project — so `propose_roadmap_brief` narrows
+`start_roadmap`'s own upload carry-over to just the names on this list
+(`ResearchService.start_roadmap`'s `attachment_names`), rather than attaching the
+project's entire upload history to a roadmap run about one subject within it.
+
+**Every name on this list is validated against the conversation's own uploads before it is
+stored** (`DomainTools._validate_attachment_names`, `agents/tools.py`), not merely
+trusted. Found from real use: a model asked to attach an uploaded PDF sometimes names it by
+a title it inferred from the document's own contents rather than the filename it was
+actually shown, and a name that matches no real upload would otherwise pass
+`write_roadmap_brief` silently, then simply vanish at `start_roadmap`'s own matching —
+no attachment on the run, no chip in the confirmation dialog, and nothing to explain the
+gap to the learner. `write_roadmap_brief`/`propose_roadmap_brief` both refuse a call
+naming anything that does not match an upload actually present in the session
+(case-insensitive), and the refusal carries the real list of what is attached — the same
+"the tool owes the model the fact" pattern the rest of the catalogue uses — so the model
+can retry against it rather than the mismatch surfacing only once the run has started.
+
+**Two refinements on top of validation, both because instructions alone did not make the
+model reliably think about attachments at all.** First, `write_roadmap_brief`'s result
+carries an `availableAttachments` hint — the conversation's own attachment names — on the
+*first* call for a brief (no `roadmap_brief` on the project yet) if that call named none
+and the conversation has some; a later call with none named still gets no hint, since by
+then silence is more likely a deliberate "these don't belong here" than an oversight, and
+repeating the nudge would just be nagging. Second, the confirmation dialog for
+`propose_roadmap_brief` shows a checkbox per conversation attachment, pre-checked to
+match the brief's own list, that the learner can tick or untick right there —
+`propose_roadmap_brief`'s own `attachments` argument is the fallback only, overridden by
+whatever the dialog's checklist sends back if it sent one at all
+(`DomainTools._confirmed_attachments`), so correcting the model's choice costs one click
+rather than another round of conversation. See
+[06-frontend.md](06-frontend.md#task-workspace-projectsprojectidtaskstaskid) for the
+dialog itself.
 
 ## `projects/{projectId}/tasks/{taskId}`
 
@@ -204,6 +278,7 @@ authority, and it repairs the pointer when it runs.
   "latestReportId": null | "…",
   "items": [                             // LEAF tasks only; see Task items below
     { "itemId": "i_01J…", "shortDescription": "…", "details": "…",
+      "kind": "article" | "video" | "exercise" | "doc" | "code_scaffold" | null,
       "guided": true, "completed": false, "completedAt": null,
       "sourceReportId": "rep_01J…" | null }
   ],
@@ -265,6 +340,7 @@ work disappearing rather than as a better plan.
 | --- | --- |
 | `itemId` | Stable, server-assigned. Completion and the tool's argument key on it |
 | `shortDescription` | The one-liner the checklist renders. Not a title — a thing to do |
+| `kind` | `article` \| `video` \| `exercise` \| `doc` \| `code_scaffold`, carried over from the report/proposed item this was promoted from — the same enum `ReportItem`/`ProposedItem` use. `null` on a hand-added item, and on any item added before this field existed. Lets the checklist (and a board card's item-kind summary, [06-frontend.md](06-frontend.md)) show the same kind chip the report or study plan already did, rather than a checklist being the one place that information does not survive |
 | `minutes` | What this item is expected to cost, carried over from the report item. `null` on a hand-added item; the budget meter sums what it has |
 | `url` | The thing an unguided item points at, if there is one. Also half of the identity a re-run matches on |
 | `details` | What the coach teaches *from*. For an unguided item this is the instruction itself ("read §3–4 of this page", with the link); for a guided one it is the material the coach needs in order to walk the learner through it, and the learner never sees it verbatim |
@@ -382,6 +458,13 @@ Invariants enforced in a Firestore transaction by `TaskService`:
 6. **A leaf task whose items are all complete, with no research outstanding, is
    `completed`** — evaluated on every item write, in that write's transaction, and never on
    a parent. See [Task items](#task-items) for why both halves of the condition are load-bearing.
+7. **The learner's first message in a task's own session is also a `start`.** Sending a
+   message into a task's conversation while it is `not_started` moves it to `in_progress`
+   in the same transaction the row's own "Start" action would — opening the conversation
+   and typing is starting the task, whether or not the button was pressed first
+   (`TurnService._start_task_if_not_started`). Silently skipped from any other state
+   (`draft`, `completed`, `postponed`, `discarded`), since only `not_started -> in_progress`
+   is what "starting by talking about it" means.
 
 The task document also carries its own `id` as a field, mirroring the document key. This
 is the same denormalization-for-collection-group-queries the `projectId` and `ownerUid`
@@ -478,7 +561,9 @@ checklist for. The shape stays identical anyway rather than dropping to prose-on
 it is asking the learner to get through, even though nothing here is promoted into
 `tasks/{id}.items[]`. The budget is the project's `defaultTaskMinutes` — the same fallback
 `render_budget(None, prefs)` already computed for a task-less invocation before M8 could
-reach one ([03-agent-design.md](03-agent-design.md#research_agent)).
+reach one ([03-agent-design.md](03-agent-design.md#the-research-pipeline-since-m9)). Since
+M9 that budget reaches only `reviewer_writer`, the pipeline's final node — see that section
+for why `research_planner` and `topic_researcher` are deliberately not shown it.
 `budgetMinutesOverride` on the request is accepted and recorded on the run for both a
 task-scoped and a task-less request, exactly as before M8; it is not yet threaded into the
 model's own budget in either case; wiring it is a pre-existing gap, not one M8 opens.
@@ -486,10 +571,102 @@ A scheduled or requested (queued) run is always task-scoped — the scheduler al
 researches a specific task, never an open-ended project question — so `taskId: null` only
 ever appears on a `trigger: "manual"` report.
 
-`kind` survives the promotion as far as the item's `guided` flag: an `exercise` or a
-`code_scaffold` is guided, an `article`, `video`, or `doc` is not. The model may override
-per item — some readings genuinely want walking through — but the default falls out of the
-kind, so a report that says nothing about guidance still produces a sensible checklist.
+`kind` shapes the promoted item's `guided` flag: an `exercise` or a `code_scaffold` is
+guided, an `article`, `video`, or `doc` is not. The model may override per item — some
+readings genuinely want walking through — but the default falls out of the kind, so a
+report that says nothing about guidance still produces a sensible checklist. **`kind`
+itself is also carried onto the promoted `TaskItem` verbatim**, not just used to derive
+`guided` and discarded — a checklist item, and a board card's item-kind summary
+([06-frontend.md](06-frontend.md)), can then show the same kind chip the report already
+did. `null` on a hand-added item, which has no report item to take one from.
+
+**`taskId: null` research, added later still, has a second shape besides a
+`ResearchReport`.** A taskless run's "size everything into one `budgetMinutes`" answer —
+described two paragraphs up — turns out to be the wrong shape for the case that prompted
+it: a learner's whole goal usually wants several tasks, not one report squeezed into one
+sitting. `study_plans/{planId}` (below) is that second shape, written by a different
+terminal pair of nodes, `task_proposer` → `plan_tailor`, instead of `reviewer_writer`
+([03-agent-design.md](03-agent-design.md#the-research-pipeline-since-m9)). Both shapes
+still exist: `ResearchReport` for task-scoped research (autonomous and manual "prepare
+materials for this task"), unchanged. `study_plans` is written by its own trigger,
+`POST /api/sessions/{sid}/roadmap` ([04-api-contract.md](04-api-contract.md#post-apisessionssidroadmap)),
+rather than by `POST /api/sessions/{sid}/research`'s taskless branch — that endpoint's
+dispatch has not cut over to it, so `GET /api/runs/{runId}/report` still means a
+`ResearchReport`, never a `StudyPlan`. A roadmap run's own read path is
+`GET /api/runs/{runId}/plan` ([04-api-contract.md](04-api-contract.md#runs)),
+`get_run_report`'s sibling, added once the research view grew a dedicated `StudyPlanView`
+for it.
+
+## `projects/{projectId}/study_plans/{planId}`
+
+```jsonc
+{
+  "id": "…", "projectId": "…", "ownerUid": "…",
+  "runId": "…", "sessionId": "…",
+  "title": "…", "shortDescription": "…", "longDescription": "…",   // markdown
+  "memo": "…",                          // task_proposer's own memo, carried through unchanged
+  "proposedTasks": [                    // task_proposer's output — a non-tailored collection
+    { "slug": "intro-to-x", "title": "…", "description": "…",
+      "required": [ /* same item shape as a ResearchReport's required[], minus itemId —
+                       assigned only when materialize_study_plan promotes one. At least
+                       one item — a task's duration is the sum of these, so a task with
+                       none has no size; optional-only material belongs in optional[] */ ],
+      "optional": [ /* same shape */ ],
+      "prerequisiteTasks": ["…"] }      // other proposedTasks slugs, ordering only
+  ],
+  "plan": [                             // plan_tailor's tailoring — one entry per proposed task
+    { "taskSlug": "intro-to-x", "after": "…" | null, "prerequisiteTasks": ["…"],
+      "relevance": 0,                   // 0-4
+      "decision": "include" | "additional" | "exclude" | "reject",
+      "why": "…" }                      // required on every entry, including exclude/reject
+  ],
+  "materializedAt": ts | null,          // set once materialize_study_plan has run
+  "materializedTaskIds": ["…"],
+  "revisedFromPlanId": "…" | null,      // set on a project_coach copy; null on plan_tailor's own write
+  "createdAt": ts, "updatedAt": ts
+}
+```
+
+Two documents in one, not two collections: `proposedTasks` (what `task_proposer` found,
+grouped into tasks) and `plan` (what `plan_tailor` decided to do with each one) are written
+together by `plan_tailor`'s single `write_study_plan` call, because the tool that later
+turns a plan into board tasks needs both at once and a plan without its tailoring is not
+actionable. `planId` is `plan_{runId}`, the same reasoning `report_{runId}` uses
+(execution semantics, [05-autonomous-runs.md](05-autonomous-runs.md#execution-semantics)):
+a retried step overwrites rather than duplicating.
+
+**`decision` determines what a later materialization does, not what gets stored.** Every
+proposed task gets a `plan` entry and a `why`, including `exclude` and `reject` ones — the
+whole point is a learner (or a future UI) being able to see why something was left out, not
+just what made the cut. `materialize_study_plan` (an agent tool,
+[03-agent-design.md](03-agent-design.md#domain-tools)) creates a real board task — with its
+`required[]` promoted into `items[]`, the same projection `post_research_report` uses —
+only for `include` and `additional` (deep-dive) decisions; `exclude`/`reject` never become
+a task. `prerequisiteTasks`/`after` order tasks at materialization time only; neither is
+a field on `Task` itself, so a plan carries no ongoing relationship once its tasks exist.
+`materializedAt`/`materializedTaskIds` make a second call a no-op rather than a duplicate
+board write, the way `report_{runId}` keying makes a retried research step safe.
+
+**Wired into `project_coach`'s own catalogue**, alongside `view_study_plan` (reads the most
+recent plan for the project — a run's own write or a later revision, whichever is newer)
+and `revise_study_plan` (`project_coach`'s own re-tailoring: which proposed tasks to
+include and where each sits). A revision is a **new** document, `revisedFromPlanId`
+pointing back at the one it replaces, never a patch to the original — `plan_tailor`'s
+verdict stays legible against whatever a later revision replaces it with. Both
+`propose_roadmap_brief` and `materialize_study_plan` require the learner's confirmation
+before they act, the same "requires user confirmation" gate `update_project_plan` uses
+([03-agent-design.md](03-agent-design.md#domain-tools)).
+
+**`materialize_study_plan`'s approval dialog offers "Also update project description"**,
+checked by default when the project has none yet. `short_description`/`long_description`
+above are composed as a proposed roadmap ("this plan covers…"), which reads badly as a
+project's own description once the plan is approved — so the tool takes its own
+`project_description` argument, a single factual sentence the model composes for the
+project (not a summary of the plan), and applies it to `Project.description` only if the
+checkbox is left checked. The candidate is always supplied, whether or not the checkbox
+ends up checked: ADK's confirmation handshake means the model is not consulted again
+between the tool call and the learner's answer, so the sentence has to be ready before the
+dialog appears, and only the learner's own answer decides whether it lands.
 
 ## Sessions + events (ADK-owned layout)
 
@@ -771,7 +948,20 @@ scoped, reviewed change.
   documents where the field is actually set, so a turn that never reaches a terminal state
   never expires: the SIGTERM drain and the ledger sweep both set `endedAt` when they mark a
   turn `failed`, and that is what keeps this from leaking.
-- `autonomous_runs/*` — TTL 30 days on `updatedAt`, which every step boundary touches.
+- `autonomous_runs/*` — TTL 60 days (raised from 30 post-launch) on `expiresAt`, a field
+  `repositories/runs.py` computes explicitly and refreshes at every step boundary — **not**
+  `updatedAt`. A Firestore TTL policy deletes a document once the *value stored in* its
+  designated field is in the past, so the field has to hold the row's own future expiry;
+  `updatedAt` holds the current time by design (it is a genuine last-modified timestamp,
+  read as one elsewhere), which is already "in the past" the instant a write lands. Pointed
+  there once, the policy deleted a run within about a day of *any* write to it — including
+  the write that completed it — rather than 60 days after the last one, and the completed
+  research report's own card (`ResearchCard`, fed by `GET /api/projects/{id}/runs` /
+  `GET /api/tasks/{id}/runs`) disappeared from the board along with it, while the report and
+  the task's checklist (neither of which this TTL touches) stayed intact. Invisible
+  locally — the Firestore emulator does not enforce TTL policies at all
+  ([09-roadmap.md](09-roadmap.md#what-a-green-local-run-does-not-prove)) — this class of bug
+  only shows up on a deployed project after real time has passed.
 - `sessions`, `tasks`, `projects`, `memories` — retained; deleted on account deletion via
   a `DELETE /api/me` cascade job.
 - `rate_limits/*` — TTL 1 day (Firestore TTL policy on the newest entry's timestamp field).

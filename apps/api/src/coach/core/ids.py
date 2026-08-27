@@ -36,6 +36,10 @@ def report_id() -> str:
     return _new("rep")
 
 
+def study_plan_id() -> str:
+    return _new("sp")
+
+
 def upload_id() -> str:
     return _new("up")
 

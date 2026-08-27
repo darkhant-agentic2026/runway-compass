@@ -19,7 +19,7 @@ export default function ProjectsPage() {
   const projects = useProjects('active');
   const createProject = useCreateProject();
   const [title, setTitle] = useState('');
-  const [goal, setGoal] = useState('');
+  const [description, setDescription] = useState('');
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6 p-4 sm:p-6">
@@ -31,9 +31,9 @@ export default function ProjectsPage() {
           event.preventDefault();
           const trimmed = title.trim();
           if (!trimmed) return;
-          createProject.mutate({ title: trimmed, goal: goal.trim() });
+          createProject.mutate({ title: trimmed, description: description.trim() });
           setTitle('');
-          setGoal('');
+          setDescription('');
         }}
       >
         <div className="min-w-40 flex-1">
@@ -46,12 +46,12 @@ export default function ProjectsPage() {
           />
         </div>
         <div className="min-w-40 flex-1">
-          <Label htmlFor="new-project-goal">Goal (optional)</Label>
+          <Label htmlFor="new-project-description">Description (optional)</Label>
           <Input
-            id="new-project-goal"
-            value={goal}
+            id="new-project-description"
+            value={description}
             placeholder="Ship a resilient worker pool"
-            onChange={(event) => setGoal(event.target.value)}
+            onChange={(event) => setDescription(event.target.value)}
           />
         </div>
         <Button type="submit" disabled={createProject.isPending || title.trim().length === 0}>
@@ -78,7 +78,9 @@ export default function ProjectsPage() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-1 text-sm text-muted-foreground">
-                  {project.goal ? <p className="text-foreground">{project.goal}</p> : null}
+                  {project.description ? (
+                    <p className="text-foreground">{project.description}</p>
+                  ) : null}
                   <p>
                     {project.counts.completed} of {project.counts.total} tasks done ·{' '}
                     {formatMinutes(project.counts.openMinutes)} of open work

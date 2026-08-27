@@ -40,10 +40,14 @@ from coach.agents.prompt import (
     LEARNER_KEY,
     OUTCOMES_KEY,
     PREFS_KEY,
-    PROJECT_KEY,
     format_minutes,
 )
-from coach.agents.research_agent import RESEARCH_INSTRUCTION, SEARCH_INSTRUCTION
+from coach.agents.research_agent import SEARCH_INSTRUCTION
+from coach.agents.research_workflow import (
+    RESEARCH_PLANNER_INSTRUCTION,
+    REVIEWER_WRITER_INSTRUCTION,
+    TOPIC_RESEARCHER_INSTRUCTION,
+)
 from coach.agents.task_teacher import INSTRUCTION as TASK_INSTRUCTION
 from coach.agents.task_teacher import static_instruction as task_static_instruction
 
@@ -59,7 +63,6 @@ def _placeholders(template: str) -> set[str]:
 #: callback, so a placeholder either has a writer or does not, whichever instruction it is
 #: in.
 WRITTEN = {
-    PROJECT_KEY,
     PREFS_KEY,
     BOARD_KEY,
     FOCUS_KEY,
@@ -86,15 +89,25 @@ def test_every_placeholder_in_the_task_teacher_instruction_has_a_writer() -> Non
     assert _placeholders(TASK_INSTRUCTION) == WRITTEN - {BUDGET_TEXT_KEY}
 
 
-def test_every_placeholder_in_the_research_instruction_has_a_writer() -> None:
-    """The same check for `research_agent`, which shares `PromptBuilder`.
+def test_every_placeholder_in_the_research_pipeline_instructions_has_a_writer() -> None:
+    """The same check for the three `research_workflow` nodes, which share `PromptBuilder`.
 
     It matters more here, not less: a research run happens inside a detached task with no
     client necessarily attached, so a `KeyError` while assembling the request would show up
     as a run that failed for no visible reason rather than as a message on screen.
     """
-    assert _placeholders(RESEARCH_INSTRUCTION) <= WRITTEN
-    assert BUDGET_TEXT_KEY in _placeholders(RESEARCH_INSTRUCTION)
+    for template in (
+        RESEARCH_PLANNER_INSTRUCTION,
+        TOPIC_RESEARCHER_INSTRUCTION,
+        REVIEWER_WRITER_INSTRUCTION,
+    ):
+        assert _placeholders(template) <= WRITTEN
+    # The duration budget is deliberately withheld from the planner and the topic
+    # researchers (docs/03-agent-design.md#the-research-pipeline-since-m9) — only the
+    # reviewer-writer, which sizes the final report, is shown it.
+    assert BUDGET_TEXT_KEY not in _placeholders(RESEARCH_PLANNER_INSTRUCTION)
+    assert BUDGET_TEXT_KEY not in _placeholders(TOPIC_RESEARCHER_INSTRUCTION)
+    assert BUDGET_TEXT_KEY in _placeholders(REVIEWER_WRITER_INSTRUCTION)
 
 
 def test_the_search_agents_instruction_has_no_placeholders() -> None:
@@ -110,7 +123,13 @@ def test_no_placeholder_is_optional() -> None:
     Every key is written unconditionally by `PromptBuilder`, including on the failure
     path, so an optional marker here would only hide a builder that stopped writing one.
     """
-    for template in (PROJECT_INSTRUCTION, TASK_INSTRUCTION, RESEARCH_INSTRUCTION):
+    for template in (
+        PROJECT_INSTRUCTION,
+        TASK_INSTRUCTION,
+        RESEARCH_PLANNER_INSTRUCTION,
+        TOPIC_RESEARCHER_INSTRUCTION,
+        REVIEWER_WRITER_INSTRUCTION,
+    ):
         assert not any(name.endswith("?") for name in _placeholders(template))
 
 
@@ -136,9 +155,7 @@ async def _build(container, uid: str, session_id: str) -> dict[str, Any]:
 async def test_the_state_carries_the_board_the_prefs_and_the_focus(
     client: httpx.AsyncClient, container
 ) -> None:
-    project = (
-        await client.post("/api/projects", json={"title": "Concurrency", "goal": "Ship it"})
-    ).json()
+    project = (await client.post("/api/projects", json={"title": "Concurrency"})).json()
     await client.patch(
         f"/api/projects/{project['id']}", json={"prefs": {"defaultTaskMinutes": 90}}
     )
@@ -152,7 +169,6 @@ async def test_the_state_carries_the_board_the_prefs_and_the_focus(
 
     state = await _build(container, "u_alice", session_id)
 
-    assert "Ship it" in state[PROJECT_KEY]
     assert "90 minutes" in state[PREFS_KEY]
     assert "Read about locks" in state[BOARD_KEY]
     assert task["id"] in state[FOCUS_KEY]
@@ -193,7 +209,6 @@ async def test_an_unreadable_session_leaves_the_coach_without_a_board(container)
     state = await _build(container, "u_alice", "s_does_not_exist")
 
     assert state[PROJECT_ID_KEY] == ""
-    assert "No project is linked" in state[PROJECT_KEY]
     # The template still renders: every key either instruction names is present.
     assert _placeholders(PROJECT_INSTRUCTION) <= set(state)
     assert _placeholders(TASK_INSTRUCTION) <= set(state)

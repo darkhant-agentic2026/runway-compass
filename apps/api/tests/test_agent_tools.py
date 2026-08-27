@@ -255,6 +255,12 @@ async def test_the_tools_are_the_catalogue_the_design_lists(container) -> None:
         "ask_learner",
         "update_project_prefs",
         "update_project_plan",
+        "write_roadmap_brief",
+        "read_roadmap_brief",
+        "propose_roadmap_brief",
+        "view_study_plan",
+        "revise_study_plan",
+        "materialize_study_plan",
         "update_learner_profile",
         "remember",
         "load_memory",
@@ -328,6 +334,8 @@ async def test_the_gated_tools_require_user_confirmation(container) -> None:
         "complete_task_item",
         "delete_task_item",
         "update_project_plan",
+        "propose_roadmap_brief",
+        "materialize_study_plan",
     }
 
 
@@ -764,7 +772,7 @@ async def test_update_project_plan_tool(client: httpx.AsyncClient, container) ->
     ctx = _FakeToolContext("u_alice", session_id, project["id"])
     result = await container.domain_tools.update_project_plan(
         summary="3-part learning roadmap for Raft consensus",
-        goal="Build a working replicated state machine",
+        description="Build a working replicated state machine",
         tasks=[
             {
                 "title": "Leader election",
@@ -789,9 +797,9 @@ async def test_update_project_plan_tool(client: httpx.AsyncClient, container) ->
     assert result["accepted"] is True
     assert result["tasksCount"] == 2
 
-    # Verify project goal was updated
+    # Verify project description was updated
     proj_data = (await client.get(f"/api/projects/{project['id']}")).json()
-    assert proj_data["goal"] == "Build a working replicated state machine"
+    assert proj_data["description"] == "Build a working replicated state machine"
 
     # Verify tasks and subtasks are on the board
     board = await _board(client, project["id"])
@@ -800,3 +808,603 @@ async def test_update_project_plan_tool(client: httpx.AsyncClient, container) ->
     assert board[1]["title"] == "Log replication"
     assert len(board[1]["subtasks"]) == 2
     assert board[1]["subtasks"][0]["title"] == "AppendEntries RPC"
+
+
+# --- the roadmap brief -------------------------------------------------------------------
+#
+# `_FakeToolContext` (defined above, under "doubles") has no `.session` — most of these
+# tools never read `context.session_id`. `propose_roadmap_brief` is the one exception (it
+# needs a session to start the roadmap run from), so its own test builds a context with a
+# `.session.id`, the same local-class pattern `test_update_project_plan_tool` uses.
+
+
+async def test_write_and_read_roadmap_brief_tool(client: httpx.AsyncClient, container) -> None:
+    project = await _project(client, "Become a data engineer")
+    ctx = _FakeToolContext("u_alice", project["id"])
+
+    empty = await container.domain_tools.read_roadmap_brief(tool_context=ctx)
+    assert empty["ok"] is True
+    assert empty["roadmapBrief"] is None
+
+    written = await container.domain_tools.write_roadmap_brief(
+        "Data engineering",
+        "two months",
+        specific_topics=["SQL", "Airflow"],
+        additional_notes="Standard depth, prefer articles over videos.",
+        tool_context=ctx,
+    )
+    assert written["ok"] is True
+    assert written["roadmapBrief"]["subject"] == "Data engineering"
+    assert written["roadmapBrief"]["specificTopics"] == ["SQL", "Airflow"]
+
+    read_back = await container.domain_tools.read_roadmap_brief(tool_context=ctx)
+    assert read_back["roadmapBrief"]["timeBudget"] == "two months"
+
+    # A later call replaces the whole draft rather than merging.
+    replaced = await container.domain_tools.write_roadmap_brief(
+        "Data engineering", "four weeks, 5 sessions a week", tool_context=ctx
+    )
+    assert replaced["roadmapBrief"]["specificTopics"] == []
+
+
+async def test_write_roadmap_brief_requires_subject_and_time_budget(
+    client: httpx.AsyncClient, container
+) -> None:
+    project = await _project(client, "Become a data engineer")
+    ctx = _FakeToolContext("u_alice", project["id"])
+
+    missing_subject = await container.domain_tools.write_roadmap_brief(
+        "  ", "two months", tool_context=ctx
+    )
+    assert missing_subject["ok"] is False
+
+    missing_budget = await container.domain_tools.write_roadmap_brief(
+        "Data engineering", "", tool_context=ctx
+    )
+    assert missing_budget["ok"] is False
+
+
+async def test_write_roadmap_brief_refuses_an_attachment_name_with_no_matching_upload(
+    client: httpx.AsyncClient, container
+) -> None:
+    """A model that names a file it never actually saw an upload for — a title it
+    inferred from the PDF's own contents, say, rather than the filename it was shown —
+    must be refused loudly, not accepted and silently dropped downstream
+    (`ResearchService.start_roadmap`'s own matching). The error carries the real list so
+    the model can retry against it.
+    """
+    project = await _project(client, "Become a data engineer")
+    session_id = await _intake_session(client, project["id"])
+
+    from coach.agents.context import DEFAULT_MINUTES_KEY, PROJECT_ID_KEY, TASK_ID_KEY
+
+    class _FakeToolContextWithSession:
+        def __init__(self, uid: str, sid: str, pid: str) -> None:
+            self.user_id = uid
+            self.session = type("_S", (), {"id": sid})()
+            self.state = {
+                PROJECT_ID_KEY: pid,
+                TASK_ID_KEY: "",
+                DEFAULT_MINUTES_KEY: 45,
+            }
+
+    ctx = _FakeToolContextWithSession("u_alice", session_id, project["id"])
+
+    # No file has been uploaded to this conversation at all yet.
+    refused = await container.domain_tools.write_roadmap_brief(
+        "Data engineering",
+        "two months",
+        attachments=["Data Engineering Fundamentals.pdf"],
+        tool_context=ctx,
+    )
+    assert refused["ok"] is False
+    assert "Data Engineering Fundamentals.pdf" in refused["error"]["message"]
+
+    # The rejected call must not have partially written the draft.
+    unchanged = await container.domain_tools.read_roadmap_brief(tool_context=ctx)
+    assert unchanged["roadmapBrief"] is None
+
+    # Now a real file is uploaded — the model naming it correctly succeeds, and a second,
+    # unrelated name in the same call is still refused (naming the file that does exist).
+    upload_id = await _staged_upload(client, container, "syllabus.pdf")
+    sent = await client.post(
+        f"/api/sessions/{session_id}/turns",
+        json={
+            "text": "Here is my syllabus.",
+            "attachments": [{"uploadId": upload_id, "mimeType": "application/pdf"}],
+        },
+    )
+    turn_id = sent.json()["turnId"]
+    async with asyncio.timeout(TURN_TIMEOUT_SECONDS):
+        while (await client.get(f"/api/turns/{turn_id}")).json()["status"] == "running":
+            await asyncio.sleep(0.02)
+
+    accepted = await container.domain_tools.write_roadmap_brief(
+        "Data engineering",
+        "two months",
+        attachments=["syllabus.pdf"],
+        tool_context=ctx,
+    )
+    assert accepted["ok"] is True
+    assert accepted["roadmapBrief"]["attachments"] == ["syllabus.pdf"]
+
+    still_refused = await container.domain_tools.write_roadmap_brief(
+        "Data engineering",
+        "two months",
+        attachments=["syllabus.pdf", "made-up-title.pdf"],
+        tool_context=ctx,
+    )
+    assert still_refused["ok"] is False
+    assert "made-up-title.pdf" in still_refused["error"]["message"]
+    assert "syllabus.pdf" in still_refused["error"]["message"]
+
+
+async def test_write_roadmap_brief_nudges_toward_unclaimed_attachments_on_first_call(
+    client: httpx.AsyncClient, container
+) -> None:
+    """A model that never thinks to mention attachments at all gets one unprompted
+    chance to reconsider — on the first call only, so it does not read as nagging about
+    a choice already made deliberately.
+    """
+    from coach.agents.context import DEFAULT_MINUTES_KEY, PROJECT_ID_KEY, TASK_ID_KEY
+
+    class _FakeToolContextWithSession:
+        def __init__(self, uid: str, sid: str, pid: str) -> None:
+            self.user_id = uid
+            self.session = type("_S", (), {"id": sid})()
+            self.state = {
+                PROJECT_ID_KEY: pid,
+                TASK_ID_KEY: "",
+                DEFAULT_MINUTES_KEY: 45,
+            }
+
+    project = await _project(client, "Become a data engineer")
+    session_id = await _intake_session(client, project["id"])
+    ctx = _FakeToolContextWithSession("u_alice", session_id, project["id"])
+
+    upload_id = await _staged_upload(client, container, "syllabus.pdf")
+    sent = await client.post(
+        f"/api/sessions/{session_id}/turns",
+        json={
+            "text": "Here is my syllabus.",
+            "attachments": [{"uploadId": upload_id, "mimeType": "application/pdf"}],
+        },
+    )
+    async with asyncio.timeout(TURN_TIMEOUT_SECONDS):
+        while (await client.get(f"/api/turns/{sent.json()['turnId']}")).json()[
+            "status"
+        ] == "running":
+            await asyncio.sleep(0.02)
+
+    # First call, no attachments named: nudged with what is actually available.
+    first = await container.domain_tools.write_roadmap_brief(
+        "Data engineering", "two months", tool_context=ctx
+    )
+    assert first["ok"] is True
+    assert first["availableAttachments"] == ["syllabus.pdf"]
+
+    # Second call, still no attachments named: no nudge this time — a deliberate choice,
+    # not an oversight, is not this tool's business to keep second-guessing.
+    second = await container.domain_tools.write_roadmap_brief(
+        "Data engineering", "four weeks", tool_context=ctx
+    )
+    assert second["ok"] is True
+    assert "availableAttachments" not in second
+
+    # A first call that already names the attachment gets no nudge either — nothing to
+    # reconsider.
+    project2 = await _project(client, "Become a data engineer, take two")
+    session_id2 = await _intake_session(client, project2["id"])
+    ctx2 = _FakeToolContextWithSession("u_alice", session_id2, project2["id"])
+    upload_id2 = await _staged_upload(client, container, "notes.pdf")
+    sent2 = await client.post(
+        f"/api/sessions/{session_id2}/turns",
+        json={
+            "text": "My notes.",
+            "attachments": [{"uploadId": upload_id2, "mimeType": "application/pdf"}],
+        },
+    )
+    async with asyncio.timeout(TURN_TIMEOUT_SECONDS):
+        while (await client.get(f"/api/turns/{sent2.json()['turnId']}")).json()[
+            "status"
+        ] == "running":
+            await asyncio.sleep(0.02)
+    already_named = await container.domain_tools.write_roadmap_brief(
+        "Data engineering",
+        "two months",
+        attachments=["notes.pdf"],
+        tool_context=ctx2,
+    )
+    assert already_named["ok"] is True
+    assert "availableAttachments" not in already_named
+
+
+async def _await_queued_run(client: httpx.AsyncClient, run_id: str) -> dict[str, Any]:
+    """As `test_roadmap_workflow.py`'s: since M9, a manual/roadmap run is queued, so the
+    turn does not exist yet in the 202 body — poll the run for it."""
+    async with asyncio.timeout(TURN_TIMEOUT_SECONDS):
+        while True:
+            run = (await client.get(f"/api/runs/{run_id}")).json()["run"]
+            if run["turnId"]:
+                turn_id = run["turnId"]
+                break
+            await asyncio.sleep(0.02)
+        while True:
+            turn = (await client.get(f"/api/turns/{turn_id}")).json()
+            if turn["status"] != "running":
+                return dict(turn)
+            await asyncio.sleep(0.02)
+
+
+async def test_propose_roadmap_brief_schedules_a_roadmap_run(
+    client: httpx.AsyncClient, container, stub_model: StubModel
+) -> None:
+    """Confirmation approved: the underlying handler runs (docs/03-agent-design.md — the
+    static `require_confirmation` gate means this method body is only ever invoked once
+    ADK has a confirmed answer), reproducing the stored draft's own values as its
+    arguments, same as `update_project_plan`'s own tool-call args are what the client
+    renders for review.
+    """
+    project = await _project(client, "Become a data engineer")
+    session_id = await _intake_session(client, project["id"])
+
+    from coach.agents.context import DEFAULT_MINUTES_KEY, PROJECT_ID_KEY, TASK_ID_KEY
+
+    class _FakeToolContextWithSession:
+        def __init__(self, uid: str, sid: str, pid: str) -> None:
+            self.user_id = uid
+            self.session = type("_S", (), {"id": sid})()
+            self.state = {
+                PROJECT_ID_KEY: pid,
+                TASK_ID_KEY: "",
+                DEFAULT_MINUTES_KEY: 45,
+            }
+
+    ctx = _FakeToolContextWithSession("u_alice", session_id, project["id"])
+
+    await container.domain_tools.write_roadmap_brief(
+        "Data engineering", "two months", specific_topics=["SQL"], tool_context=ctx
+    )
+
+    result = await container.domain_tools.propose_roadmap_brief(
+        "Data engineering", "two months", specific_topics=["SQL"], tool_context=ctx
+    )
+    assert result["ok"] is True
+    assert result["scheduled"] is True
+    run_id = result["runId"]
+
+    run = (await client.get(f"/api/runs/{run_id}")).json()["run"]
+    assert run["steps"][0]["id"] == "roadmap"
+    assert run["taskId"] is None
+
+    # The draft is cleared once a run has been scheduled from it.
+    after = await container.domain_tools.read_roadmap_brief(tool_context=ctx)
+    assert after["roadmapBrief"] is None
+
+    finished = await _await_queued_run(client, run_id)
+    assert finished["status"] == "complete", finished
+    plan = await container.study_plans.get(project["id"], f"plan_{run_id}")
+    assert plan is not None
+
+
+async def _staged_upload(
+    client: httpx.AsyncClient, container, filename: str, content: bytes = b"file bytes"
+) -> str:
+    """Create an upload, pretend the browser's PUT landed, and finalize it."""
+    created = (
+        await client.post(
+            "/api/uploads",
+            json={
+                "filename": filename,
+                "mimeType": "application/pdf",
+                "sizeBytes": max(len(content), 1),
+            },
+        )
+    ).json()
+    record = await container.upload_repository.get(created["uploadId"])
+    container.uploads._store.declare(
+        record["objectName"], len(content), "application/pdf", content
+    )
+    await client.post(f"/api/uploads/{created['uploadId']}/finalize")
+    return str(created["uploadId"])
+
+
+async def test_propose_roadmap_brief_only_carries_over_referenced_attachments(
+    client: httpx.AsyncClient, container, stub_model: StubModel
+) -> None:
+    """`start_roadmap`'s `attachment_names`: unlike a task's own research, the project
+    coach's conversation is not scoped to one topic, so only the attachments the brief
+    itself names should ride onto the roadmap run's opening message — not every upload
+    the conversation has ever seen (docs/02-data-model.md#projectsprojectid).
+    """
+    project = await _project(client, "Become a data engineer")
+    session_id = await _intake_session(client, project["id"])
+
+    syllabus_id = await _staged_upload(client, container, "syllabus.pdf")
+    unrelated_id = await _staged_upload(client, container, "unrelated.pdf")
+    for text, upload_id in (
+        ("Here is my syllabus.", syllabus_id),
+        ("Unrelated to the roadmap.", unrelated_id),
+    ):
+        sent = await client.post(
+            f"/api/sessions/{session_id}/turns",
+            json={
+                "text": text,
+                "attachments": [{"uploadId": upload_id, "mimeType": "application/pdf"}],
+            },
+        )
+        turn_id = sent.json()["turnId"]
+        async with asyncio.timeout(TURN_TIMEOUT_SECONDS):
+            while (await client.get(f"/api/turns/{turn_id}")).json()["status"] == "running":
+                await asyncio.sleep(0.02)
+
+    from coach.agents.context import DEFAULT_MINUTES_KEY, PROJECT_ID_KEY, TASK_ID_KEY
+
+    class _FakeToolContextWithSession:
+        def __init__(self, uid: str, sid: str, pid: str) -> None:
+            self.user_id = uid
+            self.session = type("_S", (), {"id": sid})()
+            self.state = {
+                PROJECT_ID_KEY: pid,
+                TASK_ID_KEY: "",
+                DEFAULT_MINUTES_KEY: 45,
+            }
+
+    ctx = _FakeToolContextWithSession("u_alice", session_id, project["id"])
+    await container.domain_tools.write_roadmap_brief(
+        "Data engineering",
+        "two months",
+        attachments=["syllabus.pdf"],
+        tool_context=ctx,
+    )
+    result = await container.domain_tools.propose_roadmap_brief(
+        "Data engineering", "two months", attachments=["syllabus.pdf"], tool_context=ctx
+    )
+    assert result["ok"] is True
+    run_id = result["runId"]
+    finished = await _await_queued_run(client, run_id)
+    assert finished["status"] == "complete", finished
+
+    run = (await client.get(f"/api/runs/{run_id}")).json()["run"]
+    events = (await client.get(f"/api/sessions/{run['sessionId']}/events")).json()["events"]
+    file_uris = {
+        (part.get("file_data") or part.get("fileData") or {}).get("file_uri")
+        for event in events
+        for part in (event["event"].get("content") or {}).get("parts", [])
+        if part.get("file_data") or part.get("fileData")
+    }
+    syllabus = await container.upload_repository.get(syllabus_id)
+    unrelated = await container.upload_repository.get(unrelated_id)
+    assert syllabus["artifactUri"] in file_uris
+    assert unrelated["artifactUri"] not in file_uris
+
+
+async def test_propose_roadmap_brief_lets_the_dialogs_own_checklist_override_the_model(
+    client: httpx.AsyncClient, container, stub_model: StubModel
+) -> None:
+    """The approval dialog's own attachment checklist wins over whatever the model
+    passed as `attachments` — the learner's last word, applied deterministically, without
+    another model turn to reconcile a disagreement between the two
+    (docs/03-agent-design.md#the-taskless-case-task_proposer-and-plan_tailor-replace-reviewer_writer).
+    """
+    from coach.agents.context import DEFAULT_MINUTES_KEY, PROJECT_ID_KEY, TASK_ID_KEY
+    from coach.agents.tools import CONFIRMED_ATTACHMENTS_KEY
+
+    project = await _project(client, "Become a data engineer")
+    session_id = await _intake_session(client, project["id"])
+
+    syllabus_id = await _staged_upload(client, container, "syllabus.pdf")
+    unrelated_id = await _staged_upload(client, container, "unrelated.pdf")
+    for filename, upload_id in (("syllabus.pdf", syllabus_id), ("unrelated.pdf", unrelated_id)):
+        sent = await client.post(
+            f"/api/sessions/{session_id}/turns",
+            json={
+                "text": f"Here is {filename}.",
+                "attachments": [{"uploadId": upload_id, "mimeType": "application/pdf"}],
+            },
+        )
+        turn_id = sent.json()["turnId"]
+        async with asyncio.timeout(TURN_TIMEOUT_SECONDS):
+            while (await client.get(f"/api/turns/{turn_id}")).json()["status"] == "running":
+                await asyncio.sleep(0.02)
+
+    class _FakeToolContextWithSession:
+        def __init__(self, uid: str, sid: str, pid: str) -> None:
+            self.user_id = uid
+            self.session = type("_S", (), {"id": sid})()
+            self.state = {
+                PROJECT_ID_KEY: pid,
+                TASK_ID_KEY: "",
+                DEFAULT_MINUTES_KEY: 45,
+            }
+            # The confirmation answer's own payload — the learner unchecked the file the
+            # model guessed and checked the other one instead, right in the dialog.
+            self.tool_confirmation = type(
+                "_Answer", (), {"payload": {CONFIRMED_ATTACHMENTS_KEY: ["unrelated.pdf"]}}
+            )()
+
+    ctx = _FakeToolContextWithSession("u_alice", session_id, project["id"])
+    await container.domain_tools.write_roadmap_brief(
+        "Data engineering", "two months", attachments=["syllabus.pdf"], tool_context=ctx
+    )
+    # The model's own call still names `syllabus.pdf` — the dialog's checklist must win
+    # over this, not merely over what was last written.
+    result = await container.domain_tools.propose_roadmap_brief(
+        "Data engineering", "two months", attachments=["syllabus.pdf"], tool_context=ctx
+    )
+    assert result["ok"] is True
+    run_id = result["runId"]
+    finished = await _await_queued_run(client, run_id)
+    assert finished["status"] == "complete", finished
+
+    run = (await client.get(f"/api/runs/{run_id}")).json()["run"]
+    events = (await client.get(f"/api/sessions/{run['sessionId']}/events")).json()["events"]
+    file_uris = {
+        (part.get("file_data") or part.get("fileData") or {}).get("file_uri")
+        for event in events
+        for part in (event["event"].get("content") or {}).get("parts", [])
+        if part.get("file_data") or part.get("fileData")
+    }
+    syllabus = await container.upload_repository.get(syllabus_id)
+    unrelated = await container.upload_repository.get(unrelated_id)
+    assert unrelated["artifactUri"] in file_uris
+    assert syllabus["artifactUri"] not in file_uris
+
+
+# --- viewing and revising a study plan -----------------------------------------------------
+
+
+def _study_plan_task(slug: str) -> dict[str, Any]:
+    return {
+        "slug": slug,
+        "title": f"Task {slug}",
+        "description": "What done looks like.",
+        "required": [
+            {
+                "kind": "article",
+                "title": "A guide",
+                "url": "https://example.com/guide",
+                "minutes": 10,
+                "why": "so you know what to do",
+                "source": "web",
+            }
+        ],
+        "optional": [],
+        "prerequisite_tasks": [],
+    }
+
+
+def _study_plan_entry(slug: str, decision: str = "include") -> dict[str, Any]:
+    return {
+        "task_slug": slug,
+        "after": None,
+        "prerequisite_tasks": [],
+        "relevance": 3,
+        "decision": decision,
+        "why": "Because the learner needs it — or doesn't.",
+    }
+
+
+async def test_view_and_revise_and_materialize_study_plan_tools(
+    client: httpx.AsyncClient, container, alice
+) -> None:
+    project = await _project(client, "Become a data engineer")
+    ctx = _FakeToolContext("u_alice", project["id"])
+
+    empty = await container.domain_tools.view_study_plan(tool_context=ctx)
+    assert empty["ok"] is True
+    assert empty["studyPlan"] is None
+
+    original = await container.study_plans.post_plan(
+        alice,
+        project_id=project["id"],
+        title="A roadmap",
+        short_description="",
+        long_description="",
+        memo="",
+        proposed_tasks=[_study_plan_task("intro"), _study_plan_task("advanced")],
+        plan=[
+            _study_plan_entry("intro", "include"),
+            _study_plan_entry("advanced", "exclude"),
+        ],
+    )
+
+    viewed = await container.domain_tools.view_study_plan(tool_context=ctx)
+    assert viewed["studyPlan"]["id"] == original.id
+
+    revised = await container.domain_tools.revise_study_plan(
+        original.id,
+        [
+            _study_plan_entry("intro", "include"),
+            _study_plan_entry("advanced", "include"),
+        ],
+        tool_context=ctx,
+    )
+    assert revised["ok"] is True
+    assert revised["includedCount"] == 2
+    revised_plan_id = revised["planId"]
+
+    # The original is untouched; `view_study_plan` now returns the revision.
+    reloaded_original = await container.study_plans.get(project["id"], original.id)
+    assert reloaded_original is not None
+    assert {e.task_slug: e.decision for e in reloaded_original.plan}["advanced"] == "exclude"
+    viewed_again = await container.domain_tools.view_study_plan(tool_context=ctx)
+    assert viewed_again["studyPlan"]["id"] == revised_plan_id
+
+    materialized = await container.domain_tools.materialize_study_plan(
+        revised_plan_id, tool_context=ctx
+    )
+    assert materialized["ok"] is True
+    assert materialized["createdCount"] == 2
+
+    board = await _board(client, project["id"])
+    assert {task["title"] for task in board} == {"Task intro", "Task advanced"}
+
+    # Confirmed without the checkbox (this call's `ctx` carries no `tool_confirmation`,
+    # the same as a plain approval) — the project's description is untouched.
+    unchanged = (await client.get(f"/api/projects/{project['id']}")).json()
+    assert unchanged["description"] == ""
+
+
+async def test_materialize_study_plan_updates_the_description_only_if_the_checkbox_is_checked(
+    client: httpx.AsyncClient, container, alice
+) -> None:
+    """The approval dialog's "Also update project description" checkbox: the model always
+    supplies a candidate sentence, but only the learner's own answer — carried in the
+    confirmation's payload, `UPDATE_PROJECT_DESCRIPTION_KEY` — decides whether it lands
+    (docs/02-data-model.md#projectsprojectidstudy_plansplanid).
+    """
+    from coach.agents.tools import UPDATE_PROJECT_DESCRIPTION_KEY
+
+    project = await _project(client, "Become a data engineer")
+    ctx = _FakeToolContext("u_alice", project["id"])
+
+    plan = await container.study_plans.post_plan(
+        alice,
+        project_id=project["id"],
+        title="A roadmap",
+        short_description="Proposed roadmap: intro to data engineering.",
+        long_description="",
+        memo="",
+        proposed_tasks=[_study_plan_task("intro")],
+        plan=[_study_plan_entry("intro", "include")],
+    )
+
+    # Declined: `project_description` is supplied, but the payload says the checkbox was
+    # unchecked, so nothing is written.
+    ctx.tool_confirmation = type(
+        "_Answer", (), {"payload": {UPDATE_PROJECT_DESCRIPTION_KEY: False}}
+    )()
+    declined = await container.domain_tools.materialize_study_plan(
+        plan.id,
+        tool_context=ctx,
+        project_description="Learning data engineering fundamentals.",
+    )
+    assert declined["ok"] is True
+    assert "projectDescriptionUpdated" not in declined
+    after_decline = (await client.get(f"/api/projects/{project['id']}")).json()
+    assert after_decline["description"] == ""
+
+    # A second plan, so `materialize` is not refused as already-done — accepted this time.
+    plan2 = await container.study_plans.post_plan(
+        alice,
+        project_id=project["id"],
+        title="A roadmap",
+        short_description="Proposed roadmap: intro to data engineering.",
+        long_description="",
+        memo="",
+        proposed_tasks=[_study_plan_task("advanced")],
+        plan=[_study_plan_entry("advanced", "include")],
+    )
+    ctx.tool_confirmation = type(
+        "_Answer", (), {"payload": {UPDATE_PROJECT_DESCRIPTION_KEY: True}}
+    )()
+    accepted = await container.domain_tools.materialize_study_plan(
+        plan2.id,
+        tool_context=ctx,
+        project_description="Learning data engineering fundamentals.",
+    )
+    assert accepted["ok"] is True
+    assert accepted["projectDescriptionUpdated"] is True
+    after_accept = (await client.get(f"/api/projects/{project['id']}")).json()
+    assert after_accept["description"] == "Learning data engineering fundamentals."

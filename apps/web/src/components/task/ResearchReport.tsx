@@ -16,18 +16,11 @@
 
 import { ThumbsDown, ThumbsUp } from 'lucide-react';
 
+import { ItemKindBadge } from '@/components/task/item-kind';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { formatMinutes } from '@/lib/format';
-import type { ResearchReport as Report, ReportItem } from '@/lib/schemas';
-
-const KIND_LABELS: Record<ReportItem['kind'], string> = {
-  article: 'Article',
-  video: 'Video',
-  exercise: 'Exercise',
-  doc: 'Docs',
-  code_scaffold: 'Scaffold',
-};
+import type { ResearchReport as Report } from '@/lib/schemas';
 
 interface ResearchReportProps {
   report: Report;
@@ -59,9 +52,7 @@ export function ResearchReport({ report, onFeedback }: ResearchReportProps) {
             {report.required.map((item) => (
               <li key={item.itemId} className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="outline" className="text-[0.7rem]">
-                    {KIND_LABELS[item.kind]}
-                  </Badge>
+                  <ItemKindBadge kind={item.kind} />
                   <Badge variant="secondary" className="text-[0.7rem]">
                     {formatMinutes(item.minutes)}
                   </Badge>
@@ -95,9 +86,7 @@ export function ResearchReport({ report, onFeedback }: ResearchReportProps) {
               <li key={item.itemId} className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="outline" className="text-[0.7rem]">
-                      {KIND_LABELS[item.kind]}
-                    </Badge>
+                    <ItemKindBadge kind={item.kind} />
                     <Badge variant="secondary" className="text-[0.7rem]">
                       {formatMinutes(item.minutes)}
                     </Badge>

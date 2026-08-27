@@ -31,6 +31,7 @@ Three things are deliberate and would be easy to "simplify" away:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -51,17 +52,21 @@ from coach.core.app import APP_NAME
 from coach.core.errors import CoachError, ValidationProblem
 from coach.services.models import (
     Origin,
+    RoadmapBrief,
+    SkillBelief,
     Task,
     TaskState,
     TaskWithSubtasks,
-    TechnologyBelief,
 )
 from coach.services.projects import ProjectService
+from coach.services.sessions import SessionService
+from coach.services.study_plans import DEFAULT_MATERIALIZE_DECISIONS, StudyPlanService
 from coach.services.tasks import TaskService
 from coach.ws.hub import BoardUpdateHub
 
 if TYPE_CHECKING:
     from coach.adk_firestore import CoachMemoryService
+    from coach.services.research import ResearchService
     from coach.services.users import UserService
 
 logger = logging.getLogger(__name__)
@@ -148,12 +153,25 @@ class DomainTools:
         hub: BoardUpdateHub,
         users: UserService | None = None,
         memory: CoachMemoryService | None = None,
+        study_plans: StudyPlanService | None = None,
+        sessions: SessionService | None = None,
+        research_provider: Callable[[], ResearchService] | None = None,
     ) -> None:
         self._tasks = tasks
         self._projects = projects
         self._hub = hub
         self._users = users
         self._memory = memory
+        self._plans = study_plans
+        self._sessions = sessions
+        # A provider, not the service itself — `coach/core/lazy.py`'s pattern, applied for
+        # the same reason it exists there: `api/deps.py` builds `DomainTools` before
+        # `ResearchService` (whose own construction needs the queue, which needs the
+        # executor, which needs the turn service, which needs `DomainTools` — building
+        # `ResearchService` first would be circular). A zero-argument callable resolved
+        # only when `propose_roadmap_brief` actually schedules a run breaks the cycle
+        # without either service reaching for the other at import time.
+        self._research_provider = research_provider
 
     # --- scoping -----------------------------------------------------------------------
 
@@ -1103,7 +1121,7 @@ class DomainTools:
         self,
         tasks: list[dict[str, Any]],
         summary: str = "",
-        goal: str | None = None,
+        description: str | None = None,
         *,
         tool_context: ToolContext,
     ) -> dict[str, Any]:
@@ -1116,14 +1134,15 @@ class DomainTools:
             tasks: List of proposed tasks, each with title, description, optional
                 estimated_minutes, and optional subtasks.
             summary: Brief overview or rationale of the proposed plan.
-            goal: Refined project goal statement, if updated through discussion.
+            description: Refined one- or two-sentence project description, if updated
+                through discussion.
         """
         return await self._guarded(
             tool_context,
             self._update_project_plan,
             tasks,
             summary,
-            goal,
+            description,
         )
 
     async def _update_project_plan(
@@ -1131,13 +1150,15 @@ class DomainTools:
         context: AgentContext,
         tasks: list[dict[str, Any]],
         summary: str = "",
-        goal: str | None = None,
+        description: str | None = None,
     ) -> dict[str, Any]:
         if not tasks:
             raise ValidationProblem("A plan must contain at least one task.")
 
-        if goal:
-            await self._projects.patch(context.principal, context.project_id, goal=goal)
+        if description:
+            await self._projects.patch(
+                context.principal, context.project_id, description=description
+            )
 
         created_tasks: list[Task] = []
         for task_dict in tasks:
@@ -1198,6 +1219,430 @@ class DomainTools:
             "tasks": [task_view(t) for t in created_tasks],
         }
 
+    # --- roadmap brief ---------------------------------------------------------------------
+    #
+    # The structured intake for a roadmap run. `write_roadmap_brief`/`read_roadmap_brief`
+    # let `project_coach` draft and re-read the brief across turns before proposing it;
+    # `propose_roadmap_brief` is the confirmation-gated handoff — approval renders the
+    # stored draft and schedules it as a roadmap run, the same way `update_project_plan`'s
+    # approval creates the tasks it proposed.
+
+    async def _session_attachment_names(self, context: AgentContext) -> list[str]:
+        """Display names of every file actually attached in this conversation, oldest
+        first, as `SessionService.list_attachments` stored them — not lowercased, so it
+        can be shown to the model verbatim when a name it gave does not match one."""
+        if self._sessions is None or context.session_id is None:
+            return []
+        attachments = await self._sessions.list_attachments(
+            context.principal, context.session_id
+        )
+        return [a["displayName"] for a in attachments if a.get("displayName")]
+
+    async def _validate_attachment_names(
+        self, context: AgentContext, names: list[str] | None
+    ) -> list[str]:
+        """Only a filename that matches an upload actually present in this conversation
+        may land on a roadmap brief.
+
+        Without this, a name the model invented — a title it inferred from the file's
+        contents rather than the filename it was shown — would pass `write_roadmap_brief`
+        silently, then vanish at `ResearchService.start_roadmap`'s own matching against
+        the same list (`docs/02-data-model.md#projectsprojectid`): no attachment on the
+        run, no chip in the confirmation dialog, and nothing to explain why to the
+        learner. Refusing here instead is loud in the one place that can still do
+        something about it — the model gets the *real* list back and can retry against
+        it, rather than the learner discovering the gap after the run has already started.
+        """
+        cleaned = [name.strip() for name in (names or []) if name.strip()]
+        if not cleaned:
+            return []
+        known = await self._session_attachment_names(context)
+        known_lower = {name.lower() for name in known}
+        invalid = [name for name in cleaned if name.lower() not in known_lower]
+        if invalid:
+            available = ", ".join(known) if known else "none"
+            raise ValidationProblem(
+                f"{', '.join(invalid)} — no file with that name is attached to this "
+                f"conversation. Files actually attached here: {available}. Use the exact "
+                "filename shown for the file, never a title or description inferred from "
+                "its contents, or leave attachments out if none belong on this brief."
+            )
+        return cleaned
+
+    async def write_roadmap_brief(
+        self,
+        subject: str,
+        time_budget: str,
+        tool_context: ToolContext,
+        specific_topics: list[str] | None = None,
+        additional_notes: str = "",
+        attachments: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Write or update this project's roadmap brief — the structured intake for a
+        roadmap run, drafted across turns before you propose it.
+
+        Call this as the conversation establishes each piece, not only once at the end; a
+        later call replaces the whole draft, so include everything you have gathered so
+        far, not only what changed. `read_roadmap_brief` reads it back.
+
+        Args:
+            subject: The main subject the learner plans to learn. Required.
+            time_budget: The learner's total study time budget, in their own words —
+                "4 lessons", "two months", "four weeks, 5 sessions a week". Required:
+                combine a vague answer with what you already know of their pacing
+                preferences rather than leaving this empty.
+            specific_topics: Sub-topics or aspects of `subject` they want covered.
+            additional_notes: Anything else that shapes the research — depth (quick,
+                standard, deep), topics to skip or emphasize, preferred material types.
+            attachments: Filenames of any files the learner attached that are relevant to
+                this roadmap (a syllabus, a job posting, prior notes) — exactly the
+                filename shown for the file, never a title or description you inferred
+                from its contents. This conversation may have other attachments unrelated
+                to the roadmap; list only the ones that matter to it, since only these are
+                carried onto the roadmap run's opening message. A name that does not match
+                an actual attachment in this conversation is refused, not silently
+                accepted — you will get the real list back to correct it against. If this
+                is the first call for this brief and the conversation has attachments you
+                did not list, the result names them back to you — reconsider whether any
+                belong on the brief before calling this again.
+        """
+        return await self._guarded(
+            tool_context,
+            self._write_roadmap_brief,
+            subject,
+            time_budget,
+            specific_topics,
+            additional_notes,
+            attachments,
+        )
+
+    async def _write_roadmap_brief(
+        self,
+        context: AgentContext,
+        subject: str,
+        time_budget: str,
+        specific_topics: list[str] | None,
+        additional_notes: str,
+        attachments: list[str] | None,
+    ) -> dict[str, Any]:
+        subject = subject.strip()
+        time_budget = time_budget.strip()
+        if not subject:
+            raise ValidationProblem(
+                "A roadmap brief needs a subject — what the learner plans to learn."
+            )
+        if not time_budget:
+            raise ValidationProblem(
+                "A roadmap brief needs a time budget — how much study time the learner "
+                "has, even a rough one."
+            )
+        validated_attachments = await self._validate_attachment_names(context, attachments)
+        # Read before writing, so "is this the first call" reflects what was there before
+        # this write rather than what `set_roadmap_brief` is about to make true.
+        existing = await self._projects.require_owned(context.principal, context.project_id)
+        is_first_call = existing.roadmap_brief is None
+
+        project = await self._projects.set_roadmap_brief(
+            context.principal,
+            context.project_id,
+            subject=subject,
+            time_budget=time_budget,
+            specific_topics=specific_topics,
+            additional_notes=additional_notes,
+            attachments=validated_attachments,
+        )
+        assert project.roadmap_brief is not None
+        result: dict[str, Any] = {
+            "ok": True,
+            "roadmapBrief": project.roadmap_brief.to_document(),
+        }
+
+        # A nudge, not a guard: nothing stops the model from ignoring this, but a model
+        # that never considered attachments at all — the defect a real coach-dev run
+        # actually hit — gets one unprompted chance to reconsider, on the one call where
+        # bringing it up cannot yet read as nagging about something already decided.
+        # Scoped to the *first* call only: a later call with attachments still empty is
+        # more likely a deliberate "these files don't belong on this brief" than an
+        # oversight, and repeating the nudge on every call would be exactly that nagging.
+        if is_first_call and not validated_attachments:
+            available = await self._session_attachment_names(context)
+            if available:
+                result["availableAttachments"] = available
+        return result
+
+    async def read_roadmap_brief(self, tool_context: ToolContext) -> dict[str, Any]:
+        """Read back this project's current roadmap brief draft.
+
+        `None` if nothing has been written yet, or if the last one was already used to
+        start a run — `propose_roadmap_brief` clears the draft once it schedules one.
+        """
+        return await self._guarded(tool_context, self._read_roadmap_brief)
+
+    async def _read_roadmap_brief(self, context: AgentContext) -> dict[str, Any]:
+        project = await self._projects.require_owned(context.principal, context.project_id)
+        return {
+            "ok": True,
+            "roadmapBrief": (
+                project.roadmap_brief.to_document() if project.roadmap_brief else None
+            ),
+        }
+
+    async def propose_roadmap_brief(
+        self,
+        subject: str,
+        time_budget: str,
+        tool_context: ToolContext,
+        specific_topics: list[str] | None = None,
+        additional_notes: str = "",
+        attachments: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Ask the learner to approve the roadmap brief. **Requires user confirmation.**
+
+        Reproduce the brief exactly as `write_roadmap_brief` last stored it — the same
+        values, not a fresh guess — so what the learner reviews is the actual stored
+        draft. **The confirmation dialog renders the project's stored brief document
+        directly, not these arguments** — so a mismatch here would not merely mislead the
+        learner, it would show them something other than what they are approving.
+        Approval renders it and schedules a roadmap run for the project as a whole, with
+        the referenced attachments carried onto its opening message; declining leaves the
+        draft as it was, for you to keep refining with the learner.
+
+        **The dialog's own attachment checklist, if the learner changes it, wins over
+        this call's `attachments` argument** — the learner may tick or untick files right
+        there without another round of conversation, and the server applies their
+        selection deterministically rather than asking you to notice and re-propose.
+
+        Args:
+            subject: The main subject, exactly as last written.
+            time_budget: The time budget, exactly as last written.
+            specific_topics: The specific topics, exactly as last written.
+            additional_notes: The additional notes, exactly as last written.
+            attachments: The referenced attachment filenames, exactly as last written. A
+                name that does not match an actual attachment in this conversation is
+                refused, the same check `write_roadmap_brief` makes. Only the starting
+                point for what the learner sees — see above.
+        """
+        return await self._guarded(
+            tool_context,
+            self._propose_roadmap_brief,
+            subject,
+            time_budget,
+            specific_topics,
+            additional_notes,
+            attachments,
+            tool_context,
+        )
+
+    async def _propose_roadmap_brief(
+        self,
+        context: AgentContext,
+        subject: str,
+        time_budget: str,
+        specific_topics: list[str] | None,
+        additional_notes: str,
+        attachments: list[str] | None,
+        tool_context: ToolContext,
+    ) -> dict[str, Any]:
+        """Runs only once the learner has confirmed — the static `require_confirmation`
+        gate on `FunctionTool`, same mechanism `update_project_plan` and `discard_task`
+        use (module docstring)."""
+        if self._research_provider is None:
+            raise ValidationProblem("Roadmap scheduling is not configured.")
+        subject = subject.strip()
+        time_budget = time_budget.strip()
+        if not subject or not time_budget:
+            raise ValidationProblem(
+                "A roadmap brief needs both a subject and a time budget before it can be "
+                "proposed."
+            )
+        # The dialog's own checklist is authoritative once it has one to offer — the
+        # learner's final word, applied deterministically, not the model's possibly-stale
+        # guess from before the dialog was even shown. Falls back to the model's argument
+        # only when the answer carries no checklist selection at all (`None`, not `[]` —
+        # see `_confirmed_attachments`'s own docstring for why that distinction matters).
+        confirmed = _confirmed_attachments(tool_context)
+        validated_attachments = await self._validate_attachment_names(
+            context, confirmed if confirmed is not None else attachments
+        )
+        # Re-stored rather than trusted from the arguments alone, so the draft on record
+        # always matches what was actually confirmed — cheap, and it is what
+        # `read_roadmap_brief` shows afterwards if the run fails to start.
+        brief = RoadmapBrief(
+            subject=subject,
+            time_budget=time_budget,
+            specific_topics=[t.strip() for t in (specific_topics or []) if t.strip()],
+            additional_notes=additional_notes.strip(),
+            attachments=validated_attachments,
+        )
+        await self._projects.set_roadmap_brief(
+            context.principal,
+            context.project_id,
+            subject=brief.subject,
+            time_budget=brief.time_budget,
+            specific_topics=brief.specific_topics,
+            attachments=brief.attachments,
+            additional_notes=brief.additional_notes,
+        )
+
+        if context.session_id is None:
+            raise ValidationProblem(
+                "This conversation has no session to start the roadmap run from."
+            )
+        research = self._research_provider()
+        run = await research.start_roadmap(
+            context.principal,
+            context.session_id,
+            reason=brief.render(),
+            attachment_names=brief.attachments,
+        )
+        await self._projects.clear_roadmap_brief(context.principal, context.project_id)
+        return {
+            "ok": True,
+            "scheduled": True,
+            "runId": run.id,
+            "sessionId": run.session_id,
+        }
+
+    # --- study plans ---------------------------------------------------------------------
+
+    async def view_study_plan(self, tool_context: ToolContext) -> dict[str, Any]:
+        """Read this project's most recent study plan — a roadmap run's own result, or a
+        later revision of one, whichever was written most recently.
+
+        `None` if the project has no plan yet. Look here before `revise_study_plan` or
+        `materialize_study_plan`: both act on a specific `planId`, which this returns.
+        """
+        return await self._guarded(tool_context, self._view_study_plan)
+
+    async def _view_study_plan(self, context: AgentContext) -> dict[str, Any]:
+        if self._plans is None:
+            raise ValidationProblem("Study plan storage is not configured.")
+        plan = await self._plans.get_latest(context.principal, context.project_id)
+        return {"ok": True, "studyPlan": plan.to_document() if plan is not None else None}
+
+    async def revise_study_plan(
+        self,
+        plan_id: str,
+        plan: list[dict[str, Any]],
+        tool_context: ToolContext,
+    ) -> dict[str, Any]:
+        """Re-decide a study plan's inclusion and ordering, as your own copy.
+
+        Writes a **new** plan rather than changing `plan_id` — the original stays exactly
+        as `plan_tailor` (or an earlier revision) wrote it, so it stays legible against
+        whatever this replaces it with. `view_study_plan` afterwards returns the copy,
+        since it is now the most recent.
+
+        Args:
+            plan_id: The plan to revise, from `view_study_plan`.
+            plan: One entry per proposed task on that plan — every one of them, including
+                any you leave unchanged. Each is an object with `task_slug`, `after` (the
+                slug of the proposed task this one should sit directly after once
+                materialized, or omit), `prerequisite_tasks`, `relevance` (0-4),
+                `decision` (`include`, `additional`, `exclude`, or `reject`), and `why`
+                (addressed to the learner, required even for an excluded or rejected
+                task).
+        """
+        return await self._guarded(tool_context, self._revise_study_plan, plan_id, plan)
+
+    async def _revise_study_plan(
+        self, context: AgentContext, plan_id: str, plan: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        if self._plans is None:
+            raise ValidationProblem("Study plan storage is not configured.")
+        revised = await self._plans.revise(
+            context.principal, project_id=context.project_id, plan_id=plan_id, plan=plan
+        )
+        included = sum(
+            1 for entry in revised.plan if entry.decision in ("include", "additional")
+        )
+        return {
+            "ok": True,
+            "planId": revised.id,
+            "revisedFromPlanId": plan_id,
+            "taskCount": len(revised.proposed_tasks),
+            "includedCount": included,
+        }
+
+    async def materialize_study_plan(
+        self,
+        plan_id: str,
+        tool_context: ToolContext,
+        decisions: list[str] | None = None,
+        project_description: str = "",
+    ) -> dict[str, Any]:
+        """Create board tasks — fully prepared, with items — from a written study plan.
+        **Requires user confirmation** — this is the final approval that puts a plan's
+        tasks on the board, the study-plan analogue of `update_project_plan`'s.
+
+        Turns the plan's `include` and `additional` (deep-dive) tasks into real tasks on
+        the board, in dependency order, each already carrying the material `task_proposer`
+        gathered for it. `exclude`/`reject` tasks are never created — their `why` stays on
+        the plan document. Calling this twice for the same plan is safe: the second call
+        returns the tasks the first one already created rather than making a second set.
+
+        The confirmation dialog offers a checkbox, "Also update project description" —
+        checked by default when the project has none yet. Provide `project_description`
+        every time regardless of whether you expect it to be checked; the learner's
+        answer, not your guess, decides whether it is used.
+
+        Args:
+            plan_id: The study plan to materialize.
+            decisions: Which decisions to create tasks for. Omit for the default
+                (`include` and `additional`).
+            project_description: A single factual sentence describing what the project is
+                now for, based on this plan — write it as a description of the project,
+                not as a summary of the plan (e.g. "Learning React fundamentals and
+                building a portfolio app", not "A roadmap covering React basics, hooks,
+                and a final project"). Only applied if the learner leaves the checkbox
+                checked.
+        """
+        return await self._guarded(
+            tool_context,
+            self._materialize_study_plan,
+            plan_id,
+            decisions,
+            project_description,
+            tool_context,
+        )
+
+    async def _materialize_study_plan(
+        self,
+        context: AgentContext,
+        plan_id: str,
+        decisions: list[str] | None,
+        project_description: str,
+        tool_context: ToolContext,
+    ) -> dict[str, Any]:
+        if self._plans is None:
+            raise ValidationProblem("Study plan storage is not configured.")
+        chosen = frozenset(decisions) if decisions else DEFAULT_MATERIALIZE_DECISIONS
+        created = await self._plans.materialize(
+            context.principal,
+            project_id=context.project_id,
+            plan_id=plan_id,
+            decisions=chosen,  # type: ignore[arg-type]
+        )
+
+        # "…and update the project description", the approval dialog's checkbox. Applied
+        # from the confirmation's own payload, not from whether `project_description` is
+        # merely non-empty — the model always supplies a candidate (docstring), and only
+        # the learner's answer decides whether it lands.
+        description_updated = False
+        if project_description.strip() and _answer_asks_to_update_description(tool_context):
+            await self._projects.patch(
+                context.principal, context.project_id, description=project_description.strip()
+            )
+            description_updated = True
+
+        await self._announce(context, [task.id for task in created])
+        return {
+            "ok": True,
+            "createdCount": len(created),
+            "tasks": [task_view(task) for task in created],
+            **({"projectDescriptionUpdated": True} if description_updated else {}),
+        }
+
     # --- learner profile & memory tools (M7) -------------------------------------------
 
     async def update_learner_profile(
@@ -1205,7 +1650,7 @@ class DomainTools:
         thinking_style: str | None = None,
         strengths: list[str] | None = None,
         gaps: list[str] | None = None,
-        technologies: list[dict[str, Any] | TechnologyBelief] | None = None,
+        skills: list[dict[str, Any] | SkillBelief] | None = None,
         pacing: str | None = None,
         feedback_note: str | None = None,
         *,
@@ -1214,14 +1659,21 @@ class DomainTools:
         """Update beliefs about how this learner thinks and works.
 
         Call this when you observe something significant about their learning style,
-        strengths, knowledge gaps, technology experience, or pacing. Rate-limited to 1
-        update per turn. Every update is audited and visible to the learner in Settings.
+        strengths, knowledge gaps, skills, or pacing. Rate-limited to 1 update per turn.
+        Every update is audited and visible to the learner in Settings.
 
         Args:
             thinking_style: Description of their thinking style (≤ 500 chars).
             strengths: Observed strengths or mastered concepts.
             gaps: Knowledge gaps or areas needing reinforcement.
-            technologies: List of technology beliefs, each with name, level, evidence.
+            skills: List of skill beliefs, each with `name`, `area` (the subject or
+                technology this skill was observed in — e.g. "Python", "linear algebra",
+                "prose writing"; use "general" only for a skill that is not tied to one
+                subject), `level`, and `evidence`. A skill observed in one subject says
+                nothing about the learner's standing in another — always set `area` to
+                the subject you actually observed it in, never the project's overall
+                topic, so a belief formed while studying one language or field is not
+                misapplied when the learner later studies a different one.
             pacing: Learner's preferred pacing (e.g. "Fast-paced, prefers dense material").
             feedback_note: Specific feedback note or observation from this session.
         """
@@ -1231,7 +1683,7 @@ class DomainTools:
             thinking_style,
             strengths,
             gaps,
-            technologies,
+            skills,
             pacing,
             feedback_note,
             claim_profile_slot=tool_context,
@@ -1243,7 +1695,7 @@ class DomainTools:
         thinking_style: str | None = None,
         strengths: list[str] | None = None,
         gaps: list[str] | None = None,
-        technologies: list[dict[str, Any] | TechnologyBelief] | None = None,
+        skills: list[dict[str, Any] | SkillBelief] | None = None,
         pacing: str | None = None,
         feedback_note: str | None = None,
     ) -> dict[str, Any]:
@@ -1255,7 +1707,7 @@ class DomainTools:
             thinking_style=thinking_style,
             strengths=strengths,
             gaps=gaps,
-            technologies=technologies,
+            skills=skills,
             pacing=pacing,
             feedback_note=feedback_note,
             session_id=context.session_id,
@@ -1376,6 +1828,12 @@ class DomainTools:
             FunctionTool(self.ask_learner),
             FunctionTool(self.update_project_prefs),
             FunctionTool(self.update_project_plan, require_confirmation=True),
+            FunctionTool(self.write_roadmap_brief),
+            FunctionTool(self.read_roadmap_brief),
+            FunctionTool(self.propose_roadmap_brief, require_confirmation=True),
+            FunctionTool(self.view_study_plan),
+            FunctionTool(self.revise_study_plan),
+            FunctionTool(self.materialize_study_plan, require_confirmation=True),
             FunctionTool(self.update_learner_profile),
             FunctionTool(self.remember),
             FunctionTool(load_memory),
@@ -1500,6 +1958,47 @@ def _answer_asks_to_stop_confirming(tool_context: ToolContext) -> bool:
     answer = getattr(tool_context, "tool_confirmation", None)
     payload = getattr(answer, "payload", None)
     return isinstance(payload, dict) and payload.get(STOP_CONFIRMING_KEY) is True
+
+
+#: The flag the study-plan approval dialog's "Also update project description" checkbox
+#: sets in its answer payload — mirrors `STOP_CONFIRMING_KEY`'s restated-constant
+#: arrangement with `apps/web/src/components/session/ConfirmationPrompt.tsx`.
+UPDATE_PROJECT_DESCRIPTION_KEY = "updateProjectDescription"
+
+
+def _answer_asks_to_update_description(tool_context: ToolContext) -> bool:
+    """Whether the learner left the study-plan approval's description checkbox checked."""
+    answer = getattr(tool_context, "tool_confirmation", None)
+    payload = getattr(answer, "payload", None)
+    return isinstance(payload, dict) and payload.get(UPDATE_PROJECT_DESCRIPTION_KEY) is True
+
+
+#: The key the roadmap brief approval dialog's own attachment checklist sets in its
+#: answer payload — mirrors `STOP_CONFIRMING_KEY`'s restated-constant arrangement with
+#: `apps/web/src/components/session/ConfirmationPrompt.tsx`.
+CONFIRMED_ATTACHMENTS_KEY = "confirmedAttachments"
+
+
+def _confirmed_attachments(tool_context: ToolContext) -> list[str] | None:
+    """The learner's own final selection from the approval dialog's attachment
+    checklist, if the dialog that answered this confirmation offered one.
+
+    `None` — not `[]` — when the key is absent, which is what tells
+    `_propose_roadmap_brief` to fall back to the model's own `attachments` argument
+    rather than to "nothing": a caller with no checklist to offer (a direct tool call in
+    a test, say) must not have its argument silently discarded, but the dialog's own
+    checklist — once it renders at all — is authoritative over whatever the model most
+    recently guessed, deterministically and without another model turn to reconcile the
+    two, which is the reason this checklist exists.
+    """
+    answer = getattr(tool_context, "tool_confirmation", None)
+    payload = getattr(answer, "payload", None)
+    if not isinstance(payload, dict) or CONFIRMED_ATTACHMENTS_KEY not in payload:
+        return None
+    raw = payload.get(CONFIRMED_ATTACHMENTS_KEY)
+    if not isinstance(raw, list):
+        return None
+    return [str(name) for name in raw]
 
 
 def _confirm_completions(tool_context: ToolContext, **_: Any) -> bool:

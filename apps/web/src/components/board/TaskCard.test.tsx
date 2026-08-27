@@ -15,7 +15,7 @@ import { transitionsFor } from '@/components/board/task-state';
 import { TaskCard } from '@/components/board/TaskCard';
 import type { TaskWithSubtasks } from '@/lib/schemas';
 import { DEFAULT_FILTERS } from '@/stores/boardUi';
-import { makeParent, makeTask } from '@/test/factories';
+import { makeParent, makeTask, makeTaskItem } from '@/test/factories';
 
 function renderCard(
   task: TaskWithSubtasks,
@@ -135,6 +135,27 @@ describe('card chrome', () => {
     expect(screen.queryByTestId('research-queued')).toBeNull();
   });
 
+  it('shows a kind-icon summary beside a leaf task’s item progress, without repeating the duration', () => {
+    const parent = makeParent(
+      {
+        estimatedMinutes: 45,
+        items: [
+          makeTaskItem({ kind: 'article' }),
+          makeTaskItem({ kind: 'article' }),
+          makeTaskItem({ kind: 'video' }),
+        ],
+      },
+      [],
+    );
+    renderCard(parent);
+
+    expect(screen.getByTestId('item-progress')).toBeInTheDocument();
+    const strip = screen.getByTestId('item-kind-strip');
+    expect(within(strip).getByTestId('item-kind-summary')).toHaveTextContent('2x');
+    // `estimate` above already shows the task's duration — the strip is icons only.
+    expect(strip).not.toHaveTextContent('45 min');
+  });
+
   it('offers no queue control on the board', () => {
     /*
       A badge, not a button. Queueing and cancelling both live in the workspace with the
@@ -208,9 +229,9 @@ describe('row actions offer only legal transitions', () => {
 });
 
 describe('board filter defaults', () => {
-  it('hides completed and discarded by default, and shows postponed', () => {
+  it('hides discarded by default, and shows completed and postponed', () => {
     expect(DEFAULT_FILTERS).toEqual({
-      hideCompleted: true,
+      hideCompleted: false,
       hideDiscarded: true,
       hidePostponed: false,
     });

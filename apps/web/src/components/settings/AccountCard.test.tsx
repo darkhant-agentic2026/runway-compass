@@ -27,7 +27,7 @@ function makeMe(overrides: Partial<Me> = {}): Me {
       thinkingStyle: '',
       strengths: [],
       gaps: [],
-      technologies: [],
+      skills: [],
       pacing: '',
       feedbackNotes: [],
       updatedAt: null,

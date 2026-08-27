@@ -42,10 +42,25 @@ export type Verbosity = z.infer<typeof verbositySchema>;
 export const researchDepthSchema = z.enum(['light', 'standard', 'deep']);
 export type ResearchDepth = z.infer<typeof researchDepthSchema>;
 
+// Moved above `taskItemSchema`, which now reuses it: `kind` was dropped when a report/
+// proposed item was promoted into a checklist item, until this UI rework threaded it
+// through end to end (`apps/api/src/coach/services/models.py`'s `TaskItem.kind`) so a
+// checklist row can show the same kind chip its source item did.
+export const reportItemKindSchema = z.enum([
+  'article',
+  'video',
+  'exercise',
+  'doc',
+  'code_scaffold',
+]);
+export type ReportItemKind = z.infer<typeof reportItemKindSchema>;
+
 export const taskItemSchema = z.object({
   itemId: z.string(),
   shortDescription: z.string(),
   details: z.string().default(''),
+  //: `null` for a hand-added item, and for any item added before this field existed.
+  kind: reportItemKindSchema.nullable().default(null),
   guided: z.boolean().default(false),
   completed: z.boolean().default(false),
   completedAt: z.string().nullable().default(null),
@@ -111,11 +126,21 @@ export const projectCountsSchema = z.object({
   openMinutes: z.number().int(),
 });
 
+export const roadmapBriefSchema = z.object({
+  subject: z.string().default(''),
+  specificTopics: z.array(z.string()).default([]),
+  timeBudget: z.string().default(''),
+  additionalNotes: z.string().default(''),
+  attachments: z.array(z.string()).default([]),
+  updatedAt: z.string().nullable().default(null),
+});
+export type RoadmapBrief = z.infer<typeof roadmapBriefSchema>;
+
 export const projectSchema = z.object({
   id: z.string(),
   ownerUid: z.string(),
   title: z.string(),
-  goal: z.string().default(''),
+  description: z.string().default(''),
   status: projectStatusSchema,
   prefs: projectPrefsSchema,
   nextUpTaskId: z.string().nullable().default(null),
@@ -126,6 +151,7 @@ export const projectSchema = z.object({
    * before it existed.
    */
   intakeSessionId: z.string().nullable().default(null),
+  roadmapBrief: roadmapBriefSchema.nullable().default(null),
   counts: projectCountsSchema,
   lastAutonomousRunAt: z.string().nullable().default(null),
   createdAt: z.string().nullable().default(null),
@@ -161,8 +187,15 @@ export const learnerProfileSchema = z.object({
   thinkingStyle: z.string().default(''),
   strengths: z.array(z.string()).default([]),
   gaps: z.array(z.string()).default([]),
-  technologies: z
-    .array(z.object({ name: z.string(), level: z.string(), evidence: z.string().default('') }))
+  skills: z
+    .array(
+      z.object({
+        name: z.string(),
+        area: z.string().default('general'),
+        level: z.string(),
+        evidence: z.string().default(''),
+      }),
+    )
     .default([]),
   pacing: z.string().default(''),
   feedbackNotes: z.array(z.string()).default([]),
@@ -238,15 +271,6 @@ export const taskMutationSchema = z.object({
 export type TaskMutation = z.infer<typeof taskMutationSchema>;
 
 // --- research reports ------------------------------------------------------------------
-
-export const reportItemKindSchema = z.enum([
-  'article',
-  'video',
-  'exercise',
-  'doc',
-  'code_scaffold',
-]);
-export type ReportItemKind = z.infer<typeof reportItemKindSchema>;
 
 export const reportItemSchema = z.object({
   itemId: z.string(),
@@ -359,6 +383,69 @@ export const runUndoSchema = z.object({
   run: autonomousRunSchema,
   taskIds: z.array(z.string()).default([]),
 });
+
+// --- study plans -------------------------------------------------------------------------
+// docs/03-agent-design.md#the-taskless-case-task_proposer-and-plan_tailor-replace-reviewer_writer.
+// A roadmap run's final document, read back from `GET /api/runs/{runId}/plan` —
+// `get_run_report`'s sibling for `build_roadmap_workflow`. `proposedItemSchema` mirrors
+// `reportItemSchema` minus `itemId`: a proposed item has none yet, it is only minted once
+// `materialize_study_plan` promotes it onto a real task.
+
+export const proposedItemSchema = z.object({
+  kind: reportItemKindSchema,
+  title: z.string(),
+  url: z.string().nullable().default(null),
+  minutes: z.number().int(),
+  why: z.string().default(''),
+  details: z.string().default(''),
+  source: z.enum(['youtube', 'web', 'generated']).default('web'),
+  guided: z.boolean().nullable().default(null),
+});
+export type ProposedItem = z.infer<typeof proposedItemSchema>;
+
+export const proposedTaskSchema = z.object({
+  slug: z.string(),
+  title: z.string(),
+  description: z.string().default(''),
+  required: z.array(proposedItemSchema).default([]),
+  optional: z.array(proposedItemSchema).default([]),
+  prerequisiteTasks: z.array(z.string()).default([]),
+});
+export type ProposedTask = z.infer<typeof proposedTaskSchema>;
+
+export const planDecisionSchema = z.enum(['include', 'additional', 'exclude', 'reject']);
+export type PlanDecision = z.infer<typeof planDecisionSchema>;
+
+export const planTaskEntrySchema = z.object({
+  taskSlug: z.string(),
+  after: z.string().nullable().default(null),
+  prerequisiteTasks: z.array(z.string()).default([]),
+  relevance: z.number().int().min(0).max(4).default(0),
+  decision: planDecisionSchema,
+  why: z.string().default(''),
+});
+export type PlanTaskEntry = z.infer<typeof planTaskEntrySchema>;
+
+export const studyPlanSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  ownerUid: z.string(),
+  runId: z.string().nullable().default(null),
+  sessionId: z.string().nullable().default(null),
+  title: z.string().default(''),
+  shortDescription: z.string().default(''),
+  longDescription: z.string().default(''),
+  memo: z.string().default(''),
+  proposedTasks: z.array(proposedTaskSchema).default([]),
+  plan: z.array(planTaskEntrySchema).default([]),
+  materializedAt: z.string().nullable().default(null),
+  materializedTaskIds: z.array(z.string()).default([]),
+  createdAt: z.string().nullable().default(null),
+  updatedAt: z.string().nullable().default(null),
+});
+export type StudyPlan = z.infer<typeof studyPlanSchema>;
+
+export const studyPlanResponseSchema = z.object({ plan: studyPlanSchema });
 
 // --- sessions & turns ------------------------------------------------------------------
 

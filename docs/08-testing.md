@@ -173,7 +173,7 @@ Stack: Vitest, React Testing Library, MSW for HTTP, a fake WebSocket server for 
   running turn, presence heartbeat start/stop on visibility change.
 - **Optimistic mutations** — complete/postpone/reorder patch the cache immediately and roll
   back on a 500; the optimistic fractional index equals the server's.
-- **Board filters and rollups** — hide-completed default on; parent card renders
+- **Board filters and rollups** — hide-completed default off; parent card renders
   "4 subtasks · 2 h 30 m" from `rollup`.
 - **Markdown rendering** — a GFM table becomes a `<table>`, `$…$` becomes KaTeX output, a
   fenced block keeps its code whether or not the highlighter ever loads, and raw HTML in a

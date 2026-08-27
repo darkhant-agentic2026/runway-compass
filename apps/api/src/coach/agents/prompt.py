@@ -3,9 +3,9 @@
 docs/03-agent-design.md#project_coach-and-task_teacher:
 
 > Dynamic instruction is assembled per-invocation by a `before_agent_callback` that
-> injects: project goal, effective prefs, current task + its subtasks, last N task
-> outcomes, and the `learnerProfile` summary. Injected as state, not as a giant literal
-> prompt, so ADK's `{state_key}` templating keeps the prompt cache-friendly.
+> injects: effective prefs, current task + its subtasks, last N task outcomes, and the
+> `learnerProfile` summary. Injected as state, not as a giant literal prompt, so ADK's
+> `{state_key}` templating keeps the prompt cache-friendly.
 
 Two consequences of "as state" that are easy to get wrong:
 
@@ -45,7 +45,6 @@ from coach.core.principal import Principal
 from coach.services.models import (
     EffectivePrefs,
     LearnerProfile,
-    Project,
     Task,
     TaskState,
     TaskWithSubtasks,
@@ -60,7 +59,6 @@ logger = logging.getLogger(__name__)
 #: State keys the instruction template reads. Kept beside the template that uses them, so
 #: adding a placeholder without writing the key is a visible omission rather than a
 #: `KeyError` on the first turn after a deploy.
-PROJECT_KEY = "temp:coach_project"
 PREFS_KEY = "temp:coach_prefs"
 BOARD_KEY = "temp:coach_board"
 FOCUS_KEY = "temp:coach_focus"
@@ -235,7 +233,7 @@ def render_learner(profile: LearnerProfile) -> str:
     """The `learnerProfile` summary.
 
     Renders the coach's current beliefs about the learner: thinking style, strengths,
-    gaps, technology proficiency, pacing, and recent feedback observations.
+    gaps, skills, pacing, and recent feedback observations.
     """
     lines: list[str] = []
     if profile.thinking_style:
@@ -244,9 +242,13 @@ def render_learner(profile: LearnerProfile) -> str:
         lines.append(f"- Strengths: {', '.join(profile.strengths)}")
     if profile.gaps:
         lines.append(f"- Gaps: {', '.join(profile.gaps)}")
-    if profile.technologies:
-        known = ", ".join(f"{t.name} ({t.level})" for t in profile.technologies)
-        lines.append(f"- Technologies: {known}")
+    if profile.skills:
+        # Each skill carries the subject it was observed in — a belief formed in one
+        # subject (e.g. "familiar with simple types" from a Python project) says nothing
+        # about the learner's standing in another, so the area is always shown alongside
+        # the skill rather than left for a later reader to assume it generalizes.
+        known = ", ".join(f"{s.name} ({s.area}, {s.level})" for s in profile.skills)
+        lines.append(f"- Skills: {known}")
     if profile.pacing:
         lines.append(f"- Pacing: {profile.pacing}")
     if profile.feedback_notes:
@@ -279,11 +281,6 @@ def render_budget(task: TaskWithSubtasks | None, prefs: EffectivePrefs) -> str:
     )
 
 
-def render_project(project: Project) -> str:
-    goal = project.goal.strip() or "(not established yet — this is what intake is for)"
-    return f"Project: {project.title}\nGoal: {goal}"
-
-
 class PromptBuilder:
     """Assembles the invocation's state. Constructed once, called per invocation."""
 
@@ -313,7 +310,6 @@ class PromptBuilder:
         session_id = callback_context.session.id
 
         defaults = {
-            PROJECT_KEY: "No project is linked to this conversation.",
             PREFS_KEY: "",
             BOARD_KEY: "",
             FOCUS_KEY: "",
@@ -346,7 +342,10 @@ class PromptBuilder:
             linkage = await self._sessions.require_owned(principal, session_id)
             if linkage.project_id is None:
                 return None
-            project = await self._projects.require_owned(principal, linkage.project_id)
+            # `effective_prefs`/`list_board` each call `ProjectService.require_owned`
+            # internally, so ownership is verified without a separate call here — this
+            # callback has had no use for the `Project` document itself since `PROJECT_KEY`
+            # was removed.
             prefs = await self._projects.effective_prefs(principal, linkage.project_id)
             board = await self._tasks.list_board(
                 principal,
@@ -369,7 +368,6 @@ class PromptBuilder:
         )
         state.update(
             {
-                PROJECT_KEY: render_project(project),
                 PREFS_KEY: render_prefs(prefs),
                 BOARD_KEY: render_board(board),
                 FOCUS_KEY: render_focus(focus),
@@ -397,7 +395,6 @@ __all__ = [
     "LEARNER_KEY",
     "OUTCOMES_KEY",
     "PREFS_KEY",
-    "PROJECT_KEY",
     "RECENT_OUTCOMES",
     "PromptBuilder",
     "format_minutes",
@@ -408,6 +405,5 @@ __all__ = [
     "render_learner",
     "render_outcomes",
     "render_prefs",
-    "render_project",
     "render_task",
 ]

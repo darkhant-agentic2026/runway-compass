@@ -22,7 +22,7 @@ export interface BoardFilters {
 }
 
 export const DEFAULT_FILTERS: BoardFilters = {
-  hideCompleted: true,
+  hideCompleted: false,
   hideDiscarded: true,
   hidePostponed: false,
 };

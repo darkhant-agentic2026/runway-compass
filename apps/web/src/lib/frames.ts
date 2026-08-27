@@ -29,6 +29,9 @@ export const deltaFrame = z.object({
   turnId: z.string(),
   seq: z.number().int(),
   text: z.string(),
+  // ADK's `Event.author` — see `stores/stream.ts`'s module docstring for why the live
+  // buffer needs it: one turn can carry several agents' worth of content.
+  author: z.string().default(''),
 });
 
 export const toolCallFrame = z.object({
@@ -37,6 +40,7 @@ export const toolCallFrame = z.object({
   seq: z.number().int(),
   name: z.string(),
   argsPreview: z.record(z.string(), z.unknown()).default({}),
+  author: z.string().default(''),
 });
 
 export const toolResultFrame = z.object({

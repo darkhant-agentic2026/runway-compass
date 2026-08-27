@@ -80,13 +80,13 @@ export default function ProjectSettingsPage() {
             />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="project-goal">Goal</Label>
+            <Label htmlFor="project-description">Description</Label>
             <Input
-              id="project-goal"
-              defaultValue={project.data?.goal ?? ''}
+              id="project-description"
+              defaultValue={project.data?.description ?? ''}
               onBlur={(event) => {
                 const value = event.target.value.trim();
-                if (value !== project.data?.goal) patch.mutate({ goal: value });
+                if (value !== project.data?.description) patch.mutate({ description: value });
               }}
             />
           </div>

@@ -34,6 +34,12 @@ const LABELS: Record<string, string> = {
   load_memory: 'Remembering earlier sessions',
   update_learner_profile: 'Updating learner profile',
   remember: 'Remembering insight',
+  write_roadmap_brief: 'Writing the roadmap brief',
+  read_roadmap_brief: 'Checking the roadmap brief',
+  propose_roadmap_brief: 'Proposing the roadmap',
+  view_study_plan: 'Looking at the study plan',
+  revise_study_plan: 'Revising the study plan',
+  materialize_study_plan: 'Creating tasks from the study plan',
 };
 
 export function labelForTool(name: string): string {
@@ -139,8 +145,7 @@ const DETAILS: Record<string, Summariser> = {
     if (args.thinking_style || args.thinkingStyle) parts.push('thinking style');
     if (Array.isArray(args.strengths) && args.strengths.length) parts.push('strengths');
     if (Array.isArray(args.gaps) && args.gaps.length) parts.push('gaps');
-    if (Array.isArray(args.technologies) && args.technologies.length)
-      parts.push('technologies');
+    if (Array.isArray(args.skills) && args.skills.length) parts.push('skills');
     return parts.length ? `Updated ${parts.join(', ')}` : 'Profile updated';
   },
   remember: (args) => text(args.text),
@@ -172,5 +177,21 @@ const DETAILS: Record<string, Summariser> = {
     if (chosen.length === 0) return question;
     const note = text(result.note);
     return `${question} — ${chosen.join(', ')}${note ? ` (${note})` : ''}`;
+  },
+  write_roadmap_brief: (args) => text(args.subject),
+  propose_roadmap_brief: (args, result) => {
+    if (result.scheduled === false) return 'Roadmap declined — continuing to refine';
+    return text(args.subject);
+  },
+  revise_study_plan: (_args, result) => {
+    const included = result.includedCount;
+    const total = result.taskCount;
+    if (typeof included !== 'number' || typeof total !== 'number') return '';
+    return `${included} of ${total} tasks kept`;
+  },
+  materialize_study_plan: (_args, result) => {
+    const created = result.createdCount;
+    if (typeof created !== 'number') return '';
+    return `${created} ${created === 1 ? 'task' : 'tasks'} created`;
   },
 };

@@ -24,6 +24,7 @@ from fastapi import Depends, Request
 from coach.adk_firestore import CoachMemoryService, CoachSessionService
 from coach.agents.prompt import PromptBuilder
 from coach.agents.research_tools import ResearchTools
+from coach.agents.research_workflow import ModelThrottle
 from coach.agents.runner import RunnerFactory
 from coach.agents.tools import DomainTools
 from coach.core.config import Settings
@@ -42,6 +43,7 @@ from coach.repositories.projects import ProjectRepository
 from coach.repositories.rate_limits import RateLimitRepository
 from coach.repositories.reports import ReportRepository
 from coach.repositories.runs import RunRepository
+from coach.repositories.study_plans import StudyPlanRepository
 from coach.repositories.tasks import TaskRepository
 from coach.repositories.tickets import TicketRepository
 from coach.repositories.turns import TurnRepository
@@ -57,6 +59,7 @@ from coach.services.research import ResearchService
 from coach.services.runs import RunService
 from coach.services.scheduler import SchedulerService
 from coach.services.sessions import SessionService
+from coach.services.study_plans import StudyPlanService
 from coach.services.tasks import TaskService
 from coach.services.turns import TurnService
 from coach.services.uploads import UploadService
@@ -98,6 +101,7 @@ class Container:
         self.upload_repository = UploadRepository(self.db)
         self.presence_repository = PresenceRepository(self.db)
         self.report_repository = ReportRepository(self.db)
+        self.study_plan_repository = StudyPlanRepository(self.db)
         self.run_repository = RunRepository(self.db)
         self.usage_repository = UsageRepository(self.db)
         self.plan_repository = PlanRepository(self.db)
@@ -180,21 +184,40 @@ class Container:
         # Held on the container as well as handed to the factory: the agent-tool tests
         # call them directly, which is how a guard gets a test that does not depend on
         # persuading a model to trip it.
+        self.reports = ReportService(self.report_repository, self.tasks, self.projects)
+        self.study_plans = StudyPlanService(
+            self.study_plan_repository, self.tasks, self.projects
+        )
         self.domain_tools = DomainTools(
             self.tasks,
             self.projects,
             self.board_updates,
             users=self.users,
             memory=self.memory_service,
+            study_plans=self.study_plans,
+            sessions=self.sessions,
+            # A closure over `self`, not `self.research` itself: `ResearchService` is
+            # built later in this constructor, after the queue/executor/turns chain that
+            # `DomainTools` itself feeds into (`agents/tools.py`'s own comment on
+            # `research_provider` has the full cycle). Only called from inside a tool
+            # invocation, long after `__init__` has finished, so `self.research` is always
+            # set by the time this actually runs.
+            research_provider=lambda: self.research,
         )
-        self.reports = ReportService(self.report_repository, self.tasks, self.projects)
         # A plain HTTP client and an API key, not a Google client with ADC: the YouTube
         # Data API is a different credential from everything else in this process, and
         # borrowing a client built for Firestore or Storage is the trap
         # docs/09-roadmap.md tabulates as "an OAuth scope failure reads exactly like a
         # missing IAM role".
         self.youtube = YouTubeClient(settings.youtube_api_key)
-        self.research_tools = ResearchTools(self.reports, self.youtube, self.board_updates)
+        self.research_tools = ResearchTools(
+            self.reports, self.youtube, self.board_updates, study_plans=self.study_plans
+        )
+        # One throttle for the process, shared by `RunnerFactory` (which attaches it to
+        # every research_workflow node's before/after/error model callbacks) and by
+        # `RunExecutor`/`ResearchService` (which call `release_run` once a research step
+        # ends) — docs/03-agent-design.md, "LLM throttling" section.
+        self.research_throttle = ModelThrottle()
         self.prompt_builder = PromptBuilder(
             self.sessions, self.projects, self.tasks, self.users
         )
@@ -205,6 +228,7 @@ class Container:
             memory_service=self.memory_service,
             tools=self.domain_tools,
             research_tools=self.research_tools,
+            research_throttle=self.research_throttle,
             prompt=self.prompt_builder,
         )
         self.turns = TurnService(
@@ -216,13 +240,7 @@ class Container:
             self.registry,
             self.broker,
             self.quotas,
-            instance_id=self.instance_id,
-        )
-        self.research = ResearchService(
-            self.run_repository,
             self.tasks,
-            self.sessions,
-            self.turns,
             instance_id=self.instance_id,
         )
 
@@ -241,9 +259,22 @@ class Container:
             turns=self.turns,
             presence=self.presence_repository,
             board_updates=self.board_updates,
+            research_throttle=self.research_throttle,
+            study_plans=self.study_plans,
             instance_id=self.instance_id,
         )
         self.queue = build_job_queue(settings, self._execute_run)
+        # Since M9: built after `self.queue` rather than before `self.turns`, because a
+        # manual research or roadmap run no longer starts its own turn here — it creates
+        # the ledger row and hands it to the same queue a scheduled run goes through
+        # (`services/research.py`'s module docstring explains why).
+        self.research = ResearchService(
+            self.run_repository,
+            self.tasks,
+            self.sessions,
+            self.queue,
+            instance_id=self.instance_id,
+        )
         self.runs = RunService(self.run_repository, self.tasks, self.projects)
         self.scheduler = SchedulerService(
             tasks=self.tasks,
@@ -301,6 +332,10 @@ def get_report_service(container: Container = Depends(get_container)) -> ReportS
     return container.reports
 
 
+def get_study_plan_service(container: Container = Depends(get_container)) -> StudyPlanService:
+    return container.study_plans
+
+
 def get_research_service(container: Container = Depends(get_container)) -> ResearchService:
     return container.research
 
@@ -324,6 +359,7 @@ Sessions = Annotated[SessionService, Depends(get_session_service)]
 Turns = Annotated[TurnService, Depends(get_turn_service)]
 Uploads = Annotated[UploadService, Depends(get_upload_service)]
 Reports = Annotated[ReportService, Depends(get_report_service)]
+StudyPlans = Annotated[StudyPlanService, Depends(get_study_plan_service)]
 Research = Annotated[ResearchService, Depends(get_research_service)]
 Runs = Annotated[RunService, Depends(get_run_service)]
 Coupons = Annotated[CouponService, Depends(get_coupon_service)]

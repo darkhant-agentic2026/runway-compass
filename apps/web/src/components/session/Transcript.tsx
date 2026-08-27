@@ -10,6 +10,13 @@
  * once, on `turn_complete` (docs/06-frontend.md). Rendering the streaming bubble only
  * while its turn is not yet in the finalized set is what keeps a completed answer from
  * appearing twice for the moment between the frame and the refetch.
+ *
+ * **The live buffer is one or more segments, not one bubble** (`stores/stream.ts`'s module
+ * docstring): a research/roadmap turn is several named agents writing into the same turn,
+ * and each gets its own card here, the same way each becomes its own stored event once the
+ * turn settles. `MessageBlock` is the one place that renders "an author line, its tool
+ * chips, its bubble" and is used for both a settled message and a still-streaming segment,
+ * so the two cannot drift into looking different.
  */
 
 import { useEffect, useRef } from 'react';
@@ -19,9 +26,9 @@ import { AttachmentPreview } from '@/components/session/AttachmentPreview';
 import { CopyMessage } from '@/components/session/CopyMessage';
 import { ToolChips, type ChipView } from '@/components/session/ToolChips';
 import { describeTool } from '@/lib/tool-labels';
-import type { TranscriptMessage } from '@/lib/transcript';
+import type { TranscriptAttachment, TranscriptMessage } from '@/lib/transcript';
 import { cn } from '@/lib/utils';
-import type { StreamState, ToolChip } from '@/stores/stream';
+import type { StreamSegment, StreamState, ToolChip } from '@/stores/stream';
 
 /** A settled message's tools. Stored chips are always closed — the turn is over. */
 function settledChips(message: TranscriptMessage): ChipView[] {
@@ -47,11 +54,184 @@ function liveChips(tools: ToolChip[]): ChipView[] {
   }));
 }
 
+/**
+ * "An author line, its tool chips, its bubble" — one settled message or one still-streaming
+ * segment, rendered identically either way.
+ *
+ * `streaming` is only true for the live segment still receiving deltas — every earlier
+ * segment of the same turn (and every settled message) renders its text as plain markdown,
+ * not the streaming variant `Markdown` reserves for text still arriving.
+ */
+function MessageBlock({
+  id,
+  eventId,
+  role,
+  author,
+  text,
+  chips,
+  attachments = [],
+  sessionId,
+  seq,
+  showEventIds = false,
+  streaming = false,
+  placeholder = null,
+}: {
+  id: string;
+  /**
+   * The stored ADK event id the debug toggle shows, or `null` for a live segment — it has
+   * none yet, so the toggle shows the author alone rather than a synthetic stand-in.
+   */
+  eventId: string | null;
+  role: 'user' | 'model';
+  author: string;
+  text: string;
+  chips: ChipView[];
+  attachments?: TranscriptAttachment[];
+  sessionId: string;
+  seq: number;
+  showEventIds?: boolean;
+  streaming?: boolean;
+  /** Shown in place of a bubble when there is no text yet — "Your coach is thinking…". */
+  placeholder?: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-2">
+      {/*
+        The author line. Shown for a model message whenever there is more than one
+        possible author to distinguish — which for an ordinary coach conversation is
+        never true, but for a research or roadmap transcript is the whole point: several
+        named agents (`research_planner`, `topic_researcher`, `task_proposer`,
+        `plan_tailor`, …) write into the *same* session, and nothing else on screen
+        says which one produced a given message. Not shown for the learner's own
+        messages — `author` there is always literally `"user"`, which the bubble's own
+        alignment already says.
+      */}
+      {role === 'model' || showEventIds ? (
+        <div
+          className={cn(
+            'flex text-xs text-muted-foreground',
+            role === 'user' ? 'justify-end' : 'justify-start',
+          )}
+          data-testid="message-meta"
+        >
+          <span>
+            {role === 'model' ? author : null}
+            {role === 'model' && showEventIds && eventId ? ' · ' : null}
+            {showEventIds && eventId ? <code>{eventId}</code> : null}
+          </span>
+        </div>
+      ) : null}
+      {/*
+        Above the bubble, matching the live stream's order: the coach says what it is
+        about to do, does it, then reports. Reading the settled transcript top to
+        bottom should feel like having watched it happen.
+      */}
+      <ToolChips tools={chips} />
+      {text || attachments.length > 0 ? (
+        <Bubble role={role}>
+          {text ? (
+            streaming ? (
+              // docs/06-frontend.md: streaming text uses `aria-live="polite"` on a
+              // debounced *container*, not per token — announcing every delta would be
+              // screen-reader spam. The container is the whole bubble, so a reader
+              // announces settled text rather than each arriving fragment.
+              <div aria-live="polite" aria-atomic="false">
+                <Markdown text={text} streaming />
+              </div>
+            ) : (
+              <MessageText role={role} text={text} />
+            )
+          ) : null}
+          {attachments.length > 0 ? (
+            <ul
+              className={cn('flex flex-wrap items-end gap-2', text && 'mt-2')}
+              data-testid="message-attachments"
+            >
+              {attachments.map((attachment, index) => (
+                <AttachmentPreview
+                  key={`${id}-${index}`}
+                  attachment={attachment}
+                  sessionId={sessionId}
+                  // A message still in flight has no stored event to fetch bytes
+                  // from, so `seq: 0` tells the preview to stay a chip until the
+                  // refetch replaces it.
+                  seq={id.startsWith('pending:') ? 0 : seq}
+                  index={index}
+                  tone={role}
+                />
+              ))}
+            </ul>
+          ) : null}
+        </Bubble>
+      ) : (
+        placeholder
+      )}
+      {/*
+        Under the bubble and aligned with it, so the control sits with the message it
+        copies rather than in a corner of the row. Only when there is text: copying an
+        attachment-only message would put an empty string on the clipboard.
+      */}
+      {text ? (
+        <div className={cn('flex', role === 'user' ? 'justify-end' : 'justify-start')}>
+          <CopyMessage text={text} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** One still-streaming segment of the live turn. */
+function LiveSegment({
+  segment,
+  index,
+  turnId,
+  status,
+  sessionId,
+  showEventIds,
+  isLast,
+}: {
+  segment: StreamSegment;
+  index: number;
+  turnId: string;
+  status: StreamState['status'];
+  sessionId: string;
+  showEventIds: boolean;
+  isLast: boolean;
+}) {
+  // Only the trailing segment of a still-running turn is "streaming" — every earlier
+  // segment in this turn already has its final text, the same as a settled message does.
+  const streaming = isLast && status === 'running';
+  return (
+    <MessageBlock
+      id={`${turnId}:${index}`}
+      eventId={null}
+      role="model"
+      author={segment.author}
+      text={segment.text}
+      chips={liveChips(segment.tools)}
+      sessionId={sessionId}
+      seq={0}
+      showEventIds={showEventIds}
+      streaming={streaming}
+      placeholder={
+        streaming ? (
+          <Bubble role="model">
+            <p className="text-muted-foreground" data-testid="still-working">
+              Your coach is thinking…
+            </p>
+          </Bubble>
+        ) : null
+      }
+    />
+  );
+}
+
 export function Transcript({
   messages,
   live,
   pending,
   sessionId,
+  showEventIds = false,
 }: {
   messages: TranscriptMessage[];
   /** The turn currently streaming, if any. */
@@ -59,8 +239,17 @@ export function Transcript({
   pending: boolean;
   /** Needed to fetch an attachment's bytes for a preview. */
   sessionId: string;
+  /**
+   * Debugging (`stores/debugUi.ts`): shows each stored message's raw ADK event id next to
+   * its author. Off by default — a normal coach conversation has one author for the whole
+   * transcript and nothing to compare; it earns its place once a session holds several
+   * named agents' events, which is a research or roadmap run's transcript.
+   */
+  showEventIds?: boolean;
 }) {
   const viewport = useRef<HTMLDivElement>(null);
+  const liveTextLength =
+    live?.segments.reduce((total, segment) => total + segment.text.length, 0) ?? 0;
 
   // Scroll *this* container, not `bottom.scrollIntoView()`.
   //
@@ -75,7 +264,7 @@ export function Transcript({
   useEffect(() => {
     const element = viewport.current;
     if (element) element.scrollTop = element.scrollHeight;
-  }, [messages.length, live?.text]);
+  }, [messages.length, liveTextLength]);
 
   if (pending && messages.length === 0) {
     return <p className="p-4 text-muted-foreground">Loading the conversation…</p>;
@@ -96,68 +285,36 @@ export function Transcript({
       ) : null}
 
       {messages.map((message) => (
-        <div key={message.id} className="space-y-2">
-          {/*
-            Above the bubble, matching the live stream's order: the coach says what it is
-            about to do, does it, then reports. Reading the settled transcript top to
-            bottom should feel like having watched it happen.
-          */}
-          <ToolChips tools={settledChips(message)} />
-          {message.text || message.attachments.length > 0 ? (
-            <Bubble role={message.role}>
-              {message.text ? <MessageText role={message.role} text={message.text} /> : null}
-              {message.attachments.length > 0 ? (
-                <ul
-                  className={cn('flex flex-wrap items-end gap-2', message.text && 'mt-2')}
-                  data-testid="message-attachments"
-                >
-                  {message.attachments.map((attachment, index) => (
-                    <AttachmentPreview
-                      key={`${message.id}-${index}`}
-                      attachment={attachment}
-                      sessionId={sessionId}
-                      // A message still in flight has no stored event to fetch bytes
-                      // from, so `seq: 0` tells the preview to stay a chip until the
-                      // refetch replaces it.
-                      seq={message.id.startsWith('pending:') ? 0 : message.seq}
-                      index={index}
-                      tone={message.role}
-                    />
-                  ))}
-                </ul>
-              ) : null}
-            </Bubble>
-          ) : null}
-          {/*
-            Under the bubble and aligned with it, so the control sits with the message it
-            copies rather than in a corner of the row. Only when there is text: copying an
-            attachment-only message would put an empty string on the clipboard.
-          */}
-          {message.text ? (
-            <div
-              className={cn('flex', message.role === 'user' ? 'justify-end' : 'justify-start')}
-            >
-              <CopyMessage text={message.text} />
-            </div>
-          ) : null}
-        </div>
+        <MessageBlock
+          key={message.id}
+          id={message.id}
+          eventId={message.id}
+          role={message.role}
+          author={message.author}
+          text={message.text}
+          chips={settledChips(message)}
+          attachments={message.attachments}
+          sessionId={sessionId}
+          seq={message.seq}
+          showEventIds={showEventIds}
+        />
       ))}
 
       {live ? (
-        <div className="space-y-2" data-testid="live-turn">
-          <ToolChips tools={liveChips(live.tools)} />
-          {live.text ? (
-            <Bubble role="model">
-              {/*
-                docs/06-frontend.md: streaming text uses `aria-live="polite"` on a
-                debounced *container*, not per token — announcing every delta would be
-                screen-reader spam. The container is the whole bubble, so a reader
-                announces settled text rather than each arriving fragment.
-              */}
-              <div aria-live="polite" aria-atomic="false">
-                <Markdown text={live.text} streaming={live.status === 'running'} />
-              </div>
-            </Bubble>
+        <div className="space-y-4" data-testid="live-turn">
+          {live.segments.length > 0 ? (
+            live.segments.map((segment, index) => (
+              <LiveSegment
+                key={`${live.turnId}:${index}`}
+                segment={segment}
+                index={index}
+                turnId={live.turnId}
+                status={live.status}
+                sessionId={sessionId}
+                showEventIds={showEventIds}
+                isLast={index === live.segments.length - 1}
+              />
+            ))
           ) : live.status === 'running' ? (
             <Bubble role="model">
               <p className="text-muted-foreground" data-testid="still-working">

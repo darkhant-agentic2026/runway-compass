@@ -26,15 +26,23 @@ it, and where it sits in the queue.
 | Position in the tick's queue | After every requested run, `lastAutonomousRunAt ASC` | **First**, `researchRequestedAt ASC` |
 
 A requested run is not a *manual* run. `POST /api/sessions/{sid}/research` (`trigger:
-"manual"`, M4) executes inline, in the request, with a `turnId` the caller watches stream.
+"manual"`, M4) is the learner pressing a button and watching the run's own research view.
 A requested run is queued and headless: the learner marks the task and leaves, and the next
-tick picks it up. Both take the same lease, so the two cannot collide.
+tick picks it up, without anyone watching. Both take the same lease, so the two cannot
+collide.
 
-**This is the direction of travel, not a side door.** The headless scheme is intended to
-become *the* way research runs, with the inline button retired, once the autonomous agent
-has been shown to be robust unattended. That is deliberately postponed until the core M5
-functionality is in place and has run for a while; until then both paths ship, the inline
-one remains the primary action, and the queued one is the thing being proven.
+**M4–M8: this was the direction of travel, not a side door.** `POST /api/sessions/{sid}/
+research` executed inline — a detached `asyncio.Task` in the process that accepted the
+request, streamed to a `turnId` the caller watched directly — while the headless,
+tick-scheduled scheme was proven out on auto-scheduled and requested work. **Since M9, both
+`trigger: "manual"` and `trigger: "requested"` are queued the same way**: a manual run's
+`ResearchService` creates the ledger row and hands it straight to the same
+`JobQueue`/`RunExecutor` a scheduled run goes through, rather than running its own turn in
+the request. What still tells the two apart is *when* the queue picks the run up — a manual
+run is enqueued directly, at accept time, and typically starts in about as long as a Cloud
+Tasks dispatch takes; a requested run only becomes a run at the next `/internal/tick`, up
+to 15 minutes later — not whether either one runs inline. The button the learner presses is
+unchanged; what happens after the 202 is not.
 
 ## Trigger chain
 
@@ -137,7 +145,7 @@ collide" true rather than hopeful.
 {
   "ownerUid": "…", "projectId": "…", "taskId": "…",
   "trigger": "scheduled" | "requested" | "manual",
-  "mode": "queued" | "inline",
+  "mode": "queued",                     // "inline" is a pre-M9 value only; nothing writes it anymore
   "status": "pending" | "running" | "complete" | "failed" | "skipped_owner_present" | "cancelled",
   "attempts": 1, "maxAttempts": 3,
   "leaseExpiresAt": ts, "instanceId": "…",
@@ -151,25 +159,50 @@ collide" true rather than hopeful.
   ],
   "cursor": "research",                 // first non-complete step
   "usage": { "inputTokens": 0, "outputTokens": 0, "toolCalls": 0 },
-  "turnId": "t_…",                      // present when mode == "inline"
+  "turnId": "t_…",                      // absent until the queue actually starts the turn
   "sessionId": "…",                     // + since M8: the research step's own dedicated
                                          //   session, not the task's conversation session
-  "createdAt": ts, "updatedAt": ts, "error": null
+  "pendingText": "…",                   // + M9, manual/roadmap only: the opening message,
+                                         //   set at accept time, read back when the turn starts
+  "createdAt": ts, "updatedAt": ts,
+  "expiresAt": ts,                      // the Firestore TTL field — 60 days out, refreshed
+                                         //   on every write; see docs/02-data-model.md#retention
+  "error": null
 }
 ```
 
 `taskId` is `null` for a run whose research is about the project as a whole rather than
 one task — a manual run only, started from the project coach's conversation
-([04-api-contract.md](04-api-contract.md#post-apisessionssidresearch)). `sessionId` is
-written once, when the `research` step creates its session, the same way `turnId` is
-written once the turn starts; both are absent until then.
+([04-api-contract.md](04-api-contract.md#post-apisessionssidresearch)). `turnId` is written
+once the queue starts the turn; absent until then. **Since M9, `sessionId` for a manual or
+roadmap run is written earlier than that** — `ResearchService` creates the session at
+accept time, before the run is even enqueued, so the 202 body already carries it; for a
+scheduled or requested run, `sessionId` is still written by the `research` step itself, the
+first time the executor actually runs it. **Since M9 the `research` step drives
+`research_workflow` — the whole `research_planner` → `topic_researcher` × 3–5 →
+`reviewer_writer` graph — instead of the single `research_agent` turn it drove before**
+([03-agent-design.md](03-agent-design.md#the-research-pipeline-since-m9)); the ledger's own
+step shape does not change, because `Workflow` has no "run one node and stop" primitive to
+split it against — see
+[03-agent-design.md](03-agent-design.md#workflow-as-a-turn-root-and-retrying-a-crash-mid-fan-out)
+for why the ledger stays a single `research` step rather than one per pipeline node.
 
 ### Execution semantics
 
 - The executor loads the run, resumes at `cursor`, and runs steps in order.
 - **Each step commits its own output to the ledger before the next begins.** A crash
   during `propose_tasks` therefore never repeats `research` — the expensive step — on
-  recovery. This is the concrete meaning of "complete previously interrupted work."
+  recovery. This is the concrete meaning of "complete previously interrupted work." Since
+  M9, a crash *inside* the `research` step (mid-fan-out) is **safe** to retry but not
+  **cheap**: `RunExecutor`'s retry is a new turn into the *same* session but with a fresh
+  ADK `invocation_id`, and `research_workflow`'s own replay only recovers events tagged
+  with the invocation *being resumed* — a different, prior invocation's checkpoints are
+  invisible to it (`workflow/utils/_replay_manager.py`'s `_build_event_index`). So
+  `research_planner` runs again on a retried step, verified by running the retry rather
+  than assumed from the class's docstring
+  (`tests/test_run_executor.py::test_a_crash_mid_fan_out_retries_the_whole_research_step_safely`);
+  what the ledger still guarantees is that the retry produces exactly one report, not two,
+  via `post_research_report`'s existing `report_{runId}` keying below.
 - Steps are individually idempotent:
   - `select_next_task` — pure function of board state; re-running yields the same task
     unless the board changed, and the recorded `output.taskId` is reused on resume. It
@@ -207,7 +240,9 @@ written once the turn starts; both are absent until then.
 > - The report document is keyed `report_{runId}` — the tool reads the run id out of
 >   `temp:coach_run_id`, which the executor passes as `state_delta` — so a retried step
 >   overwrites rather than duplicating. `tests/test_run_executor.py` asserts one report per
->   run across a deliberately re-executed step.
+>   run across a deliberately re-executed step. Since M9 `post_research_report` is called by
+>   `reviewer_writer`, the last node of `research_workflow`'s graph, rather than by
+>   `research_agent` directly — the id derivation is unchanged.
 > - **Resume-at-cursor is the real protection**, and it is stronger than event-level
 >   dedup: a `research` step that completed is never re-entered at all, so the ordinary
 >   crash-and-recover path writes nothing twice.

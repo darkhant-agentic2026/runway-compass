@@ -32,7 +32,7 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.models.base_llm import BaseLlm
 from google.adk.tools.function_tool import FunctionTool
 
-from coach.agents.prompt import BOARD_KEY, FOCUS_KEY, PREFS_KEY, PROJECT_KEY
+from coach.agents.prompt import BOARD_KEY, FOCUS_KEY, PREFS_KEY
 from coach.integrations.model import generation_config
 
 AUTONOMOUS_AGENT_NAME = "propose_tasks_agent"
@@ -65,8 +65,6 @@ How to write:
   like you are waiting.
 - Name what you added and why in the same sentence. "Added *Set up a virtualenv* first —
   the tutorial assumes one" is the whole of it.
-
-{{{PROJECT_KEY}}}
 
 The learner's preferences for this project:
 {{{PREFS_KEY}}}

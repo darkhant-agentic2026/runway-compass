@@ -131,6 +131,10 @@ What to re-verify against the newly installed source, and re-test:
 | `Context` (`ToolContext` == `CallbackContext` == `Context` in 2.7) — `user_id`, `state`, and `before_agent_callback`'s keyword | Every per-invocation fact a tool has arrives through these two fields; `state` write-through to `session.state` is what makes `{temp:…}` templating see them | `agents/context.py`, `agents/prompt.py` |
 | `inject_session_state` — the `{key}` / `{key?}` grammar and its `KeyError` | A placeholder with no writer fails while assembling the request, inside the detached generation task, on the first real turn of a deployed revision | `agents/project_coach.py`, `agents/task_teacher.py`, `tests/test_agent_prompt.py` |
 | `_convert_tool_union_to_tools` / `canonical_tools` built-in-tool wrapping | Decides whether `google_search` may sit beside function tools. If a bump lifts the Gemini restriction, the explicit `search_agent` hop becomes deletable ([M1 spike result](#m1-spike-result-resolved-against-the-installed-270-source)) | `agents/` |
+| **`Workflow`, its graph (`edges`), and `single_turn` mode's `include_contents` default** (since M9) | `research_workflow` is this project's only use of ADK's graph orchestrator. A change to whether a standalone `LlmAgent` node still defaults to `mode="single_turn"` with `include_contents="none"` is the difference between `topic_researcher` staying clean and it silently seeing the planner's turn or a sibling's — with no error, since nothing about extra context is invalid, just wrong (`isolation_scope` does **not** provide this isolation for a `_ParallelWorker` fan-out — see [the research pipeline](#the-research-pipeline-since-m9) for why) | `agents/research_workflow.py` |
+| `node(..., parallel_worker=True, max_parallel_workers=…)` / `_ParallelWorker` | Gives `topic_researcher` its runtime-sized (3–5) fan-out. A signature change here is a construction-time failure, which is the easy case; a *semantic* change to how it orders or bounds concurrent branches is not, and is exactly what the throttle above is not allowed to assume away | `agents/research_workflow.py` |
+| `before_model_callback` / `after_model_callback` signatures | The M9 throttle acquires and releases its per-run semaphore here. A signature change that this project's callback does not absorb fails the same way `check_require_confirmation`'s does — inside the flow, as a failed turn, not as anything naming the throttle | `agents/research_workflow.py` |
+| Whether `Workflow` may be handed to `Runner.run_async` as a turn's root, same as any `BaseAgent` | `TurnService.start` picks `research_workflow` for the (single) `research` step the same way it already picks `research_agent`/`propose_tasks`/etc. for the others — confirmed directly in `runners.py`'s `isinstance(self.agent, BaseNode) and not isinstance(self.agent, BaseAgent)` branch, see [`Workflow` as a turn root, and retrying a crash mid-fan-out](#workflow-as-a-turn-root-and-retrying-a-crash-mid-fan-out) | `services/turns.py` |
 
 **Order of work:** install the new version, run the contract suite
 ([08-testing.md](08-testing.md)) — identical tests against `InMemorySessionService` and ours,
@@ -200,37 +204,62 @@ says.
                                │                                                 │
         ┌──────────┬───────────┼───────────┬──────────────┐                     │
         ▼          ▼           ▼           ▼              ▼                     │
-  select_next_  research_agent  post_    propose_tasks  reprioritize             │
-  task          (LlmAgent)      report   (LlmAgent)     (code)                  │
-  (code, not                    (code)                                          │
-   an LLM)             ▲                                                        │
+  select_next_  research_    post_    propose_tasks  reprioritize                │
+  task          workflow     report   (LlmAgent)     (code)                     │
+  (code, not    (since M9 —  (code)                                             │
+   an LLM)      see below)          ▲                                          │
                        └────────────────────────────────────────────────────────┘
                        in a fresh session created for the run, never the caller's own (M8)
 
+                       ┌──────────────────────────────────────────────────────┐
+                       │       research_workflow  (ADK Workflow, since M9)      │
+                       │  replaces the single research_agent turn               │
+                       │                                                        │
+                       │  ┌─────────────────┐                                   │
+                       │  │ research_planner │  LlmAgent — topic + details,     │
+                       │  │                  │  NO duration budget              │
+                       │  └────────┬─────────┘                                  │
+                       │           │ 3–5 sub-topics                             │
+                       │           ▼                                            │
+                       │  ┌─────────────────────────────┐                       │
+                       │  │  topic_researcher × 3–5       │  LlmAgent,           │
+                       │  │  parallel_worker fan-out,      │  one per sub-topic, │
+                       │  │  default single_turn mode       │  NO duration budget│
+                       │  │  (include_contents="none":     │                    │
+                       │  │  no visibility into the        │                    │
+                       │  │  planner or siblings)          │                    │
+                       │  │  tools: AgentTool(search_agent),                    │
+                       │  │  fetch_url, youtube_find_by_duration                │
+                       │  │  throttled: ≤1 LLM call in flight per run           │
+                       │  └────────────────┬────────────────┘                  │
+                       │                    │ N reports                        │
+                       │                    ▼                                  │
+                       │  ┌───────────────────────────────┐                    │
+                       │  │        reviewer_writer          │  LlmAgent, reads  │
+                       │  │                                  │  the planner's   │
+                       │  │  budget + prefs + research job   │  turn via        │
+                       │  │  (the duration neither upstream  │  include_contents│
+                       │  │  agent saw)                      │  ="default" (same│
+                       │  │  tools: post_research_report      │  conversation)   │
+                       │  └───────────────────────────────┘                    │
+                       └──────────────────────────────────────────────────────┘
+
                        ┌────────────────────────┐
-                       │     research_agent     │  LlmAgent, thinking_level=high
-                       │  tools: AgentTool(search_agent),
-                       │         fetch_url,
-                       │         youtube_find_by_duration,
-                       │         post_research_report
-                       └───────┬────────────────┘
-                               │
-                       ┌───────▼────────────────┐
                        │      search_agent      │  LlmAgent with ONLY the
                        │  tools: google_search   │  built-in google_search tool
                        └────────────────────────┘
 ```
 
-**`research_agent` is not a tool either `project_coach` or `task_teacher` can call.** An
-earlier version of this diagram drew `AgentTool(research_agent)` as one of their tool
-branches, which never matched the tool catalogue below — neither agent has ever listed it.
-The relationship is real but indirect: a button in either agent's screen calls
+**No node of the research pipeline is a tool either `project_coach` or `task_teacher` can
+call** — neither agent lists one in the tool catalogue below, and that stays true whether
+the pipeline behind the button is the single `research_agent` turn or the `research_workflow`
+graph that replaced it at M9. The relationship is real but indirect: a button in either agent's screen calls
 `POST /api/sessions/{sid}/research` ([04-api-contract.md](04-api-contract.md#post-apisessionssidresearch)),
-a plain REST endpoint outside the model's own turn, which starts `research_agent` in a
+a plain REST endpoint outside the model's own turn, which starts `research_workflow` in a
 session of its own. The learner's conversation and the research run are two separate
 generations that happen to share a trigger, not one agent handing off to another
-mid-turn — which is also why `research_agent` never appears in either coach's context and
-neither coach can be asked to "just call the research tool".
+mid-turn — which is also why nothing in the research pipeline ever appears in either coach's
+context and neither coach can be asked to "just call the research tool".
 
 ### Why `search_agent` is separate
 
@@ -258,8 +287,8 @@ describes by hand. The two options are therefore behaviourally the same shape:
 
 | Option | What it means | Cost |
 | --- | --- | --- |
-| **A — explicit `search_agent` (chosen)** | Keep the `search_agent` `LlmAgent` and expose it to `research_agent` as an `AgentTool`, as drawn in the graph above | One hop, authored by us, visible in the agent graph and in traces |
-| B — `GoogleSearchTool(bypass_multi_tools_limit=True)` | Put `google_search` directly in `research_agent`'s tool list and let ADK generate the wrapper | Same hop, generated; depends on an internal wrapping rule and a non-default flag |
+| **A — explicit `search_agent` (chosen)** | Keep the `search_agent` `LlmAgent` and expose it to the research pipeline's `topic_researcher` node (`research_agent`'s successor since M9) as an `AgentTool`, as drawn in the graph above | One hop, authored by us, visible in the agent graph and in traces |
+| B — `GoogleSearchTool(bypass_multi_tools_limit=True)` | Put `google_search` directly in `topic_researcher`'s tool list and let ADK generate the wrapper | Same hop, generated; depends on an internal wrapping rule and a non-default flag |
 
 **Decision: A.** The hop is not avoidable either way, so the only thing on the table is who
 writes it. Option B moves a load-bearing behaviour inside ADK internals that the pin
@@ -327,84 +356,420 @@ Behaviour encoded in the instruction:
   tool here**, so nothing the learner says in this conversation can land beside the task
   on the board — the mistake that prompted the split in the first place.
 
-Both agents share one `before_agent_callback` that injects project goal, effective prefs,
-current task + its subtasks, last N task outcomes, and the `learnerProfile` summary.
-Injected as state, not as a giant literal prompt, so ADK's `{state_key}` templating keeps
-the prompt cache-friendly.
+Both agents share one `before_agent_callback` that injects effective prefs, current task +
+its subtasks, last N task outcomes, and the `learnerProfile` summary. Injected as state,
+not as a giant literal prompt, so ADK's `{state_key}` templating keeps the prompt
+cache-friendly. **Neither instruction carries the project's own title/goal text** —
+`PROJECT_KEY`/`render_project` existed through M9 and were removed once every agent's own
+scope turned out to already come from board/task/item state (`{BOARD_KEY}`, `{FOCUS_KEY}`)
+rather than from the project document directly; `project_coach` (the project-as-a-whole
+conversation) still elicits and reasons about the goal through the ordinary conversation
+history it already has, not through a re-rendered summary of it.
 
-### `research_agent`
+### The research pipeline (since M9)
 
-Input: `{ taskId, budgetMinutes, projectGoal, prefs, learnerProfile }`. `taskId` is `null`
-for a run kicked off from the project coach's own conversation, about the project as a
-whole rather than one task — see below.
-Output: exactly one `post_research_report` call.
+**M9 splits the single `research_agent` turn into three LlmAgent nodes run by one
+`research_workflow`.** The reported problem was breadth-versus-depth: one agent doing its
+own planning, its own multi-source search, and its own final write-up spends its whole
+context budget doing all three passably rather than any one well, and the fix isn't a
+longer instruction — it's separating the passes into agents that each see less and can
+therefore do their one job with a clean, un-crowded context. The M4-era section below is
+carried forward wherever the decision it records is still true (the dedicated session, the
+taskless capability, the read-only upload access); what changed is everything about how the
+model actually does the research.
 
-**Since M8, every run gets its own session, created fresh and never reused**
-([02-data-model.md](02-data-model.md#sessions--events-adk-owned-layout),
-[09-roadmap.md](09-roadmap.md#m8--research-sessions-ui-rework-and-usage-quotas)). Before
-M8 a research run was a turn inside the task's own session, chosen for reuse of the
-disconnect guarantee, checkpoints, and broker; M8 keeps all of that but stops writing the
-turn into the conversation the learner has with `task_teacher`. `ResearchService` and
-`RunExecutor` create the session (`CoachSessionService.create_session(..., kind=
-"research", task_id=…, run_id=run.id)`), start the turn against *that* session id, and
-record it on the run (`autonomous_runs/{id}.sessionId`) and, once
-`post_research_report` runs, on the report (`research_reports/{id}.sessionId`). The
-project/task linkage this session carries is exactly what `agents/prompt.py`'s
-`before_agent_callback` already reads to assemble `research_agent`'s context — nothing
-there changed, because it already handled a session with `taskId: null`
-(`render_focus(None)`, `render_budget(None, prefs)`): the pre-M8 code rendered that
-branch for a code path that could not yet reach it, and M8 is what reaches it.
+| Node | Kind | Input | Output |
+| --- | --- | --- | --- |
+| `research_planner` | LlmAgent | `{ topic, prefs }` — **no `budgetMinutes`** | 3–5 sub-topics |
+| `topic_researcher` (× one per sub-topic) | LlmAgent, `parallel_worker` fan-out | `{ subTopic }` — **no `budgetMinutes`** | an ordered list of material references, each with its own estimated duration |
+| `reviewer_writer` | LlmAgent | every `topic_researcher` output, the planner's own context, `budgetMinutes`, `prefs` | exactly one `post_research_report` call |
 
-**A task-less run is a new capability, not only a new session.** `project_coach` cannot
-call `research_agent` as a tool mid-conversation; the trigger is still
-`POST /api/sessions/{sid}/research` (`docs/04-api-contract.md`), now also accepted on the
-project's own intake session (`taskId: null`) rather than only on a task's. The learner's
-`reason` — "what's a good way to compare these three frameworks" — is the thing being
-researched, sent as the turn's opening message exactly as a task's "prepare the materials
-I need for this task" is; there is no separate mechanism for the taskless case. A file the
-learner attaches specifically to that request rides the same `attachments` argument
-`POST /api/sessions/{sid}/turns` already takes, resolved by `uploadId` the same way — an
-upload is addressable by anyone holding its id, regardless of which session asked for it.
+`topic` is `{ taskId, prefs, learnerProfile }` minus `budgetMinutes` for a task-scoped run,
+or the taskless `reason` for one kicked off from the project coach's own conversation — see
+below. The duration budget is withheld from both the planner and the topic researchers on
+purpose: sizing the result into something that fits a sitting is a property of the *whole*
+set of research, decided once the set is complete, not a constraint each sub-topic should
+be narrowing itself against independently. Neither node (nor `reviewer_writer`) is handed
+the project's own title/goal text either — same reasoning as `project_coach`/`task_teacher`
+above: `topic`/`reason` already carries what this run is about.
 
-**Read-only access to the originating session's own uploads, added shortly after M8.**
-The case `attachments` does not cover is the more common one: a file was uploaded earlier
-in the task's own conversation (or the project's intake one), and the task's description
-or the learner's `reason` refers back to it — "see the attached rubric" — without
-re-attaching anything. `ResearchService.start_manual` and `RunExecutor._research` both
-call `SessionService.list_attachments(principal, session_id)` on the *originating*
-session before starting the research turn — a scan of that session's own stored events
-for `file_data` parts, deduplicated by `gs://` URI — and forward every one it finds as
-`context_attachments`, embedded into the research turn's opening message the same way an
-ordinary attachment is (`TurnService._build_content`). Nothing is written anywhere; this
-is a read of a transcript the caller already owns, which is what makes it safe to do
-unconditionally rather than gating it behind a tool call the model might not think to
-make. `RESEARCH_INSTRUCTION` tells the model these files are the learner's own uploads,
-already in front of it, and to read them before reaching for `search_agent`.
+**Session mechanics are unchanged from M8: one dedicated session per run, created fresh and
+never reused** ([02-data-model.md](02-data-model.md#sessions--events-adk-owned-layout),
+[09-roadmap.md](09-roadmap.md#m8--research-sessions-ui-rework-and-usage-quotas)).
+`ResearchService` and `RunExecutor` still create it with
+`CoachSessionService.create_session(..., kind="research", task_id=…, run_id=run.id)`,
+still start **one turn** against that session id, and still record it on the run
+(`autonomous_runs/{id}.sessionId`) and the report (`research_reports/{id}.sessionId`). What
+M9 changes is what runs *inside* that one turn: not one agent, but the whole
+`research_workflow` graph, run start to finish by a single `Runner.run_async` call — a
+`Workflow` has no built-in "run this node and pause" primitive; once triggered, its
+scheduling loop keeps draining ready nodes until none are left
+([09-roadmap.md](09-roadmap.md#m9--reworking-the-autonomous-research-workflow) has the
+ledger-shape consequence of that). **"Launched with a clean session" for `topic_researcher`
+does not mean a second Firestore session document per sub-topic, and it does not mean ADK's
+`isolation_scope` either** — nothing about the session collection changes, and
+`isolation_scope` is computed by `Workflow._compute_isolation_scope_for_node` only for a
+node the graph schedules *statically* (`Workflow._start_node_task`);
+`_ParallelWorker._run_impl` dispatches each fan-out item *dynamically*, through
+`ctx.run_node(self._node, node_input=item, use_sub_branch=True)`, which passes no
+`override_isolation_scope` and therefore leaves every `topic_researcher` branch with
+whatever scope the `_ParallelWorker` node itself had — `None`, since `_ParallelWorker` has
+no `mode` field for `_compute_isolation_scope_for_node` to read in the first place.
+`mode="task"` would not have isolated the fan-out from anything anyway; it would also have
+pulled in `FinishTaskTool`/multi-turn "chat until finish_task" semantics — built for a chat
+coordinator delegating to a task agent — that this pipeline has no use for.
 
-Workflow it is instructed to follow:
-1. `search_agent("…")` for authoritative material; note grounding citations.
-2. `fetch_url` on the 2–4 most promising results to confirm they actually cover the task
-   (title-based selection is how bad reading lists happen).
-3. If `prefs.allowVideos`, `youtube_find_by_duration(query, max_minutes=remaining_budget)`.
-4. Optionally author an exercise or `code_scaffold` item itself.
-5. Call `post_research_report` with `required[]` sized to fit `budgetMinutes` and
-   everything else in `optional[]`.
+What actually isolates `topic_researcher` is simpler and needs no `isolation_scope` at all.
+`workflow/utils/_workflow_graph_utils.build_node` defaults a *standalone* `LlmAgent` node
+(one with no `parent_agent`) to `mode="single_turn"`, and
+`workflow/_llm_agent_wrapper.run_llm_agent_as_node` forces `include_contents="none"` for
+`single_turn` unless the agent sets `include_contents` explicitly — meaning the LLM request
+never includes prior session history at all, only the node's own `node_input` (its assigned
+sub-topic). That is the whole of the isolation: not from the planner, not from siblings,
+because nothing before this node's own input is ever read. `research_planner` and
+`topic_researcher` both stay at this default (`mode` unset, `include_contents` unset).
+`reviewer_writer` is the one exception: it sets `include_contents="default"` explicitly,
+which is what lets it read `research_planner`'s own turn as ordinary prior history — the
+mechanism behind "the reviewer-writer agent should have the context of the planner … by
+working in the same session." `use_sub_branch=True` (which `_ParallelWorker` does pass) still
+matters, but only as bookkeeping: it gives each fan-out branch its own event branch so
+resumption and checkpointing can tell them apart, not as a content-visibility control —
+`include_contents="none"` already made that moot for `topic_researcher`.
 
-**`required[]` is a plan for the task, not a bibliography, because it becomes the task's
-checklist** ([02-data-model.md](02-data-model.md#task-items)). Two things follow that the
-instruction has to say out loud. Every required item needs a `why` written in the second
-person and in the learner's own terms — it renders as the item's `shortDescription`, so a
-`why` that reads "provides necessary background" produces a checklist nobody can act on.
-And the ordering of `required[]` is the order the work happens in: reading before the
-exercise that uses it, setup before the thing being set up. The tool preserves the array's
-order rather than sorting by kind or by minutes.
+**A task-less run is still a capability of the workflow as a whole, not of one node.**
+`project_coach` cannot call any node of `research_workflow` as a tool mid-conversation; the
+trigger is still `POST /api/sessions/{sid}/research` (`docs/04-api-contract.md`), accepted
+on a task's session or on the project's own intake session (`taskId: null`). The learner's
+`reason` is the thing being researched, forwarded to `research_planner` as its topic exactly
+as a task's own description is — there is no separate mechanism for the taskless case, and
+`reviewer_writer` still validates and writes a `taskId: null` report the same way it does a
+task-scoped one, promoting nothing into any checklist.
 
-`research_agent` has **no board-mutating tools**. It reads the task and answers with exactly
-one `post_research_report` call; adding, splitting, and reordering tasks belong to
-`propose_tasks`, a separate step with its own bounded budget. That separation is what
-[10-risks.md](10-risks.md#r7--prompt-injection-via-fetched-pages-and-uploads) means by
-"tools that mutate state are unavailable to `research_agent` except `post_research_report`",
-and it matters most here: this is the agent with fetched web pages in its context.
+**Read-only access to the originating session's own uploads reaches `research_planner`, not
+every node.** `ResearchService.start_manual` and `RunExecutor._research` still call
+`SessionService.list_attachments(principal, session_id)` on the *originating* session — a
+scan of its stored events for `file_data` parts, deduplicated by `gs://` URI — and still
+forward every one it finds as `context_attachments`. Since M9 those attachments are embedded
+into `research_planner`'s opening message only: it is the node deciding what the sub-topics
+even are, and it is also, by construction, the node `reviewer_writer` shares a conversation
+with, so a file cited by the plan is still visible to the final write-up without being
+re-attached anywhere. `topic_researcher`'s whole reason to exist is a context clean of
+everything but its own sub-topic; handing it the learner's uploaded rubric would be handing
+back the crowded context M9 exists to remove.
+
+**Each node's own instructions:**
+
+- `research_planner` — read the topic and its details, ask nothing (there is no learner to
+  ask; this still runs headless), and decompose it into 3–5 sub-topics that are mutually
+  distinguishable and, together, cover the research goal. No tools beyond ordinary text
+  output — the schema *is* the sub-topic list, validated the same way `post_research_report`
+  validates its own shape.
+- `topic_researcher` — for its one assigned sub-topic: `search_agent("…")` for authoritative
+  material, `fetch_url` on the 2–4 most promising results to confirm they actually cover the
+  sub-topic (title-based selection is how bad reading lists happen), and, if
+  `prefs.allowVideos`, `youtube_find_by_duration(query, max_minutes=…)` — note there is no
+  per-sub-topic budget to filter against yet, so this call asks for candidates rather than a
+  single best fit, leaving the trim to `reviewer_writer`. Returns its ordered list of
+  references with per-item estimated durations as plain output, not a tool call — there is
+  nothing yet for it to post.
+- `reviewer_writer` — check the combined sub-topic reports against the research goal;
+  **deduplicate** a source repeated across two reports rather than listing it twice;
+  **merge** sub-topics that turned out to overlap, keeping the union of what they found
+  rather than either report's duplicate coverage of the shared part; then organize the
+  result into `required[]` sized to fit `budgetMinutes` and everything else into
+  `optional[]`, exactly as the single agent used to. Every required item still needs a `why`
+  written in the second person and in the learner's own terms — it renders as the item's
+  `shortDescription` — and `required[]`'s order is still the order the work happens in:
+  reading before the exercise that uses it, setup before the thing being set up. Then calls
+  `post_research_report`, unchanged: same schema, same budget validation, same promotion of
+  `required[]` into `tasks/{id}.items[]`.
+
+**No node of the research pipeline has a board-mutating tool.** `research_planner` and
+`topic_researcher` have no tools that write anything at all; `reviewer_writer` has exactly
+`post_research_report`. Adding, splitting, and reordering tasks still belong to
+`propose_tasks`, a separate step with its own bounded budget, downstream of the whole
+pipeline rather than a member of it. That separation is what
+[10-risks.md](10-risks.md#r7--prompt-injection-via-fetched-pages-and-uploads) means by "tools
+that mutate state are unavailable to every node of the research pipeline except
+`post_research_report`, which only `reviewer_writer` calls" — and it matters more than it
+did before M9: `topic_researcher` is now the node with fetched web pages in its context, run
+3–5 times per job instead of once. **Since a later M9 change, that sentence is true of
+`write_study_plan` too** — see immediately below.
+
+#### The taskless case: `task_proposer` and `plan_tailor` replace `reviewer_writer`
+
+`reviewer_writer` sizes everything the fan-out found into **one** `budgetMinutes` — correct
+for a task-scoped run, where the budget is that one task's estimate, but wrong for a
+*taskless* run (`taskId: null`, the project coach's own conversation): a learner's whole
+goal is usually several tasks, not one report squeezed into one sitting. For the taskless
+case only, `build_roadmap_workflow` (`agents/research_workflow.py`) replaces the last node
+with four: the `topic_researcher` fan-out (shared with `research_workflow`), then
+`research_findings`, then `task_proposer_scope`, then `task_proposer` -> `plan_tailor`.
+
+| Node | Kind | Reads | Writes |
+| --- | --- | --- | --- |
+| `research_findings` | Plain Python function, `node()`-wrapped — no model call | `research_planner`'s sub-topic list (`SUBTOPICS_KEY`, its own `output_key`) and the fan-out's aggregate (its own `node_input` — `research_findings` sits directly after the fan-out so this is guaranteed) | The two zipped together, one object per sub-topic, to `RESEARCH_FINDINGS_KEY` |
+| `task_proposer_scope` | LlmAgent, no tools, no output schema | The conversation so far (`include_contents="default"`) — the opening roadmap request plus `research_planner`'s own turn, and nothing from the fan-out's own branches (below) — and `{PREFS_KEY}` | Plain text to `TASK_PROPOSER_SCOPE_KEY`: the roadmap request and preferences, rewritten with the learner's total time budget for the whole roadmap left out |
+| `task_proposer` | LlmAgent, `output_schema=ProposedTaskCollection`, no tools | `TASK_PROPOSER_SCOPE_KEY` and `RESEARCH_FINDINGS_KEY` only — `include_contents` is left at the `single_turn` default, `"none"`, so neither the raw roadmap request nor `research_planner`'s own turn reaches it | Nothing to Firestore. Its structured text is the hand-off, read by `plan_tailor` the same way `research_planner`'s is read by `reviewer_writer` today |
+| `plan_tailor` | LlmAgent, `tools=[write_study_plan]` | `task_proposer`'s turn too (`include_contents="default"` reads the *whole* prior session, not just the immediate predecessor — so this is the one node downstream of `task_proposer_scope` that still sees the raw roadmap request, budget included), plus the project's board (`{BOARD_KEY}`) and completed-task history (`{OUTCOMES_KEY}`) — both already written into state by the shared `PromptBuilder`, no new context plumbing needed | Exactly one `write_study_plan` call: the pipeline's one write, same rule `reviewer_writer`/`post_research_report` follows |
+
+**`task_proposer_scope` sits *after* the fan-out, not between `research_planner` and it —
+load-bearing, not cosmetic.** `Workflow`'s edges are a sequential chain: each node's own
+output becomes the *next* node's `node_input`. The fan-out's `node_input` has to stay
+`research_planner`'s `list[str]` output, chain-adjacent, or `_ParallelWorker._run_impl`
+(`google/adk/workflow/_parallel_worker.py`) — which wraps a non-list `node_input` in a
+single-item list rather than rejecting it — silently turns "one `topic_researcher` branch
+per sub-topic" into "exactly one branch, fed whatever node sits there as if it were the one
+sub-topic", with no construction-time error to catch it. Placing `task_proposer_scope`
+after the fan-out instead costs it nothing: `include_contents="default"` content-building
+filters by branch (`flows/llm_flows/contents.py::_is_event_belongs_to_branch`), and a
+main-branch node is never a descendant of a `topic_researcher` sub-branch
+(`use_sub_branch=True`) — so it still sees only the opening message and
+`research_planner`'s own turn, the same mechanism `reviewer_writer` already relies on from
+the same position, never the fan-out's own branches, regardless of where after the fan-out
+it sits. `research_findings` has the mirror-image constraint: it must sit *directly* after
+the fan-out, since its own `node_input` has to be the fan-out's aggregate.
+
+**Why `task_proposer_scope` and `research_findings` exist at all.** `task_proposer` used to
+read the conversation the same way `plan_tailor` still does — `include_contents="default"`,
+seeing the opening roadmap request (`ResearchService.start_roadmap`'s `reason`, prose,
+whether typed free-hand or rendered from a `RoadmapBrief`) directly. That request is where
+the learner's *total* time budget for the whole roadmap lives — there is no structured
+field for it once a run starts, only that prose — and a `task_proposer` that already knows
+the total starts trimming and merging tasks to fit its own guess at it, before `plan_tailor`
+— the node whose actual job that is, once every task has been proposed and the shape of
+the whole roadmap is known — gets a say. Fixing that meant `task_proposer` could no longer
+read the conversation at all (there is no way to redact one fact from a replay), which cost
+it two things `include_contents="default"` used to hand it for free: the roadmap's own
+goal/topics (nothing else renders them for a taskless run — `{FOCUS_KEY}` is
+board/task-shaped and empty here) and `research_planner`'s own sub-topic breakdown
+(`TopicFindings` carries only each sub-topic's `items`, never the sub-topic string itself).
+`task_proposer_scope` and `research_findings` restore exactly those two things, deliberately,
+as explicit state — `TASK_PROPOSER_SCOPE_KEY` and `RESEARCH_FINDINGS_KEY` — rather than as
+an accidental side effect of reading everything that happened to be in the session.
+
+`task_proposer` groups the fan-out's findings into several `ProposedTask`s, each sized to
+the learner's *preferred* task length (the "Default task length" line inside
+`TASK_PROPOSER_SCOPE_KEY`, carried through from `{PREFS_KEY}` unchanged) rather than one
+combined budget — with `required[]`/`optional[]` per task, same item shape as a
+`ResearchReport`'s, plus `prerequisiteTasks` linking one proposed task to another.
+`plan_tailor` does not research further; it decides, using the board and history it can now
+see that neither upstream node could, whether each proposed task belongs (`include`), is a
+deep dive (`additional`), is already covered (`exclude`), or does not fit the goal
+(`reject`) — with a `why` for every one, including the ones it drops — and where it sits
+relative to the others. It reproduces `task_proposer`'s task list unchanged as part of its
+own `write_study_plan` call rather than the code splicing the two turns' output together:
+reading a finished turn's structured output back out of stored Firestore events is exactly
+the machinery the single-step research ledger
+([above](#workflow-as-a-turn-root-and-retrying-a-crash-mid-fan-out)) avoids needing at all —
+a token cost here, not a correctness gap.
+
+`write_study_plan` writes `projects/{projectId}/study_plans/{planId}`
+([02-data-model.md](02-data-model.md#projectsprojectidstudy_plansplanid)) — a `StudyPlan`,
+never a task. Turning one into board tasks is a separate, standalone tool,
+`materialize_study_plan` (below), by design: the pipeline may still write exactly one kind
+of document, and reshaping the board stays a deliberate, later act rather than something
+that happens inside the same turn that read a fetched web page.
+
+**Reachable through its own endpoint, not through `/research`'s dispatch.**
+`ResearchService.start_manual`/`RunExecutor` still dispatch every run they start — taskless
+or not — to `research_workflow`/`reviewer_writer`, so `POST /api/sessions/{sid}/research`
+and `GET /api/runs/{runId}/report` behave exactly as they did before this section, and the
+M8 golden e2e flow is unchanged. `build_roadmap_workflow` has its own caller instead:
+`ResearchService.start_roadmap`, behind `POST /api/sessions/{sid}/roadmap`
+([04-api-contract.md](04-api-contract.md#post-apisessionssidroadmap)) — the same
+lease/ledger/fresh-session machinery as `start_manual`, dispatching `agent="roadmap"`
+rather than reshaping `start_manual` itself to carry a second agent. A roadmap run is
+distinguished from a research run by `steps[0].id` (`"roadmap"` vs `"research"` —
+`ResearchService.ROADMAP_STEPS`/`MANUAL_STEPS`), since neither carries a field naming its
+pipeline directly. `StartProjectRoadmap` (`apps/web`) is the button; the research view
+renders its transcript (multiple named agents, one session) and, since this UI rework, a
+dedicated panel for the `StudyPlan` too — `GET /api/runs/{runId}/plan`
+([04-api-contract.md](04-api-contract.md#runs)) reads `study_plans` back, and
+`StudyPlanView` (`apps/web/src/components/research/`) renders it: every proposed task as
+its own `ProposedTaskCard`, `plan_tailor`'s decision shown as a corner chip
+(`include`/`additional`/`exclude`/`reject`) with its `why` always visible, and the task's
+required/optional material behind a disclosure. `GET /api/runs/{runId}/report` still 404s
+for a roadmap run, since that endpoint reads `research_reports`, not `study_plans`.
+
+**`materialize_study_plan` is wired into `project_coach`'s own catalogue**, alongside
+`view_study_plan` (reads the most recent plan for the project) and `revise_study_plan`
+(`project_coach`'s own re-tailoring — which proposed tasks to include, and where each
+sits). The plan document `write_study_plan` posted itself stays immutable —
+`StudyPlanView` still renders exactly what `plan_tailor` wrote, corner chip and all — and a
+revision is a *copy*, `revisedFromPlanId` pointing back at the plan it replaces, never an
+edit in place, so the original verdict stays legible against whatever a learner and the
+coach later decide instead. `materialize_study_plan` itself now requires the learner's
+confirmation, the same gate `update_project_plan` uses, since it is the act that actually
+puts a plan's tasks on the board.
+
+**Its confirmation dialog also offers "Also update project description"**, checked by
+default when the project's own `description` is empty. `short_description`/
+`long_description` on the plan are composed as a proposed roadmap, which is the wrong
+register for a project's own description — so `materialize_study_plan` takes its own
+`project_description` argument, a single factual sentence `project_coach` composes fresh
+for the project rather than copying the plan's. The candidate is supplied on every call,
+whatever the learner is expected to answer: the confirmation handshake does not consult
+the model again between the call and the answer, so the sentence has to already exist by
+the time the dialog shows the checkbox, and only the checkbox decides whether it is
+applied (`UPDATE_PROJECT_DESCRIPTION_KEY` in the answer's payload, the same
+restated-constant arrangement as `STOP_CONFIRMING_KEY`).
+
+**Initiating a roadmap run is itself now something `project_coach` can do, not only the
+`StartProjectRoadmap` button.** `write_roadmap_brief`/`read_roadmap_brief` let the coach
+draft a structured `roadmapBrief` on the project (subject, time budget, specific topics,
+additional notes — [02-data-model.md](02-data-model.md#projectsprojectid)) across several
+turns, the same way an ordinary conversation gathers a plan before calling
+`update_project_plan`. `propose_roadmap_brief` is the confirmation-gated handoff: approval
+renders the brief into the free-text `reason` `ResearchService.start_roadmap` already takes
+and schedules the run through the same lease/ledger/queue path
+`POST /api/sessions/{sid}/roadmap` uses, then clears the draft. The manual button is
+unchanged and reaches the identical `ResearchService.start_roadmap` call — this is a second
+way to reach it, not a replacement.
+
+**The confirmation dialog for `propose_roadmap_brief` renders `Project.roadmapBrief` —
+the document `write_roadmap_brief` last stored — not the confirmation call's own
+arguments.** The model is asked to reproduce the stored brief exactly, but that is an
+instruction, not an enforced constraint, and the two are not the same claim: rendering
+from the arguments would show the learner the model's restatement of the brief, where
+rendering from the document shows them the brief. `attachments` (display names the
+learner referenced) is the field this distinction matters most for — the dialog turns it
+into an editable checklist rather than a read-only list, covered in its own paragraph
+below, which only makes sense starting from what the brief actually names, not a value the
+model happened to echo. `start_roadmap`'s own `attachment_names` (`services/research.py`)
+narrows `_create_and_enqueue`'s upload carry-over to that same list; `None` (every other
+caller — the manual button, task-scoped research) keeps the old "every upload the
+conversation has seen" behaviour, since a task's or an intake session's conversation is
+already scoped to one topic and a project coach's ongoing conversation is not.
+
+**Neither tool trusts a name it is given — each is checked against the session's actual
+uploads before it is stored** (`DomainTools._validate_attachment_names`). Found from real
+use, not anticipated in the original design: a model asked to attach an uploaded PDF can
+name it by a title it inferred from reading the document rather than the filename it was
+actually shown for it, and a name matching nothing would otherwise be accepted, stored,
+and then simply drop out at `start_roadmap`'s own matching — invisible to the model that
+made the mistake and only discoverable by the learner noticing an absent chip. A
+validation failure is a `ValidationProblem` naming exactly which of the given names are
+unmatched, plus the real list of what is attached, so the model can retry correctly in
+the same turn rather than the brief silently omitting the file.
+
+**Validation stops a hallucinated name; it does nothing about a model that never
+considers attachments in the first place.** That gap survived the instruction fix above
+in real use too — a model can go several `write_roadmap_brief` calls without ever
+weighing whether an uploaded file belongs on the brief, especially once it is busy
+reasoning about subject and time budget instead. Two independent responses, neither
+trusting instruction text alone to be enough a second time:
+
+- **A one-time nudge in the tool's own result.** `write_roadmap_brief` adds an
+  `availableAttachments` field — the conversation's own attachment names — when, and only
+  when, this is the *first* call for the brief (`Project.roadmapBrief` was `None` before
+  this write) and it named none while the conversation has some. A later call that still
+  names none gets no nudge: by then the silence reads as a decision, not an oversight, and
+  repeating the hint would be nagging about a choice already made. This is a nudge, not a
+  guard — nothing stops the model from ignoring it — but it puts the fact in front of the
+  model on the one call where raising it does not yet read as second-guessing.
+- **A checklist in the confirmation dialog itself**, so the learner does not have to rely
+  on the model noticing at all. See the frontend section below and
+  [06-frontend.md](06-frontend.md#task-workspace-projectsprojectidtaskstaskid) — the
+  learner can tick or untick any conversation attachment right in the dialog, and the
+  server applies that selection deterministically, overriding the model's own `attachments`
+  argument (`DomainTools._confirmed_attachments`, keyed on `CONFIRMED_ATTACHMENTS_KEY` in
+  the confirmation answer's payload). This is the one that actually closes the gap: a
+  learner does not need the model to get it right, or even to try, to end up with the
+  correct file on the run.
+
+#### Built on ADK's `Workflow`, not `SequentialAgent` / `ParallelAgent`
+
+Verified against the installed `2.7.0` source, not published docs, the same rule this
+project applies to every ADK surface: `google/adk/agents/sequential_agent.py`,
+`parallel_agent.py`, and `loop_agent.py` are each decorated `@deprecated('… in favor of
+Workflow …')`, and `Workflow` is exported at `google.adk`'s own top level —
+`__all__ = ['Agent', 'Context', 'Event', 'Runner', 'Workflow']` — beside the four things
+every turn in this project already depends on. `research_workflow` is this project's first
+use of it; `autonomous_workflow` itself stays a `SequentialAgent` for now; see the open
+question below about what that means for hosting a `Workflow`-rooted step.
+
+The graph-based `Workflow` (`google/adk/workflow/_workflow.py`) is what gives this pipeline
+its two load-bearing properties:
+
+- **Runtime-sized parallel fan-out**, for a sub-topic count the planner decides (3–5) rather
+  than a fixed number of branches declared up front. `google/adk/workflow/_parallel_worker.py`
+  wraps a node so that it runs once per item of a list produced at run time, bounded by
+  `max_parallel_workers` — exposed via `node(..., parallel_worker=True,
+  max_parallel_workers=…)` (`google/adk/workflow/_node.py`). `topic_researcher` is declared
+  once and fanned out over `research_planner`'s own output list.
+- **Per-node context isolation without a second session service call.** Covered above — a
+  standalone node's default `single_turn` mode forces `include_contents="none"`, which is
+  what stands in for "clean session" here, and it is why M9 needed no new collection and no
+  new field on `sessions/*`.
+
+#### LLM throttling: at most one inference in flight per research job
+
+A 3–5-way fan-out is exactly the shape that used to arrive as one sequential agent's tool
+calls and now arrives as up to five agents each wanting a model turn at roughly the same
+moment — a burst this project's model traffic never produced before M9, and the kind of
+burst Vertex answers with `429 RESOURCE_EXHAUSTED`. The fix is a small in-memory limiter, not
+a data-model change: an `asyncio.Semaphore(1)` per run, held around the model-call site for
+the duration of one inference and released immediately after, keyed by the run id already
+threaded through `temp:coach_run_id` for `post_research_report`
+([05-autonomous-runs.md](05-autonomous-runs.md#execution-semantics)). Attached via a
+`before_model_callback` / `after_model_callback` pair on `research_planner`,
+`topic_researcher`, and `reviewer_writer` only — the interactive agents' traffic is shaped by
+the human waiting for a reply, not by a fan-out this project introduced, and throttling it
+would only make the chat feel slower for no gain. The limiter lives in a process-local dict
+keyed by `runId`, entries dropped when the run's step ends; a second instance running a
+different project's research gets its own independent semaphore, which is deliberate — the
+goal is shaping one job's own burst, not rate-limiting the process globally (a *global* cap
+would also throttle unrelated interactive turns sharing the instance, which is not the
+problem this exists to solve). `max_parallel_workers` on the `topic_researcher` fan-out is a
+second, independent knob at the ADK level and is not a substitute for this one: it bounds how
+many `topic_researcher` branches *execute* at once, not how many model calls two *different*
+nodes (a lingering `topic_researcher` and an already-started `reviewer_writer`, say) might
+happen to overlap.
+
+#### `Workflow` as a turn root, and retrying a crash mid-fan-out
+
+**`Workflow` is a valid turn root, the same mechanism every other agent choice already
+uses.** `runners.py`'s `run_async` has a dedicated branch for it —
+`if isinstance(self.agent, BaseNode) and not isinstance(self.agent, BaseAgent): …
+self._run_node_async(…)` — taking the same `user_id` / `session_id` / `new_message` /
+`state_delta` / `run_config` arguments `TurnService._generate` already passes for an
+`LlmAgent` turn. `Workflow` is a `BaseNode`, not a `BaseAgent`, so it lands here rather than
+the chat/task branch. `research_workflow` needs no change to `autonomous_workflow`'s own
+shape or to `TurnService._generate`'s event loop, which already treats `Event`s generically
+(`event.partial`, `.get_function_calls()`, `.get_function_responses()`, `.usage_metadata`)
+regardless of which kind of root produced them — it is just a different value in
+`RunnerFactory`/`_RUNNERS`, once per turn.
+
+**The ledger keeps a single `research` step, not one per pipeline node.** A per-node ledger
+would need `research_planner`'s sub-topic list and the aggregated `topic_researcher` reports
+to cross from one `RunExecutor`-dispatched turn into the next, and the only channel
+`RunExecutor` has for passing data into a turn — `temp:` session state
+([05-autonomous-runs.md](05-autonomous-runs.md#execution-semantics)) — is trimmed before
+Firestore persistence, so it does not survive between two separate `Runner.run_async` calls
+into the same session. The alternative, reading a finished turn's *structured node output*
+back out of stored Firestore events, is exactly the kind of ADK event shape CLAUDE.md's own
+working agreement says to dump and verify against a running turn rather than reason about in
+the abstract — and not a cost worth paying here. One `Workflow`, one turn: `RunExecutor`
+keeps the single `research` step it had before M9, now dispatching `research_workflow`
+instead of `research_agent`
+([05-autonomous-runs.md](05-autonomous-runs.md#execution-semantics)).
+
+**A crash mid-fan-out is safe to retry but not cheap: `research_planner` runs again.**
+`Workflow`'s own SETUP phase (`replay_manager.scan_workflow_events`) does fast-forward
+through nodes an invocation being *resumed* finds already completed, but
+`RunExecutor`'s retry is a brand-new `TurnService.start` call with a fresh ADK
+`invocation_id`, not a resume of the original one — `_build_event_index`
+(`workflow/utils/_replay_manager.py`) filters the session's stored events down to the
+*current* `ic.invocation_id` before scanning them, so nothing threads the first attempt's id
+through for the second to pick up. What resume-at-cursor still guarantees is safety, not
+savings: a crash mid-fan-out retries the whole `research` step — `research_planner` runs
+again — but the run still completes, and `report_{runId}` keying still means one report
+rather than two
+(`tests/test_run_executor.py::test_a_crash_mid_fan_out_retries_the_whole_research_step_safely`).
+Threading a resumable `invocation_id` through `RunExecutor`/`TurnService.start` would recover
+the planner's one call on a retried run and is a reasonable follow-up, not needed for
+correctness.
 
 ### `autonomous_workflow` (SequentialAgent)
 
@@ -413,7 +778,7 @@ Steps are individually checkpointed by the run ledger, so each is separately res
 | # | Step | Kind | Notes |
 | --- | --- | --- | --- |
 | 1 | `select_next_task` | code | Deterministic: a task the learner **queued** (`researchStatus == "pending"`) if there is one, oldest `researchRequestedAt` first; otherwise the lowest `order` among `draft`/`not_started`/`in_progress`, skipping `completed`, `discarded`, `postponed`, and unexpired `postponed_until`. No LLM. A run that took the project *because* something was requested has to research that thing ([05-autonomous-runs.md](05-autonomous-runs.md#candidate-selection-and-guards)). |
-| 2 | `research` | `research_agent` | Skipped if `task.needsResearch == false`. |
+| 2 | `research` | `research_workflow` (since M9; was `research_agent`) | Skipped if `task.needsResearch == false`. One turn drives the whole `research_planner` → `topic_researcher` × 3–5 → `reviewer_writer` graph to completion — `Workflow` has no "run one node and stop" primitive, so the ledger keeps one step ([above](#workflow-as-a-turn-root-and-retrying-a-crash-mid-fan-out)). A crash mid-fan-out is safe to retry — no duplicate report — but not cheap: the retry is a new turn with a fresh ADK `invocation_id`, so `Workflow`'s replay (scoped to the *current* invocation) does not skip `research_planner`, and it runs again. |
 | 3 | `post_report` | code | Writes `research_reports/*`, promotes `required[]` into the task's `items[]`, appends a `research_report_ref` event to the task's session, sets `researchStatus = done` — and promotes the task out of `draft` if the items are its first plan. |
 | 4 | `propose_tasks` | LlmAgent | May emit `add_task` / `add_subtask` calls if research revealed missing prerequisites. Bounded: ≤ 5 new tasks per run. |
 | 5 | `reprioritize` | code | Applies the agent's requested `set_next_up` / ordering via fractional index writes. |
@@ -462,7 +827,14 @@ the point: `project_coach` has no item-level tool, and `task_teacher` has no `ad
 | `complete_task_item` | `task_teacher` | `(item_id, note)` | **requires user confirmation**, on the same ADK handshake as `discard_task` — an item completing can complete the whole task ([02-data-model.md](02-data-model.md#task-items)), so the last word before that stays the learner's. Scoped to the session's own task; the tool takes no task id |
 | `add_task_items` | `task_teacher` | `(items[], subtask_id?)` | appends items. Leaf tasks only; refused on a task with subtasks. Used when the conversation turns up work the report did not anticipate |
 | `update_project_prefs` | `project_coach` | `(default_task_minutes?, research_depth?, allow_videos?)` | one named argument per writable key — spelling them out *is* the whitelist, where a patch object would let the model invent fields |
-| `post_research_report` | — (`research_agent`) | `(summary, required[], optional[])` — `task_id` is read from the invocation, not an argument, and may be `null` | validates `Σ required.minutes ≤ budget`, assigns `itemId`s, writes the report, and — only when the invocation names a task — promotes `required[]` into `tasks/{id}.items[]` in the same transaction. A task-less call (M8: research about the project as a whole) writes the report and stops there; there is no checklist to promote into |
+| `post_research_report` | — (`reviewer_writer`, since M9; formerly `research_agent`) | `(summary, required[], optional[])` — `task_id` is read from the invocation, not an argument, and may be `null` | validates `Σ required.minutes ≤ budget`, assigns `itemId`s, writes the report, and — only when the invocation names a task — promotes `required[]` into `tasks/{id}.items[]` in the same transaction. A task-less call (M8: research about the project as a whole) writes the report and stops there; there is no checklist to promote into |
+| `write_study_plan` | — (`plan_tailor`, `build_roadmap_workflow`) | `(title, short_description, long_description, memo, proposed_tasks[], plan[])` | validates every proposed task's items and every plan entry (unique `taskSlug` covering every proposed task, known slugs in `prerequisiteTasks`/`after`, `relevance` 0–4, a real `decision`, a non-empty `why`), then writes one `StudyPlan` ([02-data-model.md](02-data-model.md#projectsprojectidstudy_plansplanid)). Never touches the board |
+| `write_roadmap_brief` | `project_coach` | `(subject, time_budget, specific_topics?, additional_notes?, attachments?)` | `subject`/`time_budget` non-empty; upserts the project's one in-progress `roadmapBrief` draft. `attachments` names files the learner referenced (display names), not every upload the conversation has seen — **each name is validated against the session's own uploads and the call is refused, with the real list, if any name matches nothing**. The result also carries `availableAttachments` — the conversation's own attachment names — on the first call for a brief, if that call named none and the conversation has some, so a model that never considered them gets one nudge to reconsider |
+| `read_roadmap_brief` | `project_coach` | `()` | owner; `null` if no draft, or the last one was already used to start a run |
+| `propose_roadmap_brief` | `project_coach` | `(subject, time_budget, specific_topics?, additional_notes?, attachments?)` | **requires user confirmation**. The confirmation dialog renders the project's stored `roadmapBrief` document, not these arguments — see the note below. **Its own attachment checklist, if the learner edits it, overrides `attachments` deterministically** (`CONFIRMED_ATTACHMENTS_KEY` in the answer's payload) — the model's argument is only the starting point the dialog shows, not the last word. Approval re-stores the brief, renders it, and calls `ResearchService.start_roadmap` with `attachment_names=` the resolved list — the same lease/ledger/queue path `POST /api/sessions/{sid}/roadmap` uses — then clears the draft |
+| `view_study_plan` | `project_coach` | `()` | owner; returns the most recently written plan for the project — `plan_tailor`'s own write or a later `revise_study_plan` copy, whichever is newer |
+| `revise_study_plan` | `project_coach` | `(plan_id, plan[])` | same `plan[]` validation as `write_study_plan`'s; writes a **new** `StudyPlan` (`revisedFromPlanId` pointing at `plan_id`) rather than editing it, so the original verdict stays legible. Refused once `plan_id` has already been materialized |
+| `materialize_study_plan` | `project_coach` | `(plan_id, decisions?, project_description)` | **requires user confirmation** — the study-plan analogue of `update_project_plan`'s gate. Creates a real board task — with `required[]` promoted into `items[]` — for every plan entry whose `decision` is `include` or `additional` (the default), in `prerequisiteTasks`/`after` order; `exclude`/`reject` create nothing. Idempotent: a plan already materialized returns its first set of created tasks rather than making a second one. `project_description` is a one-sentence, factual candidate for `Project.description` — always supplied, applied only if the confirmation dialog's "Also update project description" checkbox comes back checked |
 
 ### Asking the learner something
 

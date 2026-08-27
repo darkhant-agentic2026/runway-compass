@@ -6,9 +6,12 @@ docs/04-api-contract.md#sessions--turns. The one shape worth pointing at is
 > The handler creates `turns/{turnId}`, spawns a detached `asyncio.Task`, and returns. It
 > does **not** await generation. Streaming is observed over the WebSocket.
 
-`POST /api/sessions/{sid}/research` is the other endpoint in that table and behaves the
-same way, for the same reason: it takes the project's agent lease, opens a run in the
-ledger, starts a research *turn*, and answers 202. The client watches that turn.
+`POST /api/sessions/{sid}/research` and `.../roadmap` are the other two endpoints in that
+table, and 202 for a different reason since M9: each takes the project's agent lease, opens
+a run in the ledger, and hands it to the same Cloud Tasks queue a scheduled run goes
+through, rather than starting a turn in this process — `services/research.py`'s module
+docstring explains why. The client watches the run (`GET /api/runs/{runId}`), which carries
+`turnId`/`sessionId` once the queue actually starts it.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from coach.api.idempotency import idempotency_guard
 from coach.api.schemas import (
     ResearchRequest,
     ResearchResponse,
+    RoadmapRequest,
     SessionEventsResponse,
     SessionEventView,
     SessionResponse,
@@ -162,11 +166,14 @@ async def start_research(
 ) -> ResearchResponse:
     """Research this task now — the manual trigger, on the shared run path.
 
-    202 like `POST /turns`, and for the same reason: the work is a detached generation
-    task that outlives the request and the socket that asked for it. A `409` means the
-    project's agent lease is held, and carries the in-flight `runId` so the client can
-    attach to that run rather than starting a duplicate
-    (docs/04-api-contract.md#post-apisessionssidresearch).
+    202, but since M9 for a different reason than `POST /turns`: the run is created and
+    handed to the same Cloud Tasks queue a scheduled run goes through, not started as a
+    detached task in this process — a multi-minute research run has to survive the learner
+    closing the tab, which a queued Cloud Run request does and a background asyncio task on
+    a scaled-to-zero instance does not. `turnId` in the response is `null`; the client polls
+    `GET /api/runs/{runId}` for it. A `409` means the project's agent lease is held, and
+    carries the in-flight `runId` so the client can attach to that run rather than starting
+    a duplicate (docs/04-api-contract.md#post-apisessionssidresearch).
     """
     run = await research.start_manual(
         principal,
@@ -174,6 +181,39 @@ async def start_research(
         reason=body.reason,
         budget_minutes_override=body.budget_minutes_override,
         force=body.force,
+        attachments=[attachment.model_dump(by_alias=True) for attachment in body.attachments],
+    )
+    return ResearchResponse(
+        run_id=run.id, turn_id=run.turn_id, session_id=run.session_id or "", mode=run.mode
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/roadmap",
+    response_model=ResearchResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(idempotency_guard)],
+)
+async def start_roadmap(
+    session_id: str,
+    body: RoadmapRequest,
+    principal: CurrentUser,
+    research: Research,
+) -> ResearchResponse:
+    """Build a study plan for the project as a whole — `task_proposer` -> `plan_tailor`.
+
+    202 like `POST /research`, queued the same way and for the same reason
+    (`ResearchService.start_roadmap`); the response shape is identical, which is why it
+    reuses `ResearchResponse` rather than a new one. Taskless only: `session_id` must not
+    be linked to a task
+    (docs/03-agent-design.md#the-taskless-case-task_proposer-and-plan_tailor-replace-reviewer_writer).
+    A `409` means the project's agent lease is held and carries the in-flight `runId`, same
+    as `/research`.
+    """
+    run = await research.start_roadmap(
+        principal,
+        session_id,
+        reason=body.reason,
         attachments=[attachment.model_dump(by_alias=True) for attachment in body.attachments],
     )
     return ResearchResponse(

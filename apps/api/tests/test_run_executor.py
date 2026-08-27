@@ -14,8 +14,8 @@ docs/05-autonomous-runs.md#execution-semantics. What each test here is really ab
   `in_progress` leaves a task invariant 6 will never complete, waiting on a run that no
   longer exists.
 
-The stub model does the research (`integrations/stub_model.py` answers `research_agent` with
-one report call), so what is under test is the executor's control flow, not a model's
+The stub model does the research (`integrations/stub_model.py` answers `reviewer_writer`
+with one report call), so what is under test is the executor's control flow, not a model's
 judgement.
 """
 
@@ -266,6 +266,48 @@ async def test_resuming_at_the_cursor_does_not_re_run_research(
     assert resumed.status is RunStatus.COMPLETE
     # One further generation — `propose_tasks` — and no second research turn.
     assert len(stub_model.invocations) <= 1
+
+
+async def test_a_crash_mid_fan_out_retries_the_whole_research_step_safely(
+    client: httpx.AsyncClient,
+    container,
+    scheduler: SchedulerService,
+    stub_model: CountingStubModel,
+) -> None:
+    """A crash inside the (single) `research` step re-runs the whole turn, safely but not
+    cheaply: `RunExecutor`'s retry is a brand-new `Runner.run_async` call with a fresh ADK
+    `invocation_id`, and `Workflow`'s replay only recovers events tagged with the *current*
+    `invocation_id` (`workflow/utils/_replay_manager.py`'s
+    `_build_event_index(events, ic.invocation_id)`) — a prior, different invocation's
+    checkpoint events are invisible to it, so `research_planner` runs again rather than being
+    skipped (docs/03-agent-design.md#workflow-as-a-turn-root-and-retrying-a-crash-mid-fan-out).
+
+    What the ledger's resume-at-cursor still guarantees, and what this test asserts instead:
+    a crash mid-fan-out is retried as a whole — `research_planner` runs again — but the run
+    still completes, and `report_{runId}` keying still means exactly one report, not two.
+    """
+    await _board(client)
+    run_id = (await scheduler.tick()).scheduled[0]
+
+    stub_model.fail_after = 1
+    failed = await container.executor.execute(run_id)
+    assert failed is not None and failed.status is RunStatus.FAILED
+    # The planner's call, plus at least one failed topic_researcher attempt.
+    assert len(stub_model.invocations) >= 2
+    assert stub_model.planner_invocations == 1
+
+    stub_model.fail_after = None
+    stub_model.invocations.clear()
+    stub_model.planner_invocations = 0
+    resumed = await container.executor.execute(run_id)
+
+    assert resumed is not None
+    assert resumed.status is RunStatus.COMPLETE
+    # The retry re-plans from scratch — this is the cost of the limitation above, not a bug.
+    assert stub_model.planner_invocations == 1
+
+    report = await container.report_repository.get(resumed.project_id, f"report_{run_id}")
+    assert report is not None
 
 
 # --- the second presence check -----------------------------------------------------------

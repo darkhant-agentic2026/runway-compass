@@ -38,6 +38,7 @@ from coach.repositories.tasks import TaskRepository
 from coach.services.models import (
     Origin,
     Project,
+    ReportItemKind,
     ResearchStatus,
     Rollup,
     Task,
@@ -1042,10 +1043,14 @@ def _task_item(draft: dict[str, Any], *, source_report_id: str | None) -> TaskIt
     short = str(draft.get("shortDescription") or draft.get("short_description") or "").strip()
     if not short:
         raise ValidationProblem("Every checklist item needs a short description.")
+    raw_kind = draft.get("kind")
     return TaskItem(
         item_id=str(draft.get("itemId") or draft.get("item_id") or "") or new_item_id(),
         short_description=short,
         details=str(draft.get("details") or ""),
+        # `None` for a hand-added item, whose `TaskItemDraft` carries no `kind` at all —
+        # only a promoted item (`as_checklist_item`/`_as_checklist_draft`) supplies one.
+        kind=ReportItemKind(raw_kind) if raw_kind else None,
         guided=bool(draft.get("guided", False)),
         completed=bool(draft.get("completed", False)),
         minutes=draft.get("minutes"),

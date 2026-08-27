@@ -62,6 +62,8 @@ export const queryKeys = {
   /** + M8. The report a run wrote — a run's own key, since a project-scoped run has no
    * task to nest it under. */
   runReport: (runId: string) => ['run', runId, 'report'] as const,
+  /** The `StudyPlan` a roadmap run wrote — `runReport`'s sibling for a roadmap run. */
+  runPlan: (runId: string) => ['run', runId, 'plan'] as const,
 };
 
 export function createQueryClient(): QueryClient {
@@ -483,6 +485,32 @@ export function useStartProjectResearch(projectId: string) {
 }
 
 /**
+ * "Build a roadmap for this project" — `task_proposer` -> `plan_tailor`
+ * (docs/03-agent-design.md#the-taskless-case-task_proposer-and-plan_tailor-replace-reviewer_writer),
+ * kicked off the same way `useStartProjectResearch` kicks off `reviewer_writer`: from the
+ * board, taskless, watched as a run. `reason` is what the roadmap should cover and the
+ * server refuses an empty one, same as project-level research.
+ */
+export function useStartRoadmap(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      sessionId,
+      reason,
+      attachments,
+    }: {
+      sessionId: string;
+      reason: string;
+      attachments?: { uploadId: string; mimeType: string }[];
+    }) => api.startRoadmap(sessionId, { reason, attachments }, newIdempotencyKey()),
+    onSuccess: subscribeToResearchRun,
+    onSettled() {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.projectRuns(projectId) });
+    },
+  });
+}
+
+/**
  * "Have my coach prepare this" — queue research for the next tick instead of watching it.
  *
  * The queued, headless half of the research pair
@@ -565,16 +593,23 @@ export function useTaskRuns(taskId: string) {
 }
 
 /**
- * One run, for the research view. Polls while `running`: unlike the board and the task
- * workspace, this screen has no `board_update` to tell it the run finished — a
- * project-scoped run touches no task, so nothing pushes an invalidation here.
+ * One run, for the research view. Polls while `pending` or `running`: unlike the board and
+ * the task workspace, this screen has no `board_update` to tell it the run finished — a
+ * project-scoped run touches no task, so nothing pushes an invalidation here. `pending` is
+ * in this list since M9: a manual or roadmap run's ledger row now starts `pending` — queued
+ * for the same Cloud Tasks/`RunExecutor` path a scheduled run takes — and stopping the poll
+ * at `running` alone would leave the "Queued" state on screen with nothing to move it to
+ * "Running" once the queue actually starts the turn.
  */
 export function useRun(runId: string) {
   return useQuery({
     queryKey: queryKeys.run(runId),
     queryFn: () => api.getRun(runId),
     enabled: runId.length > 0,
-    refetchInterval: (query) => (query.state.data?.status === 'running' ? 2000 : false),
+    refetchInterval: (query) =>
+      query.state.data?.status === 'running' || query.state.data?.status === 'pending'
+        ? 2000
+        : false,
   });
 }
 
@@ -587,6 +622,19 @@ export function useRunReport(runId: string, enabled: boolean) {
   return useQuery({
     queryKey: queryKeys.runReport(runId),
     queryFn: () => api.getRunReport(runId),
+    enabled: enabled && runId.length > 0,
+  });
+}
+
+/**
+ * The `StudyPlan` a roadmap run wrote. `useRunReport`'s sibling: `enabled` is the caller's
+ * `run.status === 'complete' && isRoadmapRun`, on the same reasoning — fetching earlier is a
+ * 404 the research view has nothing useful to do with.
+ */
+export function useRunPlan(runId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.runPlan(runId),
+    queryFn: () => api.getRunPlan(runId),
     enabled: enabled && runId.length > 0,
   });
 }
@@ -649,7 +697,7 @@ export function useCreateTask(projectId: string) {
 export function useCreateProject() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (body: { title: string; goal?: string }) =>
+    mutationFn: (body: { title: string; description?: string }) =>
       api.createProject(body, newIdempotencyKey()),
     onSuccess() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects });
@@ -662,7 +710,7 @@ export function usePatchProject(projectId: string) {
   return useMutation({
     mutationFn: (patch: {
       title?: string;
-      goal?: string;
+      description?: string;
       status?: Project['status'];
       prefs?: Partial<ProjectPrefs>;
     }) => api.patchProject(projectId, patch),

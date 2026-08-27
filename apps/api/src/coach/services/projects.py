@@ -6,13 +6,21 @@ Every entry point takes a `Principal` and asserts ownership before touching
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
+from coach.core.clock import now
 from coach.core.errors import NotFound, ValidationProblem
 from coach.core.ids import project_id as new_project_id
 from coach.core.principal import Principal
 from coach.repositories.projects import ProjectRepository
-from coach.services.models import EffectivePrefs, Project, ProjectPrefs, ProjectStatus
+from coach.services.models import (
+    EffectivePrefs,
+    Project,
+    ProjectPrefs,
+    ProjectStatus,
+    RoadmapBrief,
+)
 from coach.services.prefs import resolve_prefs
 from coach.services.users import UserService
 
@@ -56,7 +64,9 @@ class ProjectService:
     ) -> list[Project]:
         return await self._projects.list_for_owner(principal.uid, status)
 
-    async def create(self, principal: Principal, *, title: str, goal: str = "") -> Project:
+    async def create(
+        self, principal: Principal, *, title: str, description: str = ""
+    ) -> Project:
         """Create a project.
 
         docs/04-api-contract.md also has this endpoint create an intake session (a
@@ -66,7 +76,9 @@ class ProjectService:
         # Ensure the user document exists, so `globalPrefs` can be resolved against this
         # project from the moment it is created.
         await self._users.get_or_create(principal)
-        project = Project(id=new_project_id(), owner_uid=principal.uid, title=title, goal=goal)
+        project = Project(
+            id=new_project_id(), owner_uid=principal.uid, title=title, description=description
+        )
         return await self._projects.create(project)
 
     async def get(self, principal: Principal, project_id: str) -> Project:
@@ -78,7 +90,7 @@ class ProjectService:
         project_id: str,
         *,
         title: str | None = None,
-        goal: str | None = None,
+        description: str | None = None,
         status: ProjectStatus | None = None,
         prefs: dict[str, Any] | None = None,
     ) -> Project:
@@ -87,8 +99,8 @@ class ProjectService:
         updates: dict[str, Any] = {}
         if title is not None:
             updates["title"] = title
-        if goal is not None:
-            updates["goal"] = goal
+        if description is not None:
+            updates["description"] = description
         if status is not None:
             updates["status"] = status.value
         if prefs:
@@ -110,6 +122,48 @@ class ProjectService:
     async def archive(self, principal: Principal, project_id: str) -> Project:
         """`DELETE /api/projects/{id}` — a soft delete to `archived`."""
         return await self.patch(principal, project_id, status=ProjectStatus.ARCHIVED)
+
+    async def set_roadmap_brief(
+        self,
+        principal: Principal,
+        project_id: str,
+        *,
+        subject: str,
+        time_budget: str,
+        specific_topics: Sequence[str] | None = None,
+        additional_notes: str = "",
+        attachments: Sequence[str] | None = None,
+    ) -> Project:
+        """`write_roadmap_brief`'s write. Upserts the project's one in-progress roadmap
+        draft — a later call replaces the whole draft rather than merging field by field,
+        so the coach always writes what it currently believes the brief to be.
+
+        `specific_topics` is typed `Sequence[str]`, not `list[str]`: this class already
+        has a method named `list`, and mypy resolves a bare `list[...]` annotation inside
+        it against the class's own namespace rather than the builtin, under
+        `from __future__ import annotations` — a real mypy quirk, not a style choice.
+        """
+        await self.require_owned(principal, project_id)
+        brief = RoadmapBrief(
+            subject=subject.strip(),
+            time_budget=time_budget.strip(),
+            specific_topics=[
+                topic.strip() for topic in (specific_topics or []) if topic.strip()
+            ],
+            additional_notes=additional_notes.strip(),
+            attachments=[name.strip() for name in (attachments or []) if name.strip()],
+            updated_at=now(),
+        )
+        await self._projects.patch(project_id, {"roadmapBrief": brief.to_document()})
+        return await self.require_owned(principal, project_id)
+
+    async def clear_roadmap_brief(self, principal: Principal, project_id: str) -> Project:
+        """Called once `propose_roadmap_brief` has scheduled a run from the draft, so a
+        later roadmap conversation starts from nothing rather than from a brief that has
+        already been used."""
+        await self.require_owned(principal, project_id)
+        await self._projects.patch(project_id, {"roadmapBrief": None})
+        return await self.require_owned(principal, project_id)
 
     async def effective_prefs(self, principal: Principal, project_id: str) -> EffectivePrefs:
         """`GET /api/projects/{id}/effective-prefs`.

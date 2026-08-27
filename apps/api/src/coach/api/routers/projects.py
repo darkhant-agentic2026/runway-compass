@@ -36,7 +36,7 @@ async def list_projects(
 async def create_project(
     body: ProjectCreate, principal: CurrentUser, projects: Projects, sessions: Sessions
 ) -> Project:
-    """`{ title, goal? }` — creates project **and an intake session**.
+    """`{ title, description? }` — creates project **and an intake session**.
 
     The intake session is a session with `taskId: null` (docs/04-api-contract.md), and
     from M3 it is the Socratic conversation the learner lands in.
@@ -46,7 +46,7 @@ async def create_project(
     conversation, so a response whose `intakeSessionId` was still `null` would send it
     through `POST /api/projects/{id}/session` for a value this request already knows.
     """
-    project = await projects.create(principal, title=body.title, goal=body.goal)
+    project = await projects.create(principal, title=body.title, description=body.description)
     intake = await sessions.create_intake(principal, project.id)
     return project.model_copy(update={"intake_session_id": intake.id})
 
@@ -66,7 +66,7 @@ async def patch_project(
         principal,
         project_id,
         title=body.title,
-        goal=body.goal,
+        description=body.description,
         status=body.status,
         prefs=(
             body.prefs.model_dump(by_alias=True, exclude_none=True)

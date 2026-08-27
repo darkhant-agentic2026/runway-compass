@@ -17,6 +17,7 @@ import { ChevronDown, ChevronRight, GripVertical, Sparkles } from 'lucide-react'
 import { ProgressRing } from '@/components/board/ProgressRing';
 import { STATE_LABELS } from '@/components/board/task-state';
 import { TaskRowActions } from '@/components/board/TaskRowActions';
+import { ItemKindStrip } from '@/components/task/item-kind';
 import { Badge } from '@/components/ui/badge';
 import { formatMinutes, pluralize } from '@/lib/format';
 import type { Task, TaskState, TaskWithSubtasks } from '@/lib/schemas';
@@ -171,15 +172,21 @@ export function TaskCard({
               never both apply: `items` and `rollup` are mutually exclusive
               (docs/02-data-model.md#task-items), which is why this is an `else if`.
             */
-            <div className="mt-2 flex items-center gap-2" data-testid="item-progress">
-              <ProgressRing
-                completed={task.items.filter((item) => item.completed).length}
-                total={task.items.length}
-              />
-              <span className="text-sm text-muted-foreground">
-                {task.items.filter((item) => item.completed).length} of {task.items.length} done
-              </span>
-            </div>
+            <>
+              <div className="mt-2 flex items-center gap-2" data-testid="item-progress">
+                <ProgressRing
+                  completed={task.items.filter((item) => item.completed).length}
+                  total={task.items.length}
+                />
+                <span className="text-sm text-muted-foreground">
+                  {task.items.filter((item) => item.completed).length} of {task.items.length}{' '}
+                  done
+                </span>
+              </div>
+              {/* Icons only — `estimate` above already carries the task's duration, so
+                  repeating it here would be the same number twice on one card. */}
+              <ItemKindStrip required={task.items} className="mt-1" />
+            </>
           ) : null}
         </div>
 

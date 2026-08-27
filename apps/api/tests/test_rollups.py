@@ -143,7 +143,7 @@ def test_next_up_only_considers_top_level_tasks() -> None:
 
 @pytest.fixture
 async def project(container, alice):
-    return await container.projects.create(alice, title="Rollups", goal="g")
+    return await container.projects.create(alice, title="Rollups", description="g")
 
 
 async def _parent_with_children(container, alice, project, minutes: list[int]):

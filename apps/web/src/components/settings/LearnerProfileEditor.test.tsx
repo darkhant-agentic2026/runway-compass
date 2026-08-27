@@ -26,8 +26,13 @@ describe('LearnerProfileEditor', () => {
       thinkingStyle: 'Visual and hands-on',
       strengths: ['Python', 'SQL'],
       gaps: ['Distributed systems'],
-      technologies: [
-        { name: 'Postgres', level: 'advanced', evidence: 'Optimized query plans' },
+      skills: [
+        {
+          name: 'Postgres',
+          area: 'Databases',
+          level: 'advanced',
+          evidence: 'Optimized query plans',
+        },
       ],
       pacing: 'Fast-paced',
       feedbackNotes: ['Learner grasps indexing quickly'],
@@ -78,40 +83,60 @@ describe('LearnerProfileEditor', () => {
     });
   });
 
-  it('allows adding and removing a technology belief', async () => {
+  it('allows adding and removing a skill belief', async () => {
     const patchSpy = vi
       .spyOn(api, 'patchLearnerProfile')
       .mockResolvedValue(makeLearnerProfile());
     const profile = makeLearnerProfile({
-      technologies: [{ name: 'Docker', level: 'intermediate', evidence: 'Multi-stage builds' }],
+      skills: [
+        {
+          name: 'Docker',
+          area: 'DevOps',
+          level: 'intermediate',
+          evidence: 'Multi-stage builds',
+        },
+      ],
     });
 
     renderEditor(profile);
 
-    // Add tech
-    fireEvent.change(screen.getByPlaceholderText(/Technology name/i), {
+    // Add skill
+    fireEvent.change(screen.getByPlaceholderText(/Skill name/i), {
       target: { value: 'Kubernetes' },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/Subject or area/i), {
+      target: { value: 'DevOps' },
     });
     fireEvent.change(screen.getByPlaceholderText(/Evidence\/context/i), {
       target: { value: 'Helm deployments' },
     });
-    fireEvent.click(screen.getByRole('button', { name: /Add technology/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Add skill/i }));
 
     await waitFor(() => {
       expect(patchSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          technologies: [
-            { name: 'Docker', level: 'intermediate', evidence: 'Multi-stage builds' },
-            { name: 'Kubernetes', level: 'intermediate', evidence: 'Helm deployments' },
+          skills: [
+            {
+              name: 'Docker',
+              area: 'DevOps',
+              level: 'intermediate',
+              evidence: 'Multi-stage builds',
+            },
+            {
+              name: 'Kubernetes',
+              area: 'DevOps',
+              level: 'intermediate',
+              evidence: 'Helm deployments',
+            },
           ],
         }),
       );
     });
 
-    // Remove tech
-    fireEvent.click(screen.getByRole('button', { name: /Remove technology Docker/i }));
+    // Remove skill
+    fireEvent.click(screen.getByRole('button', { name: /Remove skill Docker/i }));
     await waitFor(() => {
-      expect(patchSpy).toHaveBeenCalledWith(expect.objectContaining({ technologies: [] }));
+      expect(patchSpy).toHaveBeenCalledWith(expect.objectContaining({ skills: [] }));
     });
   });
 
@@ -136,7 +161,7 @@ describe('LearnerProfileEditor', () => {
         thinkingStyle: '',
         strengths: [],
         gaps: [],
-        technologies: [],
+        skills: [],
         pacing: '',
         feedbackNotes: [],
       });

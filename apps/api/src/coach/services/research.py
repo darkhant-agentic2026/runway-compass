@@ -1,56 +1,57 @@
-"""Manual research: `POST /api/sessions/{sid}/research`.
+"""Manual research: `POST /api/sessions/{sid}/research`, and manual roadmap generation:
+`POST /api/sessions/{sid}/roadmap`.
 
 docs/04-api-contract.md#post-apisessionssidresearch and
-docs/05-autonomous-runs.md. The endpoint is M4's; the scheduler that will drive the *same*
-path is M5's. Decision 8 of docs/00-overview.md is what this module exists to make true:
+docs/05-autonomous-runs.md. Decision 8 of docs/00-overview.md is what this module exists to
+make true:
 
 > **Manual and autonomous research are the same code path.** [It] creates a run with
 > `trigger: "manual"` and executes the identical workflow. No second implementation to
 > keep in sync.
 
-So the work is expressed as a run in the ledger, behind the project's agent lease, even
-though nothing schedules one yet. Doing it any other way now would mean M5 either
-re-implementing it or refactoring it, and the second is only cheaper if someone remembers
-to do it.
+So the work is expressed as a run in the ledger, behind the project's agent lease, and —
+since M9 — handed to the same `JobQueue`/`RunExecutor` a scheduled run goes through, rather
+than run in this request's own process.
 
-**A research run is an ordinary turn.** It gets a `turns/{turnId}` document, a detached
-generation task, checkpoints, and a broker subscription — so the disconnect guarantee
-covers it for free, the tool-activity chips render from the same frames, and the report
-lands in the transcript the learner is reading. What differs is one argument to
-`TurnService.start`.
+**Why a manual run is queued rather than started inline, since M9.** Every turn used to be
+a detached `asyncio.Task` in the process that accepted the request — fine for a chat turn
+the learner is watching, but a multi-minute research or roadmap run is exactly the kind of
+work a learner starts and then closes the laptop on. `docs/05-autonomous-runs.md`'s trigger
+chain already solves "keep working after the thing that started this is gone" for scheduled
+runs — a Cloud Tasks delivery is a real in-flight HTTP request for as long as the run takes,
+independent of any browser tab — so a manual run takes the same path instead of relying on
+its own request surviving. What this method still does synchronously, because it is cheap
+and the client needs it back in the response: lease acquisition, the ledger row, and the
+research session (`sessionId` is in the 202 body immediately; `turnId` is not — the client
+already polls `GET /api/runs/{runId}` for it, the same way it does for a scheduled run's).
 """
 
 from __future__ import annotations
 
-import contextlib
 import logging
 
-from coach.agents.context import RUN_ID_KEY
-from coach.core.clock import now
 from coach.core.errors import Conflict, NotFound, ValidationProblem
 from coach.core.ids import run_id as new_run_id
 from coach.core.principal import Principal
+from coach.integrations.queue import JobQueue
 from coach.repositories.runs import LeaseHeld, RunRepository
-from coach.services.models import (
-    AutonomousRun,
-    ResearchStatus,
-    RunStatus,
-    RunStep,
-    StepStatus,
-    Task,
-    TurnStatus,
-)
+from coach.services.models import AutonomousRun, ResearchStatus, RunStatus, RunStep, Task
 from coach.services.sessions import SessionService
 from coach.services.tasks import TaskService
-from coach.services.turns import TurnService
 
 logger = logging.getLogger(__name__)
 
-#: The steps M4 implements. docs/05-autonomous-runs.md lists five; `select_next_task` is
-#: not one of them for a manual run — the learner picked the task by opening it — and
-#: `propose_tasks`/`reprioritize` are M5. Absent rather than `pending`, so `cursor` stays
-#: truthful.
+#: The steps a manual research run's ledger row carries. `select_next_task` is not one of
+#: them — the learner picked the task by opening it — and `propose_tasks`/`reprioritize`
+#: are the autonomous pipeline's own board-reshaping steps, absent rather than `pending` so
+#: `cursor` stays truthful.
 MANUAL_STEPS = ("research", "post_report")
+
+#: `start_roadmap`'s own step ids — distinct from `MANUAL_STEPS` so a client can tell the
+#: two kinds of run apart from `steps[0].id` alone (docs/03-agent-design.md, "the taskless
+#: case: task_proposer and plan_tailor replace reviewer_writer"), without a new field on
+#: `AutonomousRun`.
+ROADMAP_STEPS = ("roadmap", "write_plan")
 
 
 class ResearchService:
@@ -59,14 +60,14 @@ class ResearchService:
         runs: RunRepository,
         tasks: TaskService,
         sessions: SessionService,
-        turns: TurnService,
+        queue: JobQueue,
         *,
         instance_id: str,
     ) -> None:
         self._runs = runs
         self._tasks = tasks
         self._sessions = sessions
-        self._turns = turns
+        self._queue = queue
         self._instance_id = instance_id
 
     async def get(self, principal: Principal, run_id: str) -> AutonomousRun:
@@ -91,7 +92,7 @@ class ResearchService:
         or the project's intake session); it is used only to resolve *what* to research
         and to check ownership. The turn itself always runs in a fresh session created for
         this run, never in `session_id`
-        (docs/03-agent-design.md#research_agent).
+        (docs/03-agent-design.md#the-research-pipeline-since-m9).
 
         Raises:
             ValidationProblem: if the task is a parent (its subtasks are its plan, and
@@ -126,6 +127,127 @@ class ResearchService:
                 "research — there is no task description to fall back on."
             )
 
+        run = await self._create_and_enqueue(
+            principal,
+            project_id=project_id,
+            task_id=task.id if task is not None else None,
+            session_id=session_id,
+            steps=MANUAL_STEPS,
+            opening_text=_opening_message(task, reason),
+            attachments=attachments,
+        )
+        if task is not None:
+            # `in_progress` before the queue even picks this up, and this is half of
+            # invariant 6 (docs/02-data-model.md#task-state-machine): a task whose
+            # checklist is already ticked must not complete itself while a run is about to
+            # rewrite it.
+            await self._tasks.set_research(
+                principal, task.id, status=ResearchStatus.IN_PROGRESS
+            )
+        logger.info(
+            "manual research run queued",
+            extra={
+                "run_id": run.id,
+                "session_id": run.session_id,
+                "task_id": task.id if task else None,
+                "project_id": project_id,
+                # Accepted and recorded, same as before M8 — still not threaded into the
+                # model's own budget (docs/02-data-model.md's pre-existing, documented gap).
+                "budget_override": budget_minutes_override,
+            },
+        )
+        return run
+
+    async def start_roadmap(
+        self,
+        principal: Principal,
+        session_id: str,
+        *,
+        reason: str,
+        attachments: list[dict[str, str]] | None = None,
+        attachment_names: list[str] | None = None,
+    ) -> AutonomousRun:
+        """Build a study plan for the project as a whole — `build_roadmap_workflow`
+        (docs/03-agent-design.md#the-taskless-case-task_proposer-and-plan_tailor-replace-reviewer_writer).
+
+        Taskless only, unlike `start_manual`: `task_proposer`/`plan_tailor` size several
+        tasks to the learner's own preferred length, which is a property of the whole
+        project, not of one task already on the board. `session_id` names the conversation
+        the request came from — the project's own intake session, or any other
+        `taskId: null` session — and, as with `start_manual`, is used only to resolve
+        ownership and to carry over its own uploads; the turn itself always runs in a
+        fresh session created for this run.
+
+        `attachment_names`, given, narrows the conversation's own uploads
+        (`_create_and_enqueue`'s `context_attachments`) to the ones named — display names,
+        matched case-insensitively. `propose_roadmap_brief` passes the brief's own
+        referenced attachments here rather than letting every upload the coach
+        conversation has ever seen ride along: unlike a task's own session, a project
+        coach conversation is not scoped to one topic, so "everything this conversation
+        has seen" can span requests unrelated to the roadmap being started. `None` (the
+        button-triggered path, `StartProjectRoadmap`) keeps the old behaviour — every
+        upload the session has seen carries over, since that request has no brief to
+        narrow it against.
+
+        Raises:
+            ValidationProblem: the session has no project, is linked to a task, or
+                `reason` is empty.
+            Conflict: the project's agent lease is held — carries the in-flight `runId`,
+                so the client can attach to that run instead of starting a duplicate.
+        """
+        linkage = await self._sessions.require_owned(principal, session_id)
+        if linkage.project_id is None:
+            raise ValidationProblem(
+                "This conversation is not linked to a project, so there is nothing to plan."
+            )
+        if linkage.task_id is not None:
+            raise ValidationProblem(
+                "Roadmap generation is for the project as a whole. Ask from the "
+                "project's own conversation, not from inside one task."
+            )
+        if not reason.strip():
+            raise ValidationProblem(
+                "Say what the roadmap should cover — there is no task description to "
+                "fall back on."
+            )
+
+        run = await self._create_and_enqueue(
+            principal,
+            project_id=linkage.project_id,
+            task_id=None,
+            session_id=session_id,
+            steps=ROADMAP_STEPS,
+            opening_text=reason.strip(),
+            attachments=attachments,
+            attachment_names=attachment_names,
+        )
+        logger.info(
+            "roadmap run queued",
+            extra={
+                "run_id": run.id,
+                "session_id": run.session_id,
+                "project_id": linkage.project_id,
+            },
+        )
+        return run
+
+    async def _create_and_enqueue(
+        self,
+        principal: Principal,
+        *,
+        project_id: str,
+        task_id: str | None,
+        session_id: str,
+        steps: tuple[str, str],
+        opening_text: str,
+        attachments: list[dict[str, str]] | None,
+        attachment_names: list[str] | None = None,
+    ) -> AutonomousRun:
+        """Shared by `start_manual` and `start_roadmap`: lease, ledger row, session,
+        enqueue. What differs between the two callers is entirely in their arguments —
+        which steps, what the turn should open with, and whether a task is involved —
+        not in how the run gets from "accepted" to "handed to the queue".
+        """
         run_id = new_run_id()
         try:
             await self._runs.acquire_lease(project_id, run_id, self._instance_id)
@@ -139,160 +261,52 @@ class ResearchService:
                 runId=held.run_id,
             ) from held
 
-        # Created before the turn, because the turn's completion callback closes it and a
-        # very fast run could otherwise finish before the row existed.
+        # Whatever the learner has already uploaded in *this* conversation — the task's
+        # own, or the project's intake one — carried over automatically, so a scope that
+        # mentions a file already sent does not also require re-attaching it here. Resolved
+        # now, not by the executor: `session_id` is the *caller's* conversation, not this
+        # run's own, and is not reachable from the ledger once this request returns.
+        context_attachments = await self._sessions.list_attachments(principal, session_id)
+        if attachment_names is not None:
+            # Narrowed to the referenced subset (`start_roadmap`'s own docstring) rather
+            # than trusted wholesale — `None` (every other caller) keeps every upload the
+            # conversation has seen.
+            wanted = {name.strip().lower() for name in attachment_names if name.strip()}
+            context_attachments = [
+                attachment
+                for attachment in context_attachments
+                if attachment.get("displayName", "").strip().lower() in wanted
+            ]
+
         run = await self._runs.create(
             AutonomousRun(
                 id=run_id,
                 owner_uid=principal.uid,
                 project_id=project_id,
-                task_id=task.id if task is not None else None,
+                task_id=task_id,
                 trigger="manual",
-                mode="inline",
-                status=RunStatus.RUNNING,
+                mode="queued",
+                status=RunStatus.PENDING,
                 instance_id=self._instance_id,
-                steps=[
-                    RunStep(id="research", status=StepStatus.RUNNING, started_at=now()),
-                    RunStep(id="post_report"),
-                ],
+                steps=[RunStep(id=steps[0]), RunStep(id=steps[1])],
+                pending_text=opening_text,
+                pending_attachments=attachments,
+                pending_context_attachments=context_attachments,
             )
         )
-        if task is not None:
-            # `in_progress` before the first model call, and this is half of invariant 6
-            # (docs/02-data-model.md#task-state-machine): a task whose checklist is
-            # already ticked must not complete itself while a run is about to rewrite it.
-            await self._tasks.set_research(
-                principal, task.id, status=ResearchStatus.IN_PROGRESS
-            )
 
         # A fresh session for this run, never `session_id` — docs/02-data-model.md:
-        # "A research session is minted fresh for every run, and never reused."
+        # "A research session is minted fresh for every run, and never reused." Created
+        # here rather than left to the executor so the 202 response can carry it
+        # immediately — cheap (one Firestore write, no model call), unlike the turn itself.
         research_session = await self._sessions.create_research_session(
-            principal, project_id=project_id, task_id=(task.id if task else None), run_id=run_id
+            principal, project_id=project_id, task_id=task_id, run_id=run_id
         )
         await self._runs.patch(run_id, {"sessionId": research_session.id})
         run = run.model_copy(update={"session_id": research_session.id})
 
-        # Whatever the learner has already uploaded in *this* conversation — the task's
-        # own, or the project's intake one — carried over automatically, so a scope that
-        # mentions a file already sent does not also require re-attaching it here.
-        # `attachments` (below) is for a file the learner is attaching for the first time,
-        # specifically for this request.
-        context_attachments = await self._sessions.list_attachments(principal, session_id)
-
-        try:
-            turn = await self._turns.start(
-                principal,
-                research_session.id,
-                text=_opening_message(task, reason),
-                attachments=attachments,
-                context_attachments=context_attachments,
-                agent="research",
-                state_delta={RUN_ID_KEY: run_id},
-                on_finished=lambda: self._close(
-                    principal, run_id, project_id, task.id if task else None
-                ),
-            )
-        except Exception:
-            # The lease is only worth holding while something is using it. A turn that
-            # failed to start leaves nothing to release it later, so a project would be
-            # locked out of research for the full five-minute TTL because of a validation
-            # error.
-            await self._runs.release_lease(project_id, run_id)
-            await self._runs.patch(run_id, {"status": RunStatus.FAILED.value})
-            if task is not None:
-                await self._tasks.set_research(principal, task.id, status=ResearchStatus.FAILED)
-            raise
-
-        run = run.model_copy(update={"turn_id": turn.id})
-        await self._runs.patch(run_id, {"turnId": turn.id})
-
-        logger.info(
-            "manual research run started",
-            extra={
-                "run_id": run.id,
-                "turn_id": turn.id,
-                "session_id": research_session.id,
-                "task_id": task.id if task else None,
-                "project_id": project_id,
-                "budget_override": budget_minutes_override,
-            },
-        )
+        await self._queue.enqueue_run(run_id, attempts=1)
         return run
-
-    async def _close(
-        self, principal: Principal, run_id: str, project_id: str, task_id: str | None
-    ) -> None:
-        """Mark the run terminal, settle `researchStatus`, and release the lease.
-
-        Runs as `TurnService.start`'s `on_finished`, so it fires the moment the generation
-        task is over — not at the next tick of a poller. The difference is not cosmetic: the
-        report renders as soon as `post_research_report` pushes `board_update`, which is
-        *before* the turn finishes streaming its closing prose, so any gap between "the turn
-        ended" and "the lease is free" is a window in which the learner can press "Research
-        again" and be told their coach is already busy.
-
-        `researchStatus` is only moved on the failure paths. On the happy path
-        `post_research_report` has already set it to `done` *and* written the checklist, in
-        the transaction that also promoted the task out of `draft` — overwriting it here
-        would be a second writer for one field, and the one with the least information.
-
-        Every step is `suppress`ed individually rather than wrapped as one: this runs
-        detached with nothing to report a failure to, and giving up on the lease because
-        the ledger write failed would leave the project locked for the full TTL.
-
-        The run is **re-read** rather than captured. The callback is built before
-        `TurnService.start` returns, so a captured `AutonomousRun` would not yet carry the
-        `turnId` this method needs — in practice it would, because generation cannot finish
-        inside one loop tick, and "in practice" is not a thing to rest a lease on.
-        """
-        outcome = RunStatus.FAILED
-        detail: str | None = "generation failed"
-        run = await self._runs.get(run_id)
-        with contextlib.suppress(Exception):
-            turn = await self._turns.get(principal, (run.turn_id if run else None) or "")
-            if turn.status is TurnStatus.COMPLETE:
-                outcome, detail = RunStatus.COMPLETE, None
-            elif turn.status is TurnStatus.CANCELLED:
-                outcome, detail = RunStatus.CANCELLED, "cancelled"
-            elif turn.error is not None:
-                detail = turn.error.message
-
-        succeeded = outcome is RunStatus.COMPLETE
-        steps = [
-            RunStep(
-                id="research",
-                status=StepStatus.COMPLETE if succeeded else StepStatus.FAILED,
-                ended_at=now(),
-                error=detail,
-            ),
-            RunStep(
-                id="post_report",
-                status=StepStatus.COMPLETE if succeeded else StepStatus.SKIPPED,
-                ended_at=now(),
-            ),
-        ]
-        with contextlib.suppress(Exception):
-            await self._runs.patch(
-                run_id,
-                {
-                    "status": outcome.value,
-                    "steps": [step.to_document() for step in steps],
-                    "error": detail,
-                },
-            )
-        if not succeeded and task_id is not None:
-            # A turn that failed or was cancelled leaves the task looking like research is
-            # still running, and invariant 6 reads that field — so a task whose checklist
-            # was already finished would stay open forever waiting for a run that is gone.
-            # No task to settle at all for a project-scoped run.
-            with contextlib.suppress(Exception):
-                await self._tasks.set_research(principal, task_id, status=ResearchStatus.FAILED)
-        await self._runs.release_lease(project_id, run_id)
-        logger.info(
-            "manual research run finished",
-            extra={"run_id": run_id, "status": outcome.value, "detail": detail},
-        )
 
 
 def _opening_message(task: Task | None, reason: str) -> str:
@@ -319,4 +333,4 @@ def _opening_message(task: Task | None, reason: str) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["MANUAL_STEPS", "ResearchService"]
+__all__ = ["MANUAL_STEPS", "ROADMAP_STEPS", "ResearchService"]

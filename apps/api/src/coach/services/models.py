@@ -173,8 +173,18 @@ class EffectivePrefs(DomainModel):
 # --------------------------------------------------------------------------------------
 
 
-class TechnologyBelief(DomainModel):
+class SkillBelief(DomainModel):
+    """One observed skill, scoped to the subject or technology it was observed in.
+
+    `area` is what keeps a belief from leaking across subjects: "familiar with simple
+    types" learned from a Python project says nothing about the learner's Rust
+    experience, so a skill is never rendered or reasoned about without the area it
+    belongs to. Named `area` rather than `subject` to also cover a skill that is not
+    tied to a single subject at all (e.g. "touch typing", area `"general"`).
+    """
+
     name: str
+    area: str = "general"
     level: str
     evidence: str = ""
 
@@ -189,7 +199,7 @@ class LearnerProfile(DomainModel):
     thinking_style: str = Field(default="", max_length=500)
     strengths: list[str] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
-    technologies: list[TechnologyBelief] = Field(default_factory=list)
+    skills: list[SkillBelief] = Field(default_factory=list)
     pacing: str = ""
     #: Capped ring buffer, 20 entries.
     feedback_notes: list[str] = Field(default_factory=list, max_length=20)
@@ -305,11 +315,65 @@ class ProjectCounts(DomainModel):
     open_minutes: int = 0
 
 
+class RoadmapBrief(DomainModel):
+    """`project_coach`'s structured intake for a roadmap run — the coach's own draft,
+    built across `write_roadmap_brief` calls and read back with `read_roadmap_brief`
+    before `propose_roadmap_brief` renders it into a run's opening message.
+
+    One draft per project, held directly on `Project` rather than its own subcollection:
+    only one roadmap conversation is ever in progress for a project at a time (the same
+    reasoning as the project's agent lease on `autonomous_runs`), and there is nothing
+    here worth a history once a run has been scheduled from it.
+    """
+
+    #: The main subject the learner plans to learn. Required — there is no roadmap
+    #: without one.
+    subject: str = ""
+    #: Sub-topics or aspects of `subject` to cover. Advisory: an empty list means the
+    #: agent (or the downstream `research_planner`) decides the breakdown.
+    specific_topics: list[str] = Field(default_factory=list)
+    #: The learner's total study time budget, in their own words — "4 lessons", "two
+    #: months", "four weeks, 5 sessions a week". Required: `plan_tailor` and
+    #: `task_proposer` size tasks against this, combined with known pacing preferences
+    #: when it is not already a session count.
+    time_budget: str = ""
+    #: Depth, sources to skip or emphasize, material-type preferences, or anything else
+    #: the learner said that does not fit the fields above. Advisory.
+    additional_notes: str = ""
+    #: Display names of attachments the learner referenced while drafting the brief (a
+    #: syllabus, a job posting, prior notes) — as opposed to every file the coach
+    #: conversation happens to have seen, which may span topics unrelated to this
+    #: roadmap. `propose_roadmap_brief` resolves these against the conversation's own
+    #: attachments and carries only the matches onto the roadmap run's opening message.
+    attachments: list[str] = Field(default_factory=list)
+    updated_at: datetime | None = None
+
+    def render(self) -> str:
+        """The brief, rendered into the free-text `reason` `ResearchService.start_roadmap`
+        takes — the message that opens the roadmap run's own session
+        (docs/03-agent-design.md#the-taskless-case-task_proposer-and-plan_tailor-replace-reviewer_writer).
+        """
+        lines = [f"Build a roadmap for: {self.subject}."]
+        if self.specific_topics:
+            lines.append("Specific topics to cover: " + "; ".join(self.specific_topics) + ".")
+        lines.append(f"Study time budget: {self.time_budget}.")
+        if self.additional_notes:
+            lines.append(f"Additional notes: {self.additional_notes}")
+        return "\n".join(lines)
+
+
 class Project(DomainModel):
     id: str
     owner_uid: str
     title: str = Field(min_length=1, max_length=200)
-    goal: str = ""
+    #: A one- or two-sentence description of what the project is for. Editable in
+    #: project settings and refined through the intake conversation
+    #: (`update_project_plan`'s own `description` argument) or from an approved study
+    #: plan (`materialize_study_plan`'s `project_description`) — never rendered into an
+    #: agent instruction itself, since a roadmap run reasons from the ordinary
+    #: conversation history in front of it rather than a re-summarized field
+    #: (docs/03-agent-design.md#project_coach-and-task_teacher).
+    description: str = ""
     status: ProjectStatus = ProjectStatus.ACTIVE
     prefs: ProjectPrefs = Field(default_factory=ProjectPrefs)
     #: Denormalized pointer, maintained transactionally alongside the `current` task.
@@ -321,6 +385,9 @@ class Project(DomainModel):
     #: `SessionService.get_or_create_intake` falls back to the scan when it is absent,
     #: which is what makes projects created before M3 keep working.
     intake_session_id: str | None = None
+    #: `project_coach`'s in-progress roadmap draft, or `None` between roadmap
+    #: conversations. Cleared once `propose_roadmap_brief` schedules a run from it.
+    roadmap_brief: RoadmapBrief | None = None
     counts: ProjectCounts = Field(default_factory=ProjectCounts)
     last_autonomous_run_at: datetime | None = None
     created_at: datetime | None = None
@@ -364,6 +431,11 @@ class TaskItem(DomainModel):
     item_id: str
     short_description: str = Field(min_length=1, max_length=300)
     details: str = ""
+    #: What kind of material this is — carried over from the `ReportItem`/`ProposedItem`
+    #: it was promoted from, so a checklist row can show the same kind chip
+    #: (`ItemKindBadge`, `apps/web`) that the report/plan it came from already shows.
+    #: `None` on a hand-added item, and on any item added before this field existed.
+    kind: ReportItemKind | None = None
     guided: bool = False
     completed: bool = False
     completed_at: datetime | None = None
@@ -521,6 +593,110 @@ class ResearchReport(DomainModel):
 
 
 # --------------------------------------------------------------------------------------
+# Study plans — the taskless "propose then tailor" roadmap pipeline
+# --------------------------------------------------------------------------------------
+#
+# docs/03-agent-design.md#the-research-pipeline-since-m9: for a *taskless* research run,
+# `task_proposer` groups the fan-out's findings into several tasks (not one budget), and
+# `plan_tailor` decides ordering and inclusion per task. `ProposedTaskCollection` is
+# `task_proposer`'s ADK `output_schema` *and* the shape `StudyPlanService` validates
+# `proposed_tasks` against — one definition rather than two.
+#
+# Naming: `Plan`/`PlanRepository`/`PlanLimits` above already name the *billing* preset
+# (`plans/{tier}`, M8-quotas) — everything here is `StudyPlan*` to avoid colliding with it.
+
+
+class ProposedItem(DomainModel):
+    """One material or exercise inside a `ProposedTask`. Not yet a `TaskItem` — it gets an
+    `itemId` only when `StudyPlanService.materialize` turns it into one."""
+
+    kind: ReportItemKind
+    title: str = Field(min_length=1, max_length=300)
+    url: str | None = None
+    minutes: Minutes
+    why: str = ""
+    details: str = ""
+    source: ItemSource = "web"
+    guided: bool | None = None
+
+
+RequiredItems = Annotated[
+    list[ProposedItem],
+    Field(..., description="Items required to complete this task; at least one."),
+]
+
+
+class ProposedTask(DomainModel):
+    """One task `task_proposer` grouped material into, sized to the learner's preferred
+    task length rather than to a single combined budget."""
+
+    slug: str
+    title: str = Field(min_length=1, max_length=300)
+    description: str = ""
+    required: RequiredItems
+    optional: list[ProposedItem] = Field(default_factory=list)
+    #: Other proposed tasks' slugs this one assumes are already done. Used only to order
+    #: tasks at materialization time — not persisted as an ongoing relationship on `Task`.
+    prerequisite_tasks: list[str] = Field(default_factory=list)
+
+
+class ProposedTaskCollection(DomainModel):
+    """`task_proposer`'s whole output: every proposed task, plus a memo for the learner."""
+
+    tasks: list[ProposedTask] = Field(default_factory=list)
+    memo: str = ""
+
+
+PlanDecision = Literal["include", "additional", "exclude", "reject"]
+
+
+class PlanTaskEntry(DomainModel):
+    """`plan_tailor`'s verdict on one proposed task: where it sits, and why it is (or is
+    not) part of the plan. Written for every proposed task, including `exclude`/`reject`
+    ones — the `why` is the point for those."""
+
+    task_slug: str
+    #: The slug of the proposed task this one should come directly after, or `None` to
+    #: leave it wherever `materialize` derives from `prerequisite_tasks`/plan order.
+    after: str | None = None
+    prerequisite_tasks: list[str] = Field(default_factory=list)
+    #: 0 (irrelevant) to 4 (core to the goal).
+    relevance: int = Field(default=0, ge=0, le=4)
+    decision: PlanDecision
+    why: str = ""
+
+
+class StudyPlan(DomainModel):
+    """`projects/{projectId}/study_plans/{planId}` — `plan_tailor`'s one write, and the
+    full study roadmap `materialize_study_plan` later turns into board tasks."""
+
+    id: str
+    project_id: str
+    owner_uid: str
+    run_id: str | None = None
+    session_id: str | None = None
+    title: str = ""
+    short_description: str = ""
+    long_description: str = ""
+    #: `task_proposer`'s own memo, carried through unchanged.
+    memo: str = ""
+    proposed_tasks: list[ProposedTask] = Field(default_factory=list)
+    plan: list[PlanTaskEntry] = Field(default_factory=list)
+    #: Set once `materialize_study_plan` has created board tasks for this plan — makes a
+    #: retried tool call a no-op rather than a second board write, the same idempotency
+    #: goal `report_{runId}` keying serves for `post_research_report`.
+    materialized_at: datetime | None = None
+    materialized_task_ids: list[str] = Field(default_factory=list)
+    #: Set on a `project_coach`-authored copy (`StudyPlanService.revise`): the plan this
+    #: one's `plan[]` was re-tailored from. `None` on `plan_tailor`'s own write. A copy
+    #: rather than an edit in place, so the original verdict stays legible against
+    #: whatever replaces it — docs/03-agent-design.md's "taskless case" section.
+    revised_from_plan_id: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+# --------------------------------------------------------------------------------------
 # Autonomous runs — the durable job ledger
 # --------------------------------------------------------------------------------------
 
@@ -569,12 +745,21 @@ class RunChange(DomainModel):
 class AutonomousRun(DomainModel):
     """`autonomous_runs/{runId}`. docs/05-autonomous-runs.md#run-ledger.
 
-    **M4 writes this document; M5 schedules it.** A manual research run carries
-    `trigger: "manual"`, `mode: "inline"`, a `turnId`, and only the two steps M4 has
-    implemented — `research` and `post_report`. The board-reshaping steps (`propose_tasks`,
+    **M4 writes this document; M5 schedules it.** A manual research or roadmap run carries
+    `trigger: "manual"`, only the two steps its own pipeline has (`research`/`post_report`,
+    or `roadmap`/`write_plan`) — the board-reshaping steps (`propose_tasks`,
     `reprioritize`) and the selection step are *absent* rather than `pending`, so that
-    `cursor` — "first non-complete step" — stays truthful and M5's executor does not
-    inherit a backlog of runs it believes it left half-finished.
+    `cursor` — "first non-complete step" — stays truthful and the executor does not inherit
+    a backlog of runs it believes it left half-finished.
+
+    **Since M9, `mode` is `"queued"` for every trigger, including `"manual"`.** A manual
+    run's own turn does not start inside the request that accepted it — the request creates
+    this row (with `pending_text`/`pending_attachments` holding what the turn should open
+    with) and hands it to the same Cloud Tasks queue and `RunExecutor` a scheduled run goes
+    through, rather than spawning a detached `asyncio.Task` in the request-handling process.
+    `mode: "inline"` is what an M4-M8 run looked like and is kept in the type only so an
+    old, unexpired ledger row still deserializes; nothing writes it anymore
+    (docs/05-autonomous-runs.md#trigger-chain).
     """
 
     id: str
@@ -585,9 +770,9 @@ class AutonomousRun(DomainModel):
     #: the cooldown, `autonomousEnabled`, and quiet hours, and it sorts ahead of every
     #: `"scheduled"` candidate
     #: (docs/05-autonomous-runs.md#two-kinds-of-work-and-the-only-difference-between-them).
-    #: `"manual"` remains the inline run a turn streams.
+    #: `"manual"` is the learner pressing a button, now queued the same as the other two.
     trigger: Literal["scheduled", "requested", "manual"] = "manual"
-    mode: Literal["queued", "inline"] = "inline"
+    mode: Literal["queued", "inline"] = "queued"
     status: RunStatus = RunStatus.PENDING
     attempts: int = 1
     max_attempts: int = 3
@@ -596,6 +781,20 @@ class AutonomousRun(DomainModel):
     steps: list[RunStep] = Field(default_factory=list)
     usage: dict[str, int] = Field(default_factory=dict)
     turn_id: str | None = None
+    #: The opening message for a queued manual/roadmap run's turn — `start_manual`'s
+    #: composed prompt or `start_roadmap`'s raw `reason` — set once at creation and read
+    #: back by `RunExecutor` when the queue eventually delivers this run. Not used by an
+    #: autonomous run, which composes its own message from the task it selects.
+    pending_text: str | None = None
+    #: `{uploadId, mimeType}`, straight from the request body — the same shape
+    #: `TurnService.start`'s own `attachments` takes. Resolved through `UploadService`
+    #: whenever the executor opens the turn, not at creation time.
+    pending_attachments: list[dict[str, str]] | None = None
+    #: `{uri, mimeType, displayName}`, already resolved — whatever `SessionService.
+    #: list_attachments` found in the conversation the request came from, read once at
+    #: creation because that conversation is not this run's own and will not be reachable
+    #: from the ledger once the request returns.
+    pending_context_attachments: list[dict[str, str]] | None = None
     #: What the "Updated by your coach" banner lists and what `POST /api/runs/{id}/undo`
     #: reverses. Appended as the run writes, never derived afterwards.
     changes: list[RunChange] = Field(default_factory=list)
@@ -610,9 +809,15 @@ class AutonomousRun(DomainModel):
     #: session (docs/02-data-model.md#sessions--events-adk-owned-layout). Written once,
     #: the same way `turn_id` is, when the session is created.
     session_id: str | None = None
-    #: Also the Firestore TTL field (30 days), touched at every step boundary.
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    #: The Firestore TTL field (60 days from the last touch) — `repositories/runs.py`
+    #: computes it explicitly on every write. **Not** `updated_at`: a Firestore TTL policy
+    #: deletes once the value *stored in* its field is in the past, so the field has to
+    #: hold the future expiry itself, not a last-modified timestamp — writing `updated_at`
+    #: there (the pre-fix shape) made a run expire within about a day of any write to it
+    #: instead of 60 days after the last one.
+    expires_at: datetime | None = None
     error: str | None = None
 
     @property

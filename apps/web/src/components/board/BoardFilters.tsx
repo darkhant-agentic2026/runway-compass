@@ -1,7 +1,7 @@
 /**
  * Board filters.
  *
- * docs/06-frontend.md: "Hide completed (default **on**), Hide discarded (default on),
+ * docs/06-frontend.md: "Hide completed (default off), Hide discarded (default on),
  * Hide postponed (default off). Persisted per project in `useBoardUiStore`."
  */
 

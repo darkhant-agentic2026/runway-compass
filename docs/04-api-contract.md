@@ -70,9 +70,9 @@ or a row of user data.
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/api/projects` | `?status=active` |
-| `POST` | `/api/projects` | `{ title, goal? }` — creates project + an intake session (a session with `taskId: null`) |
+| `POST` | `/api/projects` | `{ title, description? }` — creates project + an intake session (a session with `taskId: null`) |
 | `GET` | `/api/projects/{id}` | Includes `counts`, `nextUpTaskId` |
-| `PATCH` | `/api/projects/{id}` | title, goal, status, `prefs` patch |
+| `PATCH` | `/api/projects/{id}` | title, description, status, `prefs` patch |
 | `POST` | `/api/projects/{id}/session` | Get-or-create the project's **intake session** (the one with `taskId: null`). Added at M3: `POST /api/projects` creates it, and nothing else resolved a project back to it |
 | `GET` | `/api/projects/{id}/effective-prefs` | Resolved global ⊕ project — one source of truth for UI and agent |
 | `GET` | `/api/projects/{id}/tasks` | `?include_completed=false&include_discarded=false`; returns parents with nested `subtasks[]` and `rollup` |
@@ -126,21 +126,23 @@ without a refetch.
 { "task": { "…": "…", "researchStatus": "pending", "researchRequestedAt": "2026-08-20T…" } }
 ```
 
-No `budgetMinutesOverride` here, unlike the inline trigger: a queued run resolves the
+No `budgetMinutesOverride` here, unlike `/research`'s own trigger: a queued run resolves the
 budget when it executes, from the task and the project's effective prefs at that moment,
 and carrying an override would mean a fourth research field on the task document to hold it
 until the tick arrives.
 
-The learner's **queued, headless** alternative to `POST /api/sessions/{sid}/research`. That
-one runs research inline in a turn the caller watches stream; this one marks the task and
-returns, and the next `/internal/tick` executes it in the background with priority over
-auto-scheduled work — the presence guard, the cooldown, `autonomousEnabled`, and quiet hours
-are all skipped for it
+The learner's **tick-scheduled, headless** alternative to
+`POST /api/sessions/{sid}/research`. Both are queued since M9 — neither runs a turn in the
+request that accepted it — but `/research` enqueues its own run directly and is picked up
+in roughly the time a Cloud Tasks dispatch takes; this one only sets a flag on the task and
+returns, and the *next* `/internal/tick` (up to 15 minutes later) is what turns the flag
+into a run, ahead of auto-scheduled work — the presence guard, the cooldown,
+`autonomousEnabled`, and quiet hours are all skipped for it
 ([05-autonomous-runs.md](05-autonomous-runs.md#two-kinds-of-work-and-the-only-difference-between-them)).
 
 Behaviour:
 - Refuses a task with subtasks (`409`) — a composite task's plan is its subtasks, and each
-  is researched on its own, which is the same rule the inline trigger already applies.
+  is researched on its own, which is the same rule `/research` already applies.
 - Refuses a `discarded` task (`409`). A `completed` one is allowed: queueing research on it
   does not reopen it, and a learner who wants more material on something they finished is
   making a coherent request.
@@ -166,6 +168,7 @@ Behaviour:
 | `POST` | `/api/sessions/{sid}/turns` | Start a turn (below) |
 | `POST` | `/api/sessions/{sid}/turns/{turnId}/cancel` | Explicit user cancel — the *only* thing that stops generation |
 | `POST` | `/api/sessions/{sid}/research` | **Manual research trigger** (below) |
+| `POST` | `/api/sessions/{sid}/roadmap` | **Manual roadmap trigger** (below) — `task_proposer` -> `plan_tailor` instead of `reviewer_writer`; taskless only |
 | `GET` | `/api/turns/{turnId}` | Status only. Added at M2 so a client whose socket is down can tell a running turn from a finished one — the "still working" state has to be truthful rather than hopeful |
 | `GET` | `/api/sessions/{sid}/events/{seq}/attachments/{index}` | An attachment's bytes, for the transcript's image previews ([06-frontend.md](06-frontend.md)). Added at M2. Addressed by **position** rather than by artifact name or `gs://` URI: a session lives under the caller's uid, so reaching an event at all proves ownership and no caller-supplied storage path is ever validated |
 
@@ -203,14 +206,23 @@ a button sends no text and no attachment.
   "attachments": [ { "uploadId": "…", "mimeType": "application/pdf" } ] }  // + M8, optional
 
 // 202
-{ "runId": "r_01J…", "turnId": "t_01J…", "sessionId": "s_01J…", "mode": "inline" }
+{ "runId": "r_01J…", "turnId": null, "sessionId": "s_01J…", "mode": "queued" }
 ```
 
 `sid` names the conversation the request came from — a task's own session, or, since M8,
 the project's intake session — and is only ever used to resolve *what* to research and to
 check ownership. The turn itself runs in a **new session created for this run**
 (`sessionId` above), never in `sid`; see below and
-[03-agent-design.md](03-agent-design.md#research_agent).
+[03-agent-design.md](03-agent-design.md#the-research-pipeline-since-m9).
+
+**Since M9, `turnId` is `null` in the 202 body.** The run is queued — created here, then
+handed to the same Cloud Tasks queue and `RunExecutor` a scheduled run goes through
+([05-autonomous-runs.md](05-autonomous-runs.md#trigger-chain)) — rather than started as a
+detached task in the process that accepted this request. `sessionId` is still present
+immediately (creating it is one cheap Firestore write, done here rather than left to the
+executor); the client polls `GET /api/runs/{runId}` for `turnId` and subscribes over the
+socket once the queue actually starts the turn, exactly the pattern it already needs for a
+scheduled run, which never had a `turnId` at accept time at all.
 
 Behaviour:
 - Resolves the linkage from `sid`. A task-linked session researches that task, subject to
@@ -230,20 +242,20 @@ Behaviour:
 - Acquires the project agent lease. If the lease is held by an autonomous run, returns
   `409` with `{ runId }` of the in-flight run so the UI can attach to it instead of
   starting a duplicate.
-- Creates `autonomous_runs/{runId}` with `trigger: "manual"`, `mode: "inline"`, `taskId`
+- Creates `autonomous_runs/{runId}` with `trigger: "manual"`, `mode: "queued"`, `taskId`
   set or `null`, and a fresh `research` session
-  ([02-data-model.md](02-data-model.md#sessions--events-adk-owned-layout)) — and runs the
-  **same** `autonomous_workflow` steps against it, so manual and scheduled research cannot
-  drift.
+  ([02-data-model.md](02-data-model.md#sessions--events-adk-owned-layout)) — and hands it to
+  the same `JobQueue`/`RunExecutor` a scheduled run goes through, so manual and scheduled
+  research cannot drift.
 - **Carries `sid`'s own uploads into the research turn automatically**, added shortly
   after M8. `SessionService.list_attachments(sid)` scans `sid`'s stored events for every
   distinct file the learner has ever sent in that conversation and embeds each one in the
   research turn's opening message, the same way `attachments` on this request does — so a
   task description or `reason` that refers to a file already sent ("see the attached
-  rubric") reaches `research_agent` without re-attaching it. `attachments` on this request
-  is additive, for a file being sent for the first time specifically for this call. Purely
-  a read of `sid`'s transcript; nothing is written to it
-  ([03-agent-design.md](03-agent-design.md#research_agent)).
+  rubric") reaches the research pipeline's `research_planner` node without re-attaching it
+  (since M9 — [03-agent-design.md](03-agent-design.md#the-research-pipeline-since-m9)).
+  `attachments` on this request is additive, for a file being sent for the first time
+  specifically for this call. Purely a read of `sid`'s transcript; nothing is written to it.
 - Sets `task.researchStatus` to `in_progress` before the first model call and to `done` or
   `failed` at the end, which is what invariant 6
   ([02-data-model.md](02-data-model.md#task-state-machine)) reads to keep a task from
@@ -251,24 +263,64 @@ Behaviour:
   touched, for a taskless run.
 - Streams progress over the WebSocket as the turn identified by `turnId`, in the session
   identified by `sessionId` — a client watching this run subscribes to that session's
-  transcript, not to `sid`'s.
+  transcript, not to `sid`'s, once `turnId` appears.
 
-**What M4 implements of this, and what waits for M5.** The endpoint, the lease, the ledger
-document, and the `research` and `post_report` steps are M4 — they are the whole of the
-manual path, and golden flow #5 exercises them. The trigger chain that *schedules* a run
-(`/internal/tick`, Cloud Tasks, recovery, the presence guard) and the two steps that reshape
-the board (`propose_tasks`, `reprioritize`) are M5. A manual run therefore has a `steps[]`
-array with the two later steps absent rather than `pending`, so that "first non-complete
-step" stays a truthful `cursor` and M5's executor does not inherit a backlog of runs it
-thinks it left half-finished. Subscribing by `runId` also stays M5
-([09-roadmap.md](09-roadmap.md#status-after-m2)): a manual run has a `turnId`, and the turn
-is what the client watches.
+**What M4 implements of this, and what changed since.** The endpoint, the lease, the
+ledger document, and the `research` and `post_report` steps are M4 — they are the whole of
+the manual path, and golden flow #5 exercises them. The trigger chain that *schedules* a
+run (`/internal/tick`, Cloud Tasks, recovery, the presence guard) and the two steps that
+reshape the board (`propose_tasks`, `reprioritize`) are M5. A manual run therefore has a
+`steps[]` array with the two later steps absent rather than `pending`, so that "first
+non-complete step" stays a truthful `cursor` and the executor does not inherit a backlog of
+runs it thinks it left half-finished. **Since M9, a manual run's `research`/`post_report`
+steps are dispatched by `RunExecutor` itself** (`_manual_research`/`_manual_post_report`,
+distinct from the autonomous pipeline's `_research`/`_post_report` because a manual run has
+no `needsResearch` gate to apply and may be taskless) — before M9 this endpoint started the
+turn itself and only recorded the same step ids for `cursor`'s sake.
+
+#### `POST /api/sessions/{sid}/roadmap`
+
+```jsonc
+// request
+{ "reason": "I want to become a data engineer — what do I need to learn?",
+  "attachments": [ { "uploadId": "…", "mimeType": "application/pdf" } ] }  // optional
+
+// 202
+{ "runId": "r_01J…", "turnId": null, "sessionId": "s_01J…", "mode": "queued" }
+```
+
+Same shape as `/research`'s 202 — `ResearchResponse` is reused rather than a new response
+type — and the same lease, ledger, and fresh-session machinery
+(`ResearchService.start_roadmap`), but a distinct pipeline:
+`build_roadmap_workflow`'s `task_proposer` -> `plan_tailor`
+([03-agent-design.md](03-agent-design.md#the-taskless-case-task_proposer-and-plan_tailor-replace-reviewer_writer))
+instead of `research_workflow`'s `reviewer_writer`. **Taskless only** — `sid` must not be
+linked to a task, and `reason` is required (not merely defaulted to empty), since the
+whole point of this pipeline is sizing several tasks to the learner's own preferred length
+for the project as a whole, which is not a property one already-scoped task has. Refused
+with `422` for a task-linked session or an empty `reason`; `409` for the same lease
+contention `/research` has, carrying the in-flight `runId` the same way.
+
+The run this starts is distinguishable from a `/research` run by `steps[0].id`:
+`"roadmap"` here, `"research"` there — there is no separate field naming the pipeline, and
+this is what `GET /api/runs/{runId}` gives a client to switch on
+([05-autonomous-runs.md](05-autonomous-runs.md#run-ledger)). Its final document is a
+`StudyPlan` (`projects/{projectId}/study_plans/{planId}`,
+[02-data-model.md](02-data-model.md#projectsprojectidstudy_plansplanid)), not a
+`ResearchReport` — `GET /api/runs/{runId}/report` 404s for a roadmap run; `GET
+/api/runs/{runId}/plan` (below) is where it reads back instead. The research view
+([06-frontend.md](06-frontend.md#research-view-projectsprojectidresearchrunid)) renders
+the run's transcript regardless — where the multi-agent conversation
+(`research_planner`/`topic_researcher`/`task_proposer`/`plan_tailor`) is visible — and
+`StudyPlanView` in place of `ResearchReport`.
 
 ### Runs
 
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/api/runs/{runId}` | Ledger status: `status`, `steps[]`, `cursor`, `taskId`, `turnId`. Backs the `['run', runId]` query ([06-frontend.md](06-frontend.md)) and the 409 attach path below |
+| `GET` | `/api/runs/{runId}/report` | The `ResearchReport` a research run wrote, once there is one. `404` while running, or for a roadmap run |
+| `GET` | `/api/runs/{runId}/plan` | + this UI rework. The `StudyPlan` a roadmap run wrote, once there is one — `get_run_report`'s sibling for `build_roadmap_workflow`. `404` while running, or for a plain research run. Reads `study_plans/{"plan_"+runId}`, the same `plan_{runId}` key `write_study_plan` mints (`agents/research_tools.py`) |
 | `POST` | `/api/runs/{runId}/undo` | Reverses the run's writes; idempotent, returns the affected `taskIds` |
 | `GET` | `/api/projects/{id}/runs` | Recent runs for the project, newest first — backs the "Updated by your coach" banner and, since M8, the board's "latest research" card (the first entry whose steps include `research`) |
 | `GET` | `/api/tasks/{id}/runs` | + M8. Recent runs for one task, newest first — backs the task workspace's research card the same way the project route backs the board's. A query rather than a denormalized pointer, on the same reasoning `list_for_project` already uses: the ledger is the authority, and there is no task-level cache of it to keep in step |
@@ -319,15 +371,20 @@ One connection per browser tab, multiplexed across sessions. JSON frames, every 
 the `409` from `POST /api/sessions/{sid}/research` actionable: the client attaches to the
 in-flight run's `run_status` frames instead of starting a duplicate. A scheduled run has no
 `turnId` at all, so run subscription is the only way to watch one — which golden flow #6
-depends on. Both are ownership-checked against the socket's principal at subscribe time.
+depends on. **Since M9, a manual or roadmap run is in the same position for the (usually
+brief) window between being accepted and the queue actually starting its turn** — `turnId`
+in the 202 body is `null`. The SPA does not use `runId` socket subscription for this case;
+it polls `GET /api/runs/{runId}` (`useRun`, every 2 s while `status` is `pending` or
+`running`) and switches to turn subscription once `turnId` appears. Both subscription kinds
+are ownership-checked against the socket's principal at subscribe time.
 
 ### Server → client
 
 ```jsonc
 { "type": "turn_start",    "turnId": "…", "sessionId": "…" }
-{ "type": "delta",         "turnId": "…", "seq": 43, "text": "…" }
+{ "type": "delta",         "turnId": "…", "seq": 43, "text": "…", "author": "…" }
 { "type": "tool_call",     "turnId": "…", "seq": 44, "name": "youtube_find_by_duration",
-                           "argsPreview": {…} }        // rendered as a status chip
+                           "argsPreview": {…}, "author": "…" }  // rendered as a status chip
 { "type": "tool_result",   "turnId": "…", "seq": 45, "name": "…", "ok": true }
 { "type": "artifact",      "turnId": "…", "seq": 46, "kind": "research_report",
                            "reportId": "…", "taskId": "…" }
@@ -337,6 +394,14 @@ depends on. Both are ownership-checked against the socket's principal at subscri
 { "type": "run_status",    "runId": "…", "step": "research", "status": "running" }
 { "type": "pong" }
 ```
+
+`author` (`delta`, `tool_call`) is ADK's `Event.author` — the root agent for an ordinary
+chat turn, but one of several node names (`research_planner`, `topic_researcher`, …)
+across a single research or roadmap turn. The client starts a new live message segment
+whenever it differs from the previous frame's, so one multi-agent turn renders as several
+cards rather than one growing bubble ([06-frontend.md](06-frontend.md#zustand-client-only-state)).
+`tool_result` carries no `author`: it is matched to its chip by name alone, the same as
+before.
 
 `board_update` is the invalidation push that keeps the task board live while the
 autonomous agent works — the client turns it into a TanStack Query invalidation rather

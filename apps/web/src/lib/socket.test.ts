@@ -203,8 +203,8 @@ describe('connect', () => {
 
 describe('resume', () => {
   it('emits a resume frame for every running turn, with its cursor', async () => {
-    useStreamStore.getState().appendDelta('t_a', 7, 'seven');
-    useStreamStore.getState().appendDelta('t_b', 2, 'two');
+    useStreamStore.getState().appendDelta('t_a', 7, 'seven', 'coach');
+    useStreamStore.getState().appendDelta('t_b', 2, 'two', 'coach');
 
     const rig = harness();
     await rig.socket.connect();
@@ -217,7 +217,7 @@ describe('resume', () => {
   });
 
   it('does not resume a turn that already finished', async () => {
-    useStreamStore.getState().appendDelta('t_done', 3, 'x');
+    useStreamStore.getState().appendDelta('t_done', 3, 'x', 'coach');
     useStreamStore.getState().complete('t_done', 4);
 
     const rig = harness();
@@ -260,10 +260,9 @@ describe('resume', () => {
     rig.last().receive({ type: 'delta', turnId: 't_1', seq: 3, text: ' world' });
     rig.last().receive({ type: 'turn_complete', turnId: 't_1', seq: 4, eventIds: [] });
 
-    expect(useStreamStore.getState().turns['t_1']).toMatchObject({
-      text: 'Hello world',
-      status: 'complete',
-    });
+    const turn = useStreamStore.getState().turns['t_1'];
+    expect(turn?.status).toBe('complete');
+    expect(turn?.segments.map((segment) => segment.text).join('')).toBe('Hello world');
   });
 });
 

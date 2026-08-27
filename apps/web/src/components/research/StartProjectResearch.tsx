@@ -2,7 +2,7 @@
  * "Research something for this project" — the M8 capability, kicked off from the board
  * rather than from inside a task.
  *
- * docs/03-agent-design.md#research_agent: research with no parent task, about the project
+ * docs/03-agent-design.md#the-research-pipeline-since-m9: research with no parent task, about the project
  * as a whole. A collapsed prompt rather than a form that is always open — this is a much
  * rarer action than opening a task, and an always-visible textarea would compete with the
  * board for attention on every visit.

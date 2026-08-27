@@ -34,6 +34,7 @@ from google.adk.sessions.session import Session
 
 from coach.agents.prompt import PromptBuilder
 from coach.agents.research_tools import ResearchTools
+from coach.agents.research_workflow import ModelThrottle
 from coach.agents.runner import RunnerFactory
 from coach.agents.tools import DomainTools
 from coach.core.app import APP_NAME
@@ -102,6 +103,7 @@ async def test_a_runner_can_open_an_invocation_context(deployed_artifacts) -> No
         # is under test.
         tools=DomainTools(cast(Any, None), cast(Any, None), BoardUpdateHub()),
         research_tools=ResearchTools(cast(Any, None), cast(Any, None), BoardUpdateHub()),
+        research_throttle=ModelThrottle(),
         prompt=PromptBuilder(*(cast(Any, None),) * 4),
     )
     # A scripted model so that no model client is built either; the artifact service is

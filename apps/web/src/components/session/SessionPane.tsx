@@ -55,6 +55,7 @@ import { useAttachmentUploads } from '@/features/use-uploads';
 import { ApiError } from '@/lib/api';
 import { pendingConfirmation, toMessages } from '@/lib/transcript';
 import { useComposerStore } from '@/stores/composer';
+import { useDebugUiStore } from '@/stores/debugUi';
 import { newestTurnFor, useStreamStore } from '@/stores/stream';
 
 /** Whether a drag carries files, as opposed to selected text or a dragged link. */
@@ -74,7 +75,7 @@ export interface SessionPaneProps {
   /**
    * No composer, no upload drop target, no confirmation prompts — added at M8 for the
    * research view (docs/06-frontend.md#research-view-projectsprojectidresearchrunid).
-   * `research_agent` has no tool that asks the learner anything, so this pane is a record
+   * no node of the research pipeline has a tool that asks the learner anything, so this pane is a record
    * of what the coach did rather than a conversation; the one control still offered while
    * `readOnly` is the cancel button, because a research turn is generation like any other
    * and cancelling it is not a thing the composer alone should own.
@@ -109,6 +110,8 @@ export function SessionPane({
   const turns = useStreamStore((state) => state.turns);
   const clearTurn = useStreamStore((state) => state.clear);
   const resetComposer = useComposerStore((state) => state.reset);
+  const showEventIds = useDebugUiStore((state) => state.showEventIds);
+  const toggleShowEventIds = useDebugUiStore((state) => state.toggleShowEventIds);
   const { uploadAll } = useAttachmentUploads(sessionId);
   const [dragDepth, setDragDepth] = useState(0);
 
@@ -155,9 +158,14 @@ export function SessionPane({
 
   const messages = toMessages(events.data ?? []);
   const streaming = live?.status === 'running';
-  // Only while nothing is generating: the request is answered by starting a turn, and a
-  // second turn on a session that already has one running is a conflict.
-  const pending = streaming ? null : pendingConfirmation(events.data ?? []);
+  // `live`, not `streaming`: a turn that just answered a confirmation goes `running` ->
+  // `complete` before the transcript refetch (below) has actually landed, and
+  // `pendingConfirmation` reading the *stale* `events.data` in that gap still finds the
+  // same request unanswered — the confirmation prompt would flash back for the instant
+  // between the turn completing and the refetch resolving. Gating on `live` itself (not
+  // yet cleared until the refetch's `.then()` fires) means `events.data` is guaranteed
+  // fresh by the time this ever falls through to computing from it.
+  const pending = live ? null : pendingConfirmation(events.data ?? []);
   const headingId = `session-heading-${sessionId || 'pending'}`;
 
   return (
@@ -198,8 +206,24 @@ export function SessionPane({
         </div>
       ) : null}
 
-      <div className="px-3 pt-3">
+      <div className="flex items-center justify-between gap-2 px-3 pt-3">
         <ConnectionBanner />
+        {/*
+          Debugging, not a feature the ordinary composer flow needs — see stores/debugUi.ts.
+          Ghost + tiny so it reads as a developer affordance rather than a control the
+          learner is meant to reach for.
+        */}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="shrink-0 text-xs text-muted-foreground"
+          aria-pressed={showEventIds}
+          data-testid="toggle-event-ids"
+          onClick={toggleShowEventIds}
+        >
+          {showEventIds ? 'Hide event IDs' : 'Show event IDs'}
+        </Button>
       </div>
 
       {emptyHint && messages.length === 0 && !events.isPending ? (
@@ -213,6 +237,7 @@ export function SessionPane({
         live={live}
         pending={events.isPending}
         sessionId={sessionId}
+        showEventIds={showEventIds}
       />
 
       {/*
@@ -243,6 +268,9 @@ export function SessionPane({
       ) : !readOnly && pending ? (
         <ConfirmationPrompt
           pending={pending}
+          projectId={projectId}
+          sessionId={sessionId}
+          messages={messages}
           disabled={startTurn.isPending}
           onAnswer={(confirmed, payload) =>
             startTurn.mutate({

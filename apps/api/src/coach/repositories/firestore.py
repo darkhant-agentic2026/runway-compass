@@ -36,6 +36,8 @@ USERS = "users"
 PROJECTS = "projects"
 TASKS = "tasks"  # subcollection of a project
 RESEARCH_REPORTS = "research_reports"  # subcollection of a project
+#: Subcollection of a project. Not `PLANS` — that name is already the billing preset below.
+STUDY_PLANS = "study_plans"
 TURNS = "turns"
 AUTONOMOUS_RUNS = "autonomous_runs"
 PRESENCE = "presence"

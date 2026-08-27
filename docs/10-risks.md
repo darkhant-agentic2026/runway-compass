@@ -82,9 +82,13 @@ edits), `origin: "agent"` badges, the "Updated by your coach" banner, and per-ru
 `fetch_url` and user uploads put untrusted text in front of a tool-calling model.
 *Mitigations:* fetched content is wrapped in explicit untrusted-content delimiters with an
 instruction that it is data, never instructions; tools that mutate state are unavailable to
-`research_agent` except `post_research_report`; all mutations are scoped to the current
-project by the service layer regardless of what the model asks for; SSRF guards on the
-fetcher. Server-side authorization, not prompt discipline, is the actual control.
+every node of the research pipeline (`research_planner`, `topic_researcher`,
+`reviewer_writer`, since M9 — [03-agent-design.md](03-agent-design.md#the-research-pipeline-since-m9))
+except `post_research_report`, which only `reviewer_writer` calls; all mutations are scoped to
+the current project by the service layer regardless of what the model asks for; SSRF guards on
+the fetcher. Server-side authorization, not prompt discipline, is the actual control. The
+fan-out is the wider surface than a single agent had: `topic_researcher` runs with fetched
+page content from *m* untrusted sources instead of one, still with nothing to mutate.
 
 ### R8 — Cloud Run scale-to-zero vs. background work
 
@@ -128,10 +132,10 @@ not a rule.
 | Q2 | How deep should task nesting go? The plan assumes exactly one level (task → subtask). | ~~M3~~ **settled** | One level, enforced transactionally in `TaskService`. Deeper nesting complicates rollups, ordering, and the board for little gain. |
 | Q3 | When the user's estimate and the agent's disagree (user says 30 min, agent says 90), who wins? | ~~M3~~ **settled** | User wins. Prompt behaviour rather than a guard, because the disagreement is a conversation: the coach flags it once, offers to split, and then works to their number. `update_task` may still change an estimate the learner asked it to change. |
 | Q4 | Should research reports accumulate per task (history) or should a re-run replace the previous report? | ~~M4~~ **settled** | Accumulate, newest shown by default, older ones collapsible. Cheap and non-destructive. A re-run *replaces* the task's item checklist, though — see [02-data-model.md](02-data-model.md#task-items) — because two reports' worth of items is a checklist nobody can finish. **M8 changes the *mechanism*, not the answer**: reports still accumulate (one document per run, never overwritten), but each now lives behind its own run's research view rather than rendering inline on the task workspace — the workspace and the board each show only the latest as a card. A "View previous research (N)" toggle beside that card (added shortly after M8 closed) lists the rest, fetching each one's report lazily rather than up front, so the history is browsable again without the up-front cost the old inline disclosure had. |
-| Q5 | Autonomous cadence — is every 15 minutes with a 6-hour per-project cooldown right, or should it be a nightly batch? | ~~M5~~ **settled** | The 15 min / 6 h combination. Revisit against real cost data at M9. |
+| Q5 | Autonomous cadence — is every 15 minutes with a 6-hour per-project cooldown right, or should it be a nightly batch? | ~~M5~~ **settled** | The 15 min / 6 h combination. Revisit against real cost data at M11. |
 | Q6 | Does the user need to see and approve agent-proposed tasks before they appear on the board, or do they appear directly with undo? | ~~M5~~ **settled** | Appear directly, badged, with undo. A pending-approval queue is more friction than an unread badge. |
-| Q7 | Retention of session transcripts — indefinite, or a rolling window? | M9 | Indefinite; deleted on account deletion. Revisit if storage cost matters. |
-| Q8 | Any content policy on what projects are allowed (the coach will research arbitrary web content on the user's behalf)? | M9 | Standard Gemini safety settings, no additional filtering. |
+| Q7 | Retention of session transcripts — indefinite, or a rolling window? | M11 | Indefinite; deleted on account deletion. Revisit if storage cost matters. |
+| Q8 | Any content policy on what projects are allowed (the coach will research arbitrary web content on the user's behalf)? | M11 | Standard Gemini safety settings, no additional filtering. |
 | Q9 | Is seeding sign-in with the `ENV=local` dev token good enough for e2e, or does the suite need real-shaped ID tokens locally? | M0 | Dev token plus the nightly real-sign-in test against `coach-dev`. Revisit only if a token-shape bug reaches dev. |
 
 **Q1 and the item checklist.** M4 gives a leaf task an ordered list of items and completes

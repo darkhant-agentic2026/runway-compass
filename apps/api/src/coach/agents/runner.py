@@ -21,8 +21,12 @@ from google.adk.sessions.base_session_service import BaseSessionService
 from coach.agents.autonomous_agent import build_autonomous_agent
 from coach.agents.project_coach import build_project_coach
 from coach.agents.prompt import PromptBuilder
-from coach.agents.research_agent import build_research_agent
 from coach.agents.research_tools import ResearchTools
+from coach.agents.research_workflow import (
+    ModelThrottle,
+    build_research_workflow,
+    build_roadmap_workflow,
+)
 from coach.agents.task_teacher import build_task_teacher
 from coach.agents.tools import DomainTools
 from coach.core.app import APP_NAME
@@ -43,12 +47,14 @@ class RunnerFactory:
         memory_service: BaseMemoryService | None = None,
         tools: DomainTools,
         research_tools: ResearchTools,
+        research_throttle: ModelThrottle,
         prompt: PromptBuilder,
     ) -> None:
         self._settings = settings
         self._session_service = session_service
         self._memory_service = memory_service
         self._research_tools = research_tools
+        self._research_throttle = research_throttle
         # Both are process-wide and stateless over the services they wrap. They are built
         # once for the same reason the `Runner` is: `LlmAgent` derives every tool's
         # declaration from the callable, and rebuilding the agent per turn would rebuild
@@ -68,6 +74,7 @@ class RunnerFactory:
         self._project: Runner | None = None
         self._task: Runner | None = None
         self._research: Runner | None = None
+        self._roadmap: Runner | None = None
         self._autonomous: Runner | None = None
 
     def set_model(self, model: BaseLlm | None) -> None:
@@ -76,6 +83,7 @@ class RunnerFactory:
         self._project = None
         self._task = None
         self._research = None
+        self._roadmap = None
         self._autonomous = None
 
     def project_runner(self) -> Runner:
@@ -123,30 +131,61 @@ class RunnerFactory:
         return self._task
 
     def research_runner(self) -> Runner:
-        """The `research_agent` runner, sharing everything but the agent.
+        """The `research_workflow` runner, sharing everything but the agent.
 
         Same `app_name`, same session service, same artifact service — a research run
-        writes into the task's own session, so its tool calls and its report land in the
-        transcript the learner is reading (docs/05-autonomous-runs.md invariant 3). What
-        differs is the agent, its instruction, and above all its tool set: `ResearchTools`
-        has no board-mutating tool at all (docs/10-risks.md#r7).
+        writes into its own dedicated session (docs/02-data-model.md, since M8), so its
+        tool calls and its report land in the transcript the research view reads. What
+        differs is the agent, its instructions, and above all its tool set, split since M9
+        across the pipeline's nodes: no node has a board-mutating tool, and only
+        `reviewer_writer` can call `post_research_report` (docs/10-risks.md#r7).
 
         Cached separately rather than rebuilt per run, for the reason in the module
         docstring: `LlmAgent` derives a JSON schema per tool from the callable, and this
-        agent also owns a `search_agent` sub-agent that would be rebuilt with it.
+        pipeline also owns a `search_agent` sub-agent that would be rebuilt with it.
         """
         if self._research is None:
             self._research = Runner(
                 app_name=APP_NAME,
-                agent=build_research_agent(
+                # `Runner.agent` is annotated `BaseAgent | None`, but `Runner.run_async` has a
+                # dedicated branch for a `Workflow` (a `BaseNode`, not a `BaseAgent`):
+                # `isinstance(self.agent, BaseNode) and not isinstance(self.agent, BaseAgent)`
+                # (docs/03-agent-design.md, "Workflow as a turn root"). The annotation has not
+                # caught up with what the runtime already does.
+                agent=build_research_workflow(  # type: ignore[arg-type]
                     self._build_model(),
-                    tools=self._research_tools.as_tools(),
+                    research_tools=self._research_tools,
+                    throttle=self._research_throttle,
                     before_agent_callback=self._prompt,
                 ),
                 session_service=self._session_service,
                 artifact_service=self._artifacts(),
             )
         return self._research
+
+    def roadmap_runner(self) -> Runner:
+        """The `roadmap_workflow` runner — `research_workflow`'s taskless sibling.
+
+        Not yet reached by `services/turns.py::_resolve_agent` for any real caller:
+        `ResearchService`/`RunExecutor` still start every run, taskless or not, with
+        `agent="research"`. This exists so `agent="roadmap"` is a real, cached, fully
+        wired runner a test (or a later change) can start a turn against directly, the
+        same way `research_runner` is — see `agents/research_workflow.py`'s module
+        docstring for what "not wired in yet" means here.
+        """
+        if self._roadmap is None:
+            self._roadmap = Runner(
+                app_name=APP_NAME,
+                agent=build_roadmap_workflow(  # type: ignore[arg-type]
+                    self._build_model(),
+                    research_tools=self._research_tools,
+                    throttle=self._research_throttle,
+                    before_agent_callback=self._prompt,
+                ),
+                session_service=self._session_service,
+                artifact_service=self._artifacts(),
+            )
+        return self._roadmap
 
     def autonomous_runner(self) -> Runner:
         """The `propose_tasks` runner — the background pass over the board.

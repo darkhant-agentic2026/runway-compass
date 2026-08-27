@@ -41,9 +41,10 @@ from coach.core.errors import Conflict, NotFound, ValidationProblem
 from coach.core.ids import turn_id as new_turn_id
 from coach.core.principal import Principal
 from coach.repositories.turns import TurnRepository
-from coach.services.models import Turn, TurnError, TurnStatus
+from coach.services.models import TaskState, Turn, TurnError, TurnStatus
 from coach.services.quotas import QuotaService
 from coach.services.sessions import SessionService
+from coach.services.tasks import TaskService
 from coach.services.uploads import UploadService
 from coach.ws.broker import StreamBroker
 from coach.ws.checkpoints import CheckpointWriter
@@ -74,13 +75,19 @@ MAX_TURN_TEXT = 32_000
 #: the safety rail: it carries `DomainTools.as_autonomous_tools()`, so an unattended run
 #: has no `discard_task` to be talked into using
 #: (docs/03-agent-design.md#safety-rails-on-autonomy).
-AgentChoice = Literal["coach", "research", "propose"]
+#:
+#: `"roadmap"` is `research_workflow`'s taskless sibling
+#: (`agents/research_workflow.py::build_roadmap_workflow`) — additive plumbing only.
+#: `ResearchService`/`RunExecutor` do not pass it: every run they start still uses
+#: `"research"`, taskless or not, so this choice is reachable today only from a caller
+#: that names it directly (tests, until a later change makes it the taskless dispatch).
+AgentChoice = Literal["coach", "research", "roadmap", "propose"]
 
 #: What `"coach"` resolves to, once `start` knows whether the session is linked to a task
 #: (docs/09-roadmap.md#m6--splitting-the-coach-into-a-project-coach-and-a-task-teacher).
-#: `"research"` and `"propose"` already name a concrete agent and pass through `_resolve_agent`
-#: unchanged, so this is the union `_RUNNERS` actually indexes on.
-_ResolvedAgent = Literal["coach_project", "coach_task", "research", "propose"]
+#: `"research"`, `"roadmap"`, and `"propose"` already name a concrete agent and pass through
+#: `_resolve_agent` unchanged, so this is the union `_RUNNERS` actually indexes on.
+_ResolvedAgent = Literal["coach_project", "coach_task", "research", "roadmap", "propose"]
 
 #: The resolved agent to the factory method that builds its runner. A mapping rather than a
 #: chain of `if`s so that adding a fifth agent without a runner is a `KeyError` at the call
@@ -90,6 +97,7 @@ _RUNNERS: dict[str, Callable[[RunnerFactory], Runner]] = {
     "coach_project": lambda factory: factory.project_runner(),
     "coach_task": lambda factory: factory.task_runner(),
     "research": lambda factory: factory.research_runner(),
+    "roadmap": lambda factory: factory.roadmap_runner(),
     "propose": lambda factory: factory.autonomous_runner(),
 }
 
@@ -102,7 +110,8 @@ def _resolve_agent(agent: AgentChoice, task_id: str | None) -> _ResolvedAgent:
     M6 fix: `task_teacher` simply has no `add_task` tool, so a learner describing extra
     work inside a task's conversation cannot land it on the board by construction.
 
-    `"research"` and `"propose"` already name a concrete agent and are untouched.
+    `"research"`, `"roadmap"`, and `"propose"` already name a concrete agent and are
+    untouched.
     """
     if agent != "coach":
         return agent
@@ -154,6 +163,7 @@ class TurnService:
         registry: TurnRegistry,
         broker: StreamBroker,
         quotas: QuotaService,
+        tasks: TaskService,
         *,
         instance_id: str,
     ) -> None:
@@ -165,6 +175,7 @@ class TurnService:
         self._registry = registry
         self._broker = broker
         self._quotas = quotas
+        self._tasks = tasks
         self._instance_id = instance_id
         # docs/07-infra-deploy.md: "A per-instance asyncio.Semaphore caps concurrent
         # agent runs (default 8) so a burst of background work cannot starve interactive
@@ -228,6 +239,8 @@ class TurnService:
             raise ValidationProblem(f"A turn's text is capped at {MAX_TURN_TEXT} characters.")
         linkage = await self._sessions.require_owned(principal, session_id)
         resolved_agent = _resolve_agent(agent, linkage.task_id)
+        if resolved_agent == "coach_task" and linkage.task_id is not None:
+            await self._start_task_if_not_started(principal, linkage.task_id)
         # docs/02-data-model.md#usage-quotas-m8-quotas: the one gate every interactive
         # turn, research run, and autonomous pass shares, since they all reach here.
         # Raises `QuotaExceeded` before a turn document exists, so a blocked attempt costs
@@ -255,6 +268,24 @@ class TurnService:
         if on_finished is not None:
             task.add_done_callback(lambda _: _run_detached(on_finished()))
         return turn
+
+    async def _start_task_if_not_started(self, principal: Principal, task_id: str) -> None:
+        """The learner's first message in a task's own session moves it off the board's
+        "not started" pile — the same move the row's own "Start" action makes, just
+        triggered by opening the conversation and typing rather than by a click.
+
+        Checked against the task's *current* state, not "is this the first message":
+        every message into a `coach_task` session comes through here, so the very first
+        one is the only one that ever finds `NOT_STARTED` and the transition is
+        naturally a no-op afterwards. Silently skipped for any other state — `draft`
+        (no plan yet), `completed`, `postponed`, or `discarded` — since only
+        `NOT_STARTED -> IN_PROGRESS` is what "starting by talking about it" means; those
+        others have their own explicit actions and `set_state` would raise on most of
+        them anyway.
+        """
+        task = await self._tasks.resolve(principal, task_id)
+        if task.state is TaskState.NOT_STARTED:
+            await self._tasks.set_state(principal, task_id, TaskState.IN_PROGRESS)
 
     async def cancel(self, principal: Principal, session_id: str, turn_id: str) -> Turn:
         """`POST /api/sessions/{sid}/turns/{turnId}/cancel` — the only thing that stops it."""
@@ -514,12 +545,18 @@ class TurnService:
         text rather than silence.
         """
         text = _text_of(event)
+        # The node that produced this event — the root agent for an ordinary chat turn,
+        # one of several node names across a single `research_workflow`/
+        # `build_roadmap_workflow` turn. Threaded onto every frame this event produces so
+        # the frontend can tell a new author's message apart from a continuation of the
+        # previous one within the same turn (`ws/protocol.py`'s `Delta` docstring).
+        author = event.author or ""
 
         if event.partial:
             if text:
                 seq += 1
                 await self._broker.publish(
-                    turn.id, Delta(turn_id=turn.id, seq=seq, text=text).to_wire()
+                    turn.id, Delta(turn_id=turn.id, seq=seq, text=text, author=author).to_wire()
                 )
                 await writer.add(seq, text)
                 streamed += text
@@ -534,7 +571,8 @@ class TurnService:
             if remainder:
                 seq += 1
                 await self._broker.publish(
-                    turn.id, Delta(turn_id=turn.id, seq=seq, text=remainder).to_wire()
+                    turn.id,
+                    Delta(turn_id=turn.id, seq=seq, text=remainder, author=author).to_wire(),
                 )
                 await writer.add(seq, remainder)
             streamed = ""
@@ -551,6 +589,7 @@ class TurnService:
                     seq=seq,
                     name=call.name or "",
                     args_preview=dict(call.args or {}),
+                    author=author,
                 ).to_wire(),
             )
             await self._turns.advance_seq(turn.id, seq)
@@ -565,6 +604,7 @@ class TurnService:
                     seq=seq,
                     name=response.name or "",
                     ok=_tool_succeeded(response.response),
+                    author=author,
                 ).to_wire(),
             )
             await self._turns.advance_seq(turn.id, seq)

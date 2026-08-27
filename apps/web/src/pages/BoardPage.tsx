@@ -35,6 +35,7 @@ import { CoachUpdateBanner } from '@/components/board/CoachUpdateBanner';
 import { TaskCard } from '@/components/board/TaskCard';
 import { ResearchCard } from '@/components/research/ResearchCard';
 import { StartProjectResearch } from '@/components/research/StartProjectResearch';
+import { StartProjectRoadmap } from '@/components/research/StartProjectRoadmap';
 import { SessionPane } from '@/components/session/SessionPane';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -124,8 +125,8 @@ export default function BoardPage() {
               Project settings
             </Button>
           </div>
-          {project.data?.goal ? (
-            <p className="text-muted-foreground">{project.data.goal}</p>
+          {project.data?.description ? (
+            <p className="text-muted-foreground">{project.data.description}</p>
           ) : null}
           {project.data ? (
             <p className="text-sm text-muted-foreground">
@@ -158,10 +159,16 @@ export default function BoardPage() {
         */}
         <ResearchCard projectId={projectId} runs={runs.data ?? EMPTY_RUNS} />
 
-        <StartProjectResearch
-          projectId={projectId}
-          intakeSessionId={intake.data?.id ?? project.data?.intakeSessionId ?? null}
-        />
+        <div className="flex flex-wrap gap-2">
+          <StartProjectResearch
+            projectId={projectId}
+            intakeSessionId={intake.data?.id ?? project.data?.intakeSessionId ?? null}
+          />
+          <StartProjectRoadmap
+            projectId={projectId}
+            intakeSessionId={intake.data?.id ?? project.data?.intakeSessionId ?? null}
+          />
+        </div>
 
         <BoardFilters
           filters={filters}

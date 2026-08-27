@@ -25,7 +25,7 @@ import pytest
 
 from coach.core.errors import Conflict, ValidationProblem
 from coach.integrations.stub_model import StubModel
-from coach.services.models import ResearchStatus, TaskState
+from coach.services.models import ReportItemKind, ResearchStatus, TaskState
 
 TURN_TIMEOUT_SECONDS = 20.0
 
@@ -81,6 +81,27 @@ async def _await_run(client: httpx.AsyncClient, turn_id: str) -> dict[str, Any]:
             await asyncio.sleep(0.02)
 
 
+async def _await_turn_id(client: httpx.AsyncClient, run_id: str) -> str:
+    """Since M9, `/research` and `/roadmap` are queued: the 202 body's `turnId` is `null`
+    until the local in-process queue (`ENV=local`, same as this test suite) actually starts
+    the turn, which is a few event-loop turns after the request returns rather than
+    synchronous with it. Callers that used to read `body["turnId"]` straight off the 202
+    poll the run for it instead.
+    """
+    async with asyncio.timeout(TURN_TIMEOUT_SECONDS):
+        while True:
+            run = (await client.get(f"/api/runs/{run_id}")).json()["run"]
+            if run["turnId"]:
+                return str(run["turnId"])
+            await asyncio.sleep(0.02)
+
+
+async def _await_queued_run(client: httpx.AsyncClient, run_id: str) -> dict[str, Any]:
+    """`_await_turn_id` then `_await_run`, for the common case of wanting the finished turn."""
+    turn_id = await _await_turn_id(client, run_id)
+    return await _await_run(client, turn_id)
+
+
 def _items(budget: int) -> list[dict[str, Any]]:
     half = budget // 2
     return [
@@ -132,7 +153,7 @@ async def test_a_report_writes_the_documents_and_the_checklist(
     assert report.total_required_minutes == 45
     assert [i.item_id for i in report.required] == [i.item_id for i in task.items]
     # Order preserved: the required list is a plan, and the tool must not sort it by kind
-    # or by minutes (docs/03-agent-design.md#research_agent).
+    # or by minutes (docs/03-agent-design.md#the-research-pipeline-since-m9).
     assert [i.short_description for i in task.items] == [
         "so you can read the traceback",
         "so you can check it landed",
@@ -140,6 +161,9 @@ async def test_a_report_writes_the_documents_and_the_checklist(
     # `guided` falls out of `kind` when the model says nothing: an exercise is worked
     # through in conversation, an article is not.
     assert [i.guided for i in task.items] == [False, True]
+    # `kind` itself survives the promotion too — a checklist item can show the same kind
+    # chip its report item did (`ItemKindBadge`, `apps/web`).
+    assert [i.kind for i in task.items] == [ReportItemKind.ARTICLE, ReportItemKind.EXERCISE]
     # Only `required[]` is promoted. An optional item is material the learner may want and
     # is not a thing they owe the task, which is what a checkbox would erase.
     assert len(task.items) == 2
@@ -267,7 +291,7 @@ async def test_report_feedback_is_written_and_completion_is_refused(
 # --- the tool, through a real turn --------------------------------------------------------
 
 
-async def test_the_research_agent_posts_a_report_that_fits_the_task(
+async def test_the_research_pipeline_posts_a_report_that_fits_the_task(
     client: httpx.AsyncClient, stub_model: StubModel
 ) -> None:
     """Tier-1 agent test: the report is written by the tool, through a real turn.
@@ -284,9 +308,10 @@ async def test_the_research_agent_posts_a_report_that_fits_the_task(
     )
     assert started.status_code == 202, started.text
     body = started.json()
-    assert body["mode"] == "inline"
+    assert body["mode"] == "queued"
+    assert body["turnId"] is None
 
-    turn = await _await_run(client, body["turnId"])
+    turn = await _await_queued_run(client, body["runId"])
     assert turn["status"] == "complete"
 
     detail = (await client.get(f"/api/tasks/{fixture['task']['id']}")).json()
@@ -332,7 +357,7 @@ async def test_research_reads_a_file_already_uploaded_in_the_tasks_own_conversat
         f"/api/sessions/{fixture['sessionId']}/research", json={"reason": ""}
     )
     body = started.json()
-    turn = await _await_run(client, body["turnId"])
+    turn = await _await_queued_run(client, body["runId"])
     assert turn["status"] == "complete"
 
     research_events = (await client.get(f"/api/sessions/{body['sessionId']}/events")).json()[
@@ -354,6 +379,42 @@ async def test_research_reads_a_file_already_uploaded_in_the_tasks_own_conversat
     assert task_events_after == task_events_before
 
 
+async def test_an_attachment_on_the_request_itself_survives_the_queue(
+    client: httpx.AsyncClient, container, stub_model: StubModel
+) -> None:
+    """`attachments` on the `/research` request — a file sent for the first time,
+    specifically for this call — has to reach the turn `RunExecutor` starts, not the
+    request that accepted it. Since M9 the two are different processes' worth of code
+    (`ResearchService` writes `run.pendingAttachments`; `RunExecutor._manual_research`
+    reads it back), where before M9 it was one direct argument to `TurnService.start`.
+    """
+    fixture = await _task(client)
+    upload_id = await _staged_upload(client, container, content=b"a fresh attachment")
+
+    started = await client.post(
+        f"/api/sessions/{fixture['sessionId']}/research",
+        json={
+            "reason": "",
+            "attachments": [{"uploadId": upload_id, "mimeType": "application/pdf"}],
+        },
+    )
+    body = started.json()
+    turn = await _await_queued_run(client, body["runId"])
+    assert turn["status"] == "complete"
+
+    research_events = (await client.get(f"/api/sessions/{body['sessionId']}/events")).json()[
+        "events"
+    ]
+    file_uris = {
+        (part.get("file_data") or part.get("fileData") or {}).get("file_uri")
+        for event in research_events
+        for part in (event["event"].get("content") or {}).get("parts", [])
+        if part.get("file_data") or part.get("fileData")
+    }
+    upload = await container.upload_repository.get(upload_id)
+    assert upload["artifactUri"] in file_uris
+
+
 async def test_the_run_is_recorded_in_the_ledger(
     client: httpx.AsyncClient, container, alice, stub_model: StubModel
 ) -> None:
@@ -365,9 +426,9 @@ async def test_the_run_is_recorded_in_the_ledger(
     """
     fixture = await _task(client)
     body = (await client.post(f"/api/sessions/{fixture['sessionId']}/research", json={})).json()
-    await _await_run(client, body["turnId"])
+    await _await_queued_run(client, body["runId"])
 
-    # The watcher closes the ledger out shortly after the turn goes terminal.
+    # The executor settles the ledger out shortly after the turn goes terminal.
     async with asyncio.timeout(TURN_TIMEOUT_SECONDS):
         while True:
             run = await container.research.get(alice, body["runId"])
@@ -376,11 +437,11 @@ async def test_the_run_is_recorded_in_the_ledger(
             await asyncio.sleep(0.05)
 
     assert run.trigger == "manual"
-    assert run.mode == "inline"
+    assert run.mode == "queued"
     assert run.status.value == "complete"
     assert [step.id for step in run.steps] == ["research", "post_report"]
     assert run.cursor is None
-    assert run.turn_id == body["turnId"]
+    assert run.turn_id is not None
 
 
 async def test_the_lease_is_released_so_a_second_run_can_start(
@@ -396,7 +457,7 @@ async def test_the_lease_is_released_so_a_second_run_can_start(
     first = (
         await client.post(f"/api/sessions/{fixture['sessionId']}/research", json={})
     ).json()
-    await _await_run(client, first["turnId"])
+    await _await_queued_run(client, first["runId"])
 
     async with asyncio.timeout(TURN_TIMEOUT_SECONDS):
         while True:
@@ -429,7 +490,7 @@ async def test_a_second_run_while_one_is_in_flight_is_refused_with_the_run_id(
     assert second.status_code == 409
     assert second.json()["runId"] == first.json()["runId"]
 
-    await _await_run(client, first.json()["turnId"])
+    await _await_queued_run(client, first.json()["runId"])
 
 
 async def test_researching_an_already_researched_task_needs_force(
@@ -439,7 +500,7 @@ async def test_researching_an_already_researched_task_needs_force(
     first = (
         await client.post(f"/api/sessions/{fixture['sessionId']}/research", json={})
     ).json()
-    await _await_run(client, first["turnId"])
+    await _await_queued_run(client, first["runId"])
 
     async with asyncio.timeout(TURN_TIMEOUT_SECONDS):
         while True:
@@ -449,6 +510,34 @@ async def test_researching_an_already_researched_task_needs_force(
             assert again.status_code == 409, again.text
             await asyncio.sleep(0.05)
     assert again.status_code == 409
+
+
+async def test_manual_research_ignores_needs_research(
+    client: httpx.AsyncClient, container, alice, stub_model: StubModel
+) -> None:
+    """A learner pressing "research this" must not be silently skipped.
+
+    `RunExecutor._research` (the autonomous dispatch) skips whenever
+    `task.needsResearch == false`, `trigger != "requested"`. Since M9 a manual run's
+    `research`/`post_report` steps share those step ids but are dispatched by
+    `_manual_research`/`_manual_post_report` instead, specifically so this gate does not
+    reach them — `ResearchService.start_manual` never consulted `needsResearch` before M9,
+    and reusing the step id must not change that (docs/09-roadmap.md's M9 status section).
+    """
+    fixture = await _task(client)
+    await client.patch(f"/api/tasks/{fixture['task']['id']}", json={"needsResearch": False})
+
+    body = (await client.post(f"/api/sessions/{fixture['sessionId']}/research", json={})).json()
+    turn = await _await_queued_run(client, body["runId"])
+    assert turn["status"] == "complete"
+
+    task = (await client.get(f"/api/tasks/{fixture['task']['id']}")).json()["task"]
+    assert task["researchStatus"] == "done"
+    assert task["items"]
+
+    run = await container.research.get(alice, body["runId"])
+    steps = {step.id: step.status.value for step in run.steps}
+    assert steps == {"research": "complete", "post_report": "complete"}
 
 
 async def test_a_parent_task_cannot_be_researched(
@@ -500,7 +589,7 @@ async def test_research_from_the_project_coach_writes_a_taskless_report(
     # The run's own session, never the intake conversation it was requested from.
     assert body["sessionId"] != intake["id"]
 
-    turn = await _await_run(client, body["turnId"])
+    turn = await _await_queued_run(client, body["runId"])
     assert turn["status"] == "complete"
 
     run = await container.research.get(alice, body["runId"])
@@ -541,7 +630,7 @@ async def test_a_failed_run_does_not_leave_the_task_researching(
 
     container.runners.set_model(Exploding())
     body = (await client.post(f"/api/sessions/{fixture['sessionId']}/research", json={})).json()
-    await _await_run(client, body["turnId"])
+    await _await_queued_run(client, body["runId"])
 
     async with asyncio.timeout(TURN_TIMEOUT_SECONDS):
         while True:

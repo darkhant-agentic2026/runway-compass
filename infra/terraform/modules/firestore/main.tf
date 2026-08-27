@@ -278,13 +278,20 @@ resource "google_firestore_field" "turns_ttl" {
   ttl_config {}
 }
 
-# `updatedAt` is touched at every step boundary, so a run that is making progress keeps
-# resetting its own clock.
+# `expiresAt`, not `updatedAt`: a Firestore TTL policy deletes once the *value stored in*
+# its field is in the past, so the field has to hold the run's own future expiry, computed
+# explicitly by `repositories/runs.py` and refreshed at every step boundary (a run still
+# making progress keeps pushing its own expiry out). The original shape pointed this at
+# `updatedAt`, which `repositories/runs.py` sets to the current time on every write —
+# already "in the past" the instant it lands — so a run became eligible for deletion
+# within about a day of any write to it rather than 60 (previously 30) days after the
+# last one. Invisible locally: the Firestore emulator does not enforce TTL policies at all
+# (docs/09-roadmap.md#what-a-green-local-run-does-not-prove).
 resource "google_firestore_field" "runs_ttl" {
   project    = var.project_id
   database   = google_firestore_database.this.name
   collection = "autonomous_runs"
-  field      = "updatedAt"
+  field      = "expiresAt"
 
   ttl_config {}
 }

@@ -29,6 +29,20 @@ from coach.services.models import AutonomousRun, RunStatus
 #: the crash.
 LEASE_TTL = timedelta(minutes=5)
 
+#: docs/02-data-model.md#retention: "autonomous_runs/* — TTL 60 days on expiresAt". A
+#: **separate** field from `updatedAt`, on the same reasoning `idempotency.py`'s own
+#: `RETENTION` is: the Firestore TTL policy deletes a document once the *value stored in
+#: its TTL field* is in the past, which means the app has to write the absolute future
+#: expiry itself — writing `updatedAt: now()` there (the original M5 shape) put the
+#: current moment in the field, which is already "in the past" the instant the write
+#: lands, so the row became eligible for Firestore's TTL sweep within about a day of
+#: *any* write to it rather than 30 (now 60) days after the last one. Invisible locally:
+#: the Firestore emulator does not enforce TTL policies at all
+#: (docs/09-roadmap.md#what-a-green-local-run-does-not-prove), so this only ever showed up
+#: as a completed research report's card disappearing from a deployed project's board
+#: after about a day.
+RETENTION = timedelta(days=60)
+
 LOCKS = "locks"
 AGENT_LOCK = "agent"
 
@@ -73,12 +87,24 @@ class RunRepository:
 
     async def create(self, run: AutonomousRun) -> AutonomousRun:
         timestamp = now()
-        run = run.model_copy(update={"created_at": timestamp, "updated_at": timestamp})
+        run = run.model_copy(
+            update={
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "expires_at": timestamp + RETENTION,
+            }
+        )
         await self._doc(run.id).set(run.to_document())
         return run
 
     async def patch(self, run_id: str, patch: dict[str, Any]) -> None:
-        await self._doc(run_id).update({**patch, "updatedAt": now()})
+        # `expiresAt` is refreshed on every touch, same as `updatedAt` — a run still
+        # making progress keeps pushing its own expiry out, exactly as the pre-fix comment
+        # on `updatedAt` always intended, just on a field that actually behaves that way.
+        timestamp = now()
+        await self._doc(run_id).update(
+            {**patch, "updatedAt": timestamp, "expiresAt": timestamp + RETENTION}
+        )
 
     async def list_for_project(self, project_id: str, limit: int = 20) -> list[AutonomousRun]:
         """Recent runs for one project, newest first — the "Updated by your coach" banner.

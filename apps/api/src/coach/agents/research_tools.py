@@ -1,4 +1,5 @@
-"""The research agent's hands: `fetch_url`, `youtube_find_by_duration`, `post_research_report`.
+"""The research agent's hands: `fetch_url`, `youtube_find_by_duration`,
+`post_research_report`, `write_study_plan`.
 
 docs/03-agent-design.md#integration-tools and #domain-tools. Same conventions as
 `agents/tools.py`, and for the same reasons — a guard **answers** rather than raising, so a
@@ -6,12 +7,19 @@ refused call is a fact the model can act on instead of the end of the turn; resu
 compact and structured; and the task being researched is read from the invocation rather
 than taken as an argument.
 
-**These three are the whole of `research_agent`'s tool set, and the absence of everything
-else is the security control.** docs/10-risks.md#r7: this is the agent with fetched web
-pages in its context, so it may write exactly one kind of document and cannot touch the
-board. Adding a board tool here would move prompt injection from "the model reads something
-rude" to "the model reshapes the learner's plan", and no amount of delimiter discipline
-around the fetched text would compensate.
+**These are the whole of the research pipeline's tool set, split since M9 across
+`topic_researcher` (`as_topic_tools`: reads only) and the terminal node of whichever graph
+is running (`as_writer_tools`: `reviewer_writer`'s one write; `as_plan_writer_tools`:
+`plan_tailor`'s one write), and the absence of everything else is the security control.**
+docs/10-risks.md#r7: `topic_researcher` is the node with fetched web pages in its context,
+so between the two of them the pipeline may write exactly one kind of document and cannot
+touch the board. Adding a board tool here would move prompt injection from "the model reads
+something rude" to "the model reshapes the learner's plan", and no amount of delimiter
+discipline around the fetched text would compensate. `write_study_plan` holds to the same
+rule: it writes a `StudyPlan` document, never a task — `materialize_study_plan`
+(`agents/tools.py`) is the only thing that turns one into board tasks, and it is a
+separate, not-yet-wired tool for a reason
+(docs/03-agent-design.md#the-research-pipeline-since-m9).
 """
 
 from __future__ import annotations
@@ -33,6 +41,7 @@ from coach.core.errors import CoachError, ValidationProblem
 from coach.integrations import fetch_url as fetcher
 from coach.integrations.youtube import YouTubeClient, YouTubeUnavailable
 from coach.services.reports import ReportService
+from coach.services.study_plans import StudyPlanService
 from coach.ws.hub import BoardUpdateHub
 
 logger = logging.getLogger(__name__)
@@ -48,11 +57,16 @@ class ResearchTools:
         hub: BoardUpdateHub,
         *,
         http: httpx.AsyncClient | None = None,
+        study_plans: StudyPlanService | None = None,
     ) -> None:
         self._reports = reports
         self._youtube = youtube
         self._hub = hub
         self._http = http
+        # Optional, like `DomainTools`' `users`/`memory`: only `plan_tailor`
+        # (`build_roadmap_workflow`) needs it, and a construction-time test that stubs the
+        # rest of this class has no reason to also build a `StudyPlanService`.
+        self._plans = study_plans
 
     async def fetch_url(self, url: str, tool_context: ToolContext) -> dict[str, Any]:
         """Read a web page, so you can say what is actually on it.
@@ -255,6 +269,92 @@ class ResearchTools:
             "checklistLength": len(task.items) if task is not None else 0,
         }
 
+    async def write_study_plan(
+        self,
+        title: str,
+        short_description: str,
+        long_description: str,
+        memo: str,
+        proposed_tasks: list[dict[str, Any]],
+        plan: list[dict[str, Any]],
+        tool_context: ToolContext,
+    ) -> dict[str, Any]:
+        """Deliver the study plan. Call this exactly once, at the end.
+
+        `proposed_tasks` must be `task_proposer`'s own list, reproduced exactly as it
+        appeared earlier in this conversation — do not drop, rename, or reword any of them.
+        `plan` is your own tailoring: exactly one entry per proposed task, covering every
+        one of them, including the ones you decided not to include.
+
+        Args:
+            title: The plan's title.
+            short_description: 2-3 sentences — a plan's summary card shows this.
+            long_description: The full write-up, in markdown.
+            memo: `task_proposer`'s own memo, passed through unchanged.
+            proposed_tasks: Every task `task_proposer` proposed. Each is an object with
+                `slug`, `title`, `description`, `required` and `optional` (material lists,
+                the same shape a research report's `required`/`optional` items use), and
+                `prerequisite_tasks` (other proposed tasks' slugs this one assumes are
+                already done).
+            plan: One entry per proposed task. Each is an object with `task_slug`, `after`
+                (the slug of the proposed task this one should sit directly after, once
+                materialized), `prerequisite_tasks`, `relevance` (a whole number, 0-4),
+                `decision` (`include`, `additional`, `exclude`, or `reject`), and `why`
+                (addressed to the learner, explaining the decision — required even for an
+                excluded or rejected task).
+        """
+        return await self._guarded(
+            tool_context,
+            self._write_plan,
+            title,
+            short_description,
+            long_description,
+            memo,
+            proposed_tasks,
+            plan,
+            tool_context,
+        )
+
+    async def _write_plan(
+        self,
+        context: AgentContext,
+        title: str,
+        short_description: str,
+        long_description: str,
+        memo: str,
+        proposed_tasks: list[dict[str, Any]],
+        plan: list[dict[str, Any]],
+        tool_context: ToolContext,
+    ) -> dict[str, Any]:
+        if self._plans is None:
+            raise ValidationProblem("Study plan storage is not configured.")
+        # `plan_{runId}`, on the same reasoning `report_{runId}` uses
+        # (docs/05-autonomous-runs.md#execution-semantics): a retried `research` step
+        # overwrites its plan rather than writing a second one.
+        run_id = str(tool_context.state.get(RUN_ID_KEY) or "") or None
+        study_plan = await self._plans.post_plan(
+            context.principal,
+            project_id=context.project_id,
+            title=title,
+            short_description=short_description,
+            long_description=long_description,
+            memo=memo,
+            proposed_tasks=proposed_tasks,
+            plan=plan,
+            run_id=run_id,
+            plan_id=f"plan_{run_id}" if run_id else None,
+            session_id=getattr(tool_context, "session_id", None),
+        )
+        included = sum(
+            1 for entry in study_plan.plan if entry.decision in ("include", "additional")
+        )
+        return {
+            "ok": True,
+            "planId": study_plan.id,
+            "taskCount": len(study_plan.proposed_tasks),
+            "includedCount": included,
+        }
+
     async def _guarded(
         self, tool_context: ToolContext, handler: Any, *args: Any
     ) -> dict[str, Any]:
@@ -269,13 +369,31 @@ class ResearchTools:
             )
             return {"ok": False, "error": {"code": error.code, "message": str(error)}}
 
-    def as_tools(self) -> list[FunctionTool]:
-        """Reads first, then the one write. See the module docstring for what is absent."""
+    def as_topic_tools(self) -> list[FunctionTool]:
+        """`topic_researcher`'s tool set (since M9): reads only, no report to write yet.
+
+        A single sub-topic's worth of work never calls `post_research_report` — only
+        `reviewer_writer`, downstream, has the full picture `post_research_report` needs
+        (docs/03-agent-design.md#the-research-pipeline-since-m9).
+        """
         return [
             FunctionTool(self.fetch_url),
             FunctionTool(self.youtube_find_by_duration),
-            FunctionTool(self.post_research_report),
         ]
+
+    def as_writer_tools(self) -> list[FunctionTool]:
+        """`reviewer_writer`'s tool set (since M9): the one write, and nothing else.
+
+        No `fetch_url`/`youtube_find_by_duration` here — `reviewer_writer` synthesizes what
+        the `topic_researcher` fan-out already found; giving it its own fetch tool would let
+        it go around the sub-topic split M9 exists to enforce.
+        """
+        return [FunctionTool(self.post_research_report)]
+
+    def as_plan_writer_tools(self) -> list[FunctionTool]:
+        """`plan_tailor`'s tool set (`build_roadmap_workflow`): the one write, and nothing
+        else — same reasoning as `as_writer_tools`, applied to the taskless pipeline."""
+        return [FunctionTool(self.write_study_plan)]
 
 
 __all__ = ["ResearchTools"]

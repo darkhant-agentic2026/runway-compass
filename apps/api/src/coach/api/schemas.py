@@ -29,6 +29,7 @@ from coach.services.models import (
     ResearchDepth,
     ResearchReport,
     SessionSummary,
+    StudyPlan,
     Task,
     TaskState,
     TaskWithSubtasks,
@@ -93,8 +94,9 @@ class GlobalPrefsPatch(RequestModel):
     autonomous_quiet_hours: QuietHoursPatch | None = None
 
 
-class TechnologyBeliefPatch(RequestModel):
+class SkillBeliefPatch(RequestModel):
     name: str
+    area: str = "general"
     level: str
     evidence: str = ""
 
@@ -103,7 +105,7 @@ class LearnerProfilePatch(RequestModel):
     thinking_style: str | None = Field(default=None, max_length=500)
     strengths: list[str] | None = None
     gaps: list[str] | None = None
-    technologies: list[TechnologyBeliefPatch] | None = None
+    skills: list[SkillBeliefPatch] | None = None
     pacing: str | None = None
     feedback_notes: list[str] | None = None
 
@@ -113,7 +115,7 @@ class LearnerProfilePatch(RequestModel):
 
 class ProjectCreate(RequestModel):
     title: str = Field(min_length=1, max_length=200)
-    goal: str = ""
+    description: str = ""
 
 
 class ProjectPrefsPatch(RequestModel):
@@ -129,7 +131,7 @@ class ProjectPrefsPatch(RequestModel):
 
 class ProjectPatch(RequestModel):
     title: str | None = Field(default=None, min_length=1, max_length=200)
-    goal: str | None = None
+    description: str | None = None
     status: ProjectStatus | None = None
     prefs: ProjectPrefsPatch | None = None
 
@@ -300,6 +302,17 @@ class ReportResponse(ResponseModel):
     report: ResearchReport
 
 
+class StudyPlanResponse(ResponseModel):
+    """`GET /api/runs/{runId}/plan` — a roadmap run's one write, whole.
+
+    `ReportResponse`'s sibling: `report`/`plan` are the two shapes a taskless run's final
+    document can take, told apart by which pipeline the run's `steps[0].id` names
+    (docs/03-agent-design.md#the-taskless-case-task_proposer-and-plan_tailor-replace-reviewer_writer).
+    """
+
+    plan: StudyPlan
+
+
 class ResearchRequest(RequestModel):
     reason: str = Field(default="", max_length=2000)
     budget_minutes_override: Minutes | None = None
@@ -315,15 +328,31 @@ class ResearchRequest(RequestModel):
 class ResearchResponse(ResponseModel):
     """The 202 from `POST /api/sessions/{sid}/research`.
 
-    `turnId` is what the client subscribes to. `sessionId` (+ M8) is the run's own fresh
-    session — never the `sid` the request was made against — and is what the research view
-    reads to render that run's transcript (docs/04-api-contract.md#post-apisessionssidresearch).
+    `sessionId` (+ M8) is the run's own fresh session — never the `sid` the request was
+    made against — and is what the research view reads to render that run's transcript
+    (docs/04-api-contract.md#post-apisessionssidresearch). **Since M9, `turnId` is `null`**:
+    the turn does not exist yet at accept time — the run is queued, the same way a
+    scheduled run is — so the client polls `GET /api/runs/{runId}` and picks up `turnId`
+    (and subscribes over the socket) once the queue actually starts it, exactly as it
+    already does for a scheduled run's `sessionId`/`turnId`.
     """
 
     run_id: str
     turn_id: str | None
     session_id: str
     mode: str
+
+
+class RoadmapRequest(RequestModel):
+    """`POST /api/sessions/{sid}/roadmap`. Taskless only, so unlike `ResearchRequest`
+    there is no `force`/`budgetMinutesOverride` — `reason` is required, not merely
+    non-empty-checked server-side, so a client gets a 422 for an empty box rather than a
+    422 the service raises after accepting the request."""
+
+    reason: str = Field(min_length=1, max_length=2000)
+    #: Files the learner attached to the question, forwarded the same way
+    #: `ResearchRequest.attachments` is.
+    attachments: list[TurnAttachment] = Field(default_factory=list)
 
 
 class EffectivePrefsResponse(ResponseModel):

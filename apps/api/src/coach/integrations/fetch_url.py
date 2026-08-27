@@ -15,7 +15,7 @@ trust the destination. Two failure modes it exists to prevent, and they are diff
 - **Prompt injection.** Whatever comes back is untrusted text going into a tool-calling
   model's context. It is wrapped in explicit delimiters with an instruction that it is
   data, never instructions. That is a mitigation, not a control: the actual control is
-  that `research_agent` has no board-mutating tools (docs/10-risks.md#r7).
+  that the research pipeline has no board-mutating tools (docs/10-risks.md#r7).
 
 **Redirects are followed by hand, one hop at a time, and every hop is re-checked.**
 `follow_redirects=True` would validate the first URL and then connect wherever the server

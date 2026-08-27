@@ -86,10 +86,18 @@ class TurnStart(Frame):
 
 
 class Delta(Frame):
+    """`author` is ADK's `Event.author` — the root agent for an ordinary chat turn, but
+    one of several node names (`research_planner`, `topic_researcher`, …) across a single
+    `research_workflow`/`build_roadmap_workflow` turn. The frontend's live stream buffer
+    starts a new message segment whenever `author` changes from the previous frame's,
+    which is what keeps one multi-agent turn from streaming into a single run-on bubble
+    (`stores/stream.ts`)."""
+
     type: Literal["delta"] = "delta"
     turn_id: str
     seq: int
     text: str
+    author: str = ""
 
 
 class ToolCall(Frame):
@@ -98,6 +106,7 @@ class ToolCall(Frame):
     seq: int
     name: str
     args_preview: dict[str, Any] = Field(default_factory=dict)
+    author: str = ""
 
 
 class ToolResult(Frame):
@@ -106,6 +115,7 @@ class ToolResult(Frame):
     seq: int
     name: str
     ok: bool = True
+    author: str = ""
 
 
 class Artifact(Frame):

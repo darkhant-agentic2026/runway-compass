@@ -13,6 +13,7 @@
  * stated in docs/06-frontend.md so a future screen does not rediscover it the hard way.
  */
 
+import { ItemKindBadge } from '@/components/task/item-kind';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { formatMinutes } from '@/lib/format';
@@ -95,6 +96,7 @@ export function Checklist({
               </label>
 
               <div className="flex flex-wrap items-center gap-2">
+                {item.kind ? <ItemKindBadge kind={item.kind} /> : null}
                 {item.minutes ? (
                   <Badge variant="secondary" className="text-[0.7rem]">
                     {formatMinutes(item.minutes)}

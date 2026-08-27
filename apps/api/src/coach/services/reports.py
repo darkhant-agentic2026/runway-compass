@@ -188,7 +188,7 @@ class ReportService:
             updated = await self._tasks.replace_items(
                 principal,
                 task_id,
-                [_as_checklist_item(item) for item in required_items],
+                [as_checklist_item(item) for item in required_items],
                 source_report_id=stored.id,
             )
             updated = await self._tasks.set_research(
@@ -282,13 +282,17 @@ def _assert_disjoint(required: list[ReportItem], optional: list[ReportItem]) -> 
         )
 
 
-def _as_checklist_item(item: ReportItem) -> dict[str, Any]:
+def as_checklist_item(item: ReportItem) -> dict[str, Any]:
     """A report item as the checklist entry it becomes.
 
     `why` is the `shortDescription` and the title is folded into the details, not the other
     way round. A checklist reads as things to do — "Read sections 3 and 4 for the
     cancellation rules you will need" — where a list of titles reads as a bibliography, and
     the learner has to work out what each one is for.
+
+    Public (not `_`-prefixed) because `services/study_plans.py` reuses it for exactly the
+    same projection, applied to a `ProposedItem` rather than a `ReportItem` — the two share
+    every field this function reads.
     """
     details = item.details.strip()
     if not details:
@@ -297,6 +301,7 @@ def _as_checklist_item(item: ReportItem) -> dict[str, Any]:
         "itemId": item.item_id,
         "shortDescription": item.why or item.title,
         "details": details,
+        "kind": item.kind,
         "guided": item.is_guided,
         "minutes": item.minutes,
         "url": item.url,

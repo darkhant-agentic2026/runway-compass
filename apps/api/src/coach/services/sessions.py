@@ -123,7 +123,7 @@ class SessionService:
         own uploads into a research turn automatically, so the research agent can read a
         file the task's description or conversation mentions without the learner having
         to re-attach it to the research request itself
-        (docs/03-agent-design.md#research_agent).
+        (docs/03-agent-design.md#the-research-pipeline-since-m9).
 
         Pages through the whole session rather than the transcript's usual one-screen
         limit — an upload from early in a long conversation is exactly the kind research

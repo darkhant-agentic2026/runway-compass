@@ -102,7 +102,7 @@ test('sign in, create a project, and see it on the list', async ({ page }) => {
   await expect(page.getByTestId('project-list')).toContainText('Learn Rust');
 });
 
-test('manage tasks by hand: add, start, complete, and the default filter hides it', async ({
+test('manage tasks by hand: add, start, complete, and hide-completed filters it out', async ({
   signedIn: page,
 }) => {
   await createProject(page, 'Manage by hand');
@@ -124,12 +124,14 @@ test('manage tasks by hand: add, start, complete, and the default filter hides i
   await page.getByRole('button', { name: 'Actions for First task' }).click();
   await page.getByRole('menuitem', { name: 'Complete' }).click();
 
-  // "Hide completed" is on by default, so the finished task leaves the board.
-  await expect(page.getByTestId('task-card')).toHaveCount(1);
-  await expect(page.getByTestId('board')).not.toContainText('First task');
+  // "Hide completed" is off by default, so a freshly finished task stays on the board
+  // rather than vanishing the moment it's done.
+  await expect(page.getByTestId('task-card')).toHaveCount(2);
+  await expect(page.getByTestId('board')).toContainText('First task');
 
   await page.getByRole('switch', { name: 'Hide completed' }).click();
-  await expect(page.getByTestId('board')).toContainText('First task');
+  await expect(page.getByTestId('task-card')).toHaveCount(1);
+  await expect(page.getByTestId('board')).not.toContainText('First task');
 });
 
 test('reordering with the keyboard fallback survives a reload', async ({ signedIn: page }) => {
@@ -254,7 +256,13 @@ test('a composite task shows its subtasks in the workspace, and completing one l
   await page.getByRole('link', { name: 'Back to the board' }).click();
   const parent = page.getByTestId('task-card').filter({ hasText: 'Big piece' });
   await expect(parent.getByTestId('rollup')).toContainText('2 subtasks');
-  await expect(parent.getByTestId('subtask')).toHaveCount(1);
+  // "Hide completed" is off by default, so the finished subtask stays listed alongside
+  // the other one rather than dropping out of the parent's own subtask rows.
+  await expect(parent.getByTestId('subtask')).toHaveCount(2);
+  await expect(parent.getByTestId('subtask').filter({ hasText: 'First half' })).toHaveAttribute(
+    'data-state',
+    'completed',
+  );
 });
 
 test('the workspace shows breadcrumbs and a collapsible detail column', async ({

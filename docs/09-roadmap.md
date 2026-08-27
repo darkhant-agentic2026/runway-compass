@@ -1,6 +1,6 @@
 # Roadmap
 
-Ten milestones. Each has a demoable outcome and explicit exit criteria. Sizes assume one
+Eleven milestones. Each has a demoable outcome and explicit exit criteria. Sizes assume one
 focused developer; treat them as sequencing signal, not commitments.
 
 ---
@@ -776,7 +776,7 @@ sub-sections below are the decisions, not a proposal.
   project as a whole; the run and its report carry `taskId: null`, and nothing is promoted
   into any task's checklist. The dedicated session still carries a `taskId` — the *parent*
   task for a task-scoped run, `null` for this case — the same field either way
-  ([03-agent-design.md](03-agent-design.md#research_agent)).
+  ([03-agent-design.md](03-agent-design.md#the-research-pipeline-since-m9)).
 - **UI rework.** A dedicated research view (`/projects/:projectId/research/:runId`), two
   panes: the research session's own transcript (read-only — no composer, the coach is not
   conversing with anyone) and the final report with citations, once there is one. The
@@ -933,8 +933,8 @@ keeps the default of 4/30 min
 
 | Item | Needed by | Note |
 | --- | --- | --- |
-| Nightly live-API and evalset runs | **M9** | Live API tests against real Gemini/YouTube |
-| Content scanning on finalize | **M9** | Still as recorded after M2 |
+| Nightly live-API and evalset runs | **M11** | Live API tests against real Gemini/YouTube |
+| Content scanning on finalize | **M11** | Still as recorded after M2 |
 | `prod` environment, `terraform destroy` | before release | Still as recorded after M1 |
 | Billing (Stripe, plan tiers metered off `usage/*`) | post-v1 | The counters this milestone writes are the ones a metered plan would read; nothing here bills anyone |
 
@@ -990,7 +990,445 @@ learner's choice with whatever the token still says.
 
 ---
 
-## M9 — Hardening and launch readiness (~1.5 weeks)
+## M9 — Reworking the autonomous research workflow (~1.5 weeks)
+
+Splits the single `research_agent` turn into a deterministic, multi-agent pipeline, and
+throttles LLM concurrency so the split cannot turn into a burst of `429`s. Scope settled at
+the start of the milestone, on the same terms as M8's own three sub-sections:
+
+- **`research_planner`** (LlmAgent) takes the research topic and its details — project goal,
+  the task's own description or the taskless `reason`, and `prefs` — **excluding the task
+  duration budget** — and breaks it into 3–5 sub-topics. Sizing is downstream of research, not
+  part of planning it.
+- **`topic_researcher`**, one instance per sub-topic, each launched with a clean context (no
+  visibility into the planner's reasoning or its sibling researchers) and given only its own
+  sub-topic's details, again without the duration budget. Each produces an ordered list of
+  study-material references with per-item estimated durations — research output, not a sized
+  plan.
+- **`reviewer_writer`** receives every `topic_researcher` report, the planner's own context
+  (by construction, not by summarizing it back in — see
+  [03-agent-design.md](03-agent-design.md#the-research-pipeline-since-m9)), and the research
+  job's project-level requirements, including the duration budget neither upstream agent saw.
+  It checks the combined reports against the research goal, deduplicates sources repeated
+  across reports, merges sub-topics that partially overlap rather than keeping duplicated
+  parts, and organizes the result into a bite-sized checklist sized against the preferred task
+  duration before calling the existing `post_research_report` — same schema, same budget
+  validation, same downstream `post_report` / `propose_tasks` / `reprioritize` steps.
+- **Built on ADK's `Workflow` graph orchestration, not `SequentialAgent`/`ParallelAgent`.**
+  Verified against the installed `2.7.0` source: all three of the old workflow-agent classes
+  carry `@deprecated(... 'in favor of Workflow')`, and `Workflow` is exported at the top level
+  of `google.adk` alongside `Agent`, `Context`, `Event`, `Runner` — this is the first place
+  the project reaches for it, not a version bump. See
+  [03-agent-design.md](03-agent-design.md#the-research-pipeline-since-m9) for the node shape.
+- **Throttling.** A simple in-memory limiter admits only one LLM inference at a time within a
+  single research job's scope, so a 3–5-way `topic_researcher` fan-out cannot present enough
+  concurrent Gemini calls to draw a `429`. Process memory only — no `usage/*` field, no new
+  collection, nothing to migrate; it disappears with the process and is rebuilt empty on the
+  next one, which is fine because its only job is shaping a burst, not accounting for it (that
+  is what M8-quotas already does).
+- **Timeboxed spike (1 day), first thing in the milestone**, on the same terms as M1's
+  `google_search` spike: read the installed `2.7.0` source, not published docs, to confirm
+  `Workflow` is a valid turn root and settle what actually gives `topic_researcher` a context
+  clean enough to satisfy "launched with clean sessions." Findings recorded in
+  [03-agent-design.md](03-agent-design.md#workflow-as-a-turn-root-and-retrying-a-crash-mid-fan-out):
+  `Workflow` *is* a valid turn root, the same mechanism `research_agent` already used, so
+  `autonomous_workflow` needed no shape change; `topic_researcher`'s clean context comes from a
+  standalone node's default `single_turn` mode forcing `include_contents="none"`, not from
+  `isolation_scope`, which is never computed for a `_ParallelWorker` fan-out's own
+  dynamically-dispatched children; and `Workflow` has no "run one node and stop" primitive, so
+  the ledger keeps its single `research` step, now dispatching `research_workflow` instead of
+  `research_agent` — a crash mid-fan-out is safe to retry (`report_{runId}` still keys one
+  report) but not cheap, since the retry is a new turn with a fresh `invocation_id` and
+  `research_planner` runs again.
+- **The research view interleaves every branch chronologically, no rendering change
+  needed.** A research session now holds a branched pipeline — `research_planner` and
+  `reviewer_writer` share the session's default branch, each `topic_researcher` runs in its
+  own sub-branch (bookkeeping only, not the content-isolation mechanism) — instead of one
+  linear turn. `transcript.ts` already sorts by `seq` alone and `Transcript.tsx` already
+  renders every message as an anonymous "model" bubble regardless of agent, so plain
+  chronological interleaving was already what this pipeline needed; a per-branch disclosure
+  grouping each `topic_researcher`'s work separately would be a larger change than this
+  milestone's scope, and is left for later if plain interleaving reads as noise
+  ([06-frontend.md](06-frontend.md#research-view-projectsprojectidresearchrunid)).
+
+**Exit:** a research run's report still validates and posts exactly as before, task-scoped and
+taskless alike; a report generated from two `topic_researcher` outputs with a repeated source
+and a partially-overlapping sub-topic comes back deduplicated and merged, not duplicated —
+checked against generated vectors carrying that overlap, the same way `gen_event_vectors.py`
+stands in for a hand-written fixture elsewhere in this project
+([08-testing.md](08-testing.md)); a scripted run with 5 sub-topics is asserted to never have
+more than one model call in flight at once by instrumenting the throttle itself, not by timing
+it; killing the process mid-fan-out and re-ticking resumes safely — one report, not two —
+though not cheaply, since `research_planner`'s call is repeated on the retry rather than
+skipped; Playwright flow #5 (research) and flow #9 (requested research) still pass end to end
+against the reworked pipeline.
+
+---
+
+## Status after M9
+
+**Met.** `research_workflow` (`agents/research_workflow.py`) replaces `research_agent` behind
+the same `"research"` `AgentChoice`/ledger step, so `RunnerFactory`, `TurnService`,
+`RunExecutor`, and `ResearchService` needed no shape change — only a different agent for the
+one they already dispatched. 702 backend tests, 334 web tests, 41 Playwright specs (chromium)
+green across two consecutive full runs, including every research flow (#5, in four variants)
+and the requested-research flow (#9).
+
+**A concrete Firestore trap, worth a row in [the trap table](#what-a-green-local-run-does-not-prove)
+the next time a `Workflow` node's output is itself a list.** `topic_researcher`'s output
+started as a bare `list[dict[str, Any]]`; `_ParallelWorker` aggregates N branches' outputs
+into `list[list[dict]]`, and Firestore refuses to store an array whose direct elements are
+themselves arrays (`400 … Property event_data contains an invalid nested entity`, on the
+fan-out node's own checkpoint event). Fixed by wrapping each branch's output in a one-field
+`TopicFindings` model (`{"items": [...]}`) — a list of maps nests an array without issue. The
+emulator caught this one (a write, not a read), but only because a real turn was actually run
+against it — nothing about the schema or the Python types said so.
+
+**A pre-existing defect in the `autonomous_runs/*` TTL policy, unrelated to the pipeline
+rework above.** The policy pointed at `updatedAt` instead of a dedicated `expiresAt` field, so
+a run became eligible for deletion within about a day of *any* write to it rather than 60
+days after the last one — a completed research report's own card would disappear from the
+board while the report and the task's checklist stayed intact. Fixed alongside raising the
+retention window from 30 to 60 days; full detail and the reasoning behind the fix live in
+[02-data-model.md](02-data-model.md#retention). Invisible to any amount of local testing for
+the reason every TTL-related defect in this project is: the Firestore emulator does not
+enforce TTL policies at all ([above](#what-a-green-local-run-does-not-prove)).
+
+**A second pipeline, `build_roadmap_workflow`, handles the taskless case: `task_proposer` →
+`plan_tailor` in place of `reviewer_writer`.** `reviewer_writer` sizes everything the fan-out
+found into one `budgetMinutes` — correct for a task-scoped run, wrong for a taskless run (the
+project coach's own conversation), where the learner's whole goal is usually several tasks,
+not one report squeezed into a sitting. `task_proposer` groups the fan-out's findings into
+several tasks sized to the learner's preferred task length; `plan_tailor` reads the board and
+the learner's history and decides ordering and inclusion
+(`include`/`additional`/`exclude`/`reject`, each with a `why`) per task, writing one
+`StudyPlan` ([02-data-model.md](02-data-model.md#projectsprojectidstudy_plansplanid)) via its
+own write, `write_study_plan`. `materialize_study_plan` (`agents/tools.py`) turns a written
+plan into real board tasks. Full design:
+[03-agent-design.md](03-agent-design.md#the-taskless-case-task_proposer-and-plan_tailor-replace-reviewer_writer).
+
+`POST /api/sessions/{sid}/roadmap` (`ResearchService.start_roadmap`,
+[04-api-contract.md](04-api-contract.md#post-apisessionssidroadmap)) is `build_roadmap_workflow`'s
+own trigger — a dedicated endpoint, not a branch inside `start_manual` — and
+`StartProjectRoadmap` is the board's button for it, a sibling of `StartProjectResearch`.
+`ResearchService`/`RunExecutor`'s taskless *research* dispatch (`/research` with `taskId:
+null`) is unchanged and still runs `research_workflow`/`reviewer_writer`: cutting it over to
+the roadmap pipeline would need `GET /api/runs/{runId}/report` and the
+`ResearchReport`/`ResearchViewPage`/`ResearchCard` frontend reworked to render a `StudyPlan`
+instead, and would break the M8 golden e2e flow (`research.spec.ts`) — real scope of its own,
+deferred (table below).
+
+Because a research or roadmap session now holds several named agents' events in one
+transcript, the transcript labels each model message with its `author` — data
+`lib/transcript.ts` already parsed and tested, now rendered — and a debug toggle
+(`stores/debugUi.ts`) shows each message's raw ADK event id alongside it.
+
+**`POST /api/sessions/{sid}/research` and `.../roadmap` are queued through `JobQueue`/
+`RunExecutor`, the same as a scheduled run, rather than running a turn inline in the
+accepting process.** A low-traffic deployment scales to zero between requests; a background
+`asyncio.Task` with no in-flight request keeping its instance alive is either CPU-throttled to
+near zero or reaped outright the moment the request that spawned it ends, which for a `202` is
+immediately. `ResearchService.start_manual`/`start_roadmap` now do only what is cheap and
+needed for the response — acquire the lease, write the ledger row, create the run's own
+session — and hand the row to the queue; a Cloud Tasks delivery is a real, billed, in-flight
+HTTP request for as long as the run takes, independent of the browser tab that asked for it,
+extending to the manual case the same disconnect-survival property scheduled and requested
+runs already had. `AutonomousRun` gained `pendingText`/`pendingAttachments`/
+`pendingContextAttachments` to carry a queued run's opening message and uploads from accept
+time to whenever the queue starts it; `RunExecutor` gained `_manual_research`/
+`_manual_post_report` and `_roadmap`/`_write_plan` dispatch methods, distinct from the
+autonomous pipeline's `_research`/`_post_report` (which apply a `needsResearch` gate a manual
+run must not, and assume a task a taskless run does not have). `mode` on the ledger defaults
+to `"queued"` for every trigger now (`"inline"` stays in the type only so an old, unexpired
+row still deserializes); `turnId` in the 202 body is `null`, and `useRun`'s poll now runs
+while `status` is `pending` as well as `running`.
+
+Deliberately scoped to research and roadmap, not to chat turns — `POST
+/api/sessions/{sid}/turns` still spawns a detached task in the accepting process. A chat turn
+is short and the learner is actively watching it, unlike a research or roadmap run, and moving
+it onto the queue would be materially larger than this milestone's scope; the Cloud Run
+settings that make that path safe regardless (`min_instances = 1`, CPU always allocated —
+`infra/terraform/RUNBOOK.md` §8.1, decided at M2) are unchanged and still load-bearing for
+chat.
+
+One behavioural side effect worth noting: a manual or roadmap run now finishes through
+`RunExecutor`'s own `_complete`/`_fail`, which — like every autonomous run's completion always
+has — patches `project.lastAutonomousRunAt`, so a learner pressing "research this" now also
+pushes the project's next auto-scheduled tick out by the cooldown window. Kept rather than
+special-cased back to the old behaviour: the coach should not turn around and auto-research
+something else in a project the learner just asked it to work on.
+
+**Two defects in the live transcript, general to `useStreamStore`, found while watching a
+multi-agent turn stream rather than only its settled result.**
+
+- `research_workflow`/`build_roadmap_workflow` puts several named agents in the *same* turn,
+  but the live buffer had no author boundary — `delta`/`tool_call` frames carried no author,
+  so one agent finishing and the next starting looked like one bubble quietly growing. Fixed
+  by adding `author` to both frame types (`ws/protocol.py`, `services/turns.py`'s `_emit`)
+  and restructuring `StreamState` around a list of author-keyed segments (`stores/stream.ts`);
+  a new segment starts the instant a frame's author differs from the current last one's, so an
+  ordinary single-author chat turn still produces exactly one.
+- A confirmation prompt could flash back onto screen after being answered: the turn that
+  answers a confirmation goes `running` → `complete` before its own `events.refetch()` has
+  landed, and `SessionPane`'s `pending` computation, gated on `streaming` rather than on
+  `live` itself, read the still-stale cache in that gap and found the same request unanswered.
+  Fixed by gating on `live`, which is only cleared inside that same refetch's `.then()`.
+
+**The research view has its own dedicated `StudyPlan` view for a roadmap run's results.**
+`GET /api/runs/{runId}/plan` (`StudyPlanService.get_for_run`) is `get_run_report`'s sibling;
+`StudyPlanView` (`components/research/`) renders what it returns — one `ProposedTaskCard` per
+`ProposedTask`, `plan_tailor`'s decision as a corner chip
+(`include`/`additional`/`exclude`/`reject`) with its `why` always visible, reduced opacity for
+a card that didn't make the plan, required/optional material collapsed either way, and
+`task_proposer`'s closing `memo` behind its own disclosure. Plain read-only rendering
+throughout — nothing on this screen selects, reorders, or materializes anything, consistent
+with the plan staying immutable once `plan_tailor` writes it.
+
+The research view is one pane, toggled between transcript and results (`ResearchInfoStrip`'s
+`ToggleGroup`, results the default), not two panes split — both stay mounted (`hidden`, not
+unmounted) since `SessionPane` owns a live socket subscription a remount would tear down.
+
+**`TaskItem` gained a `kind` field**, threaded through both promotion paths
+(`as_checklist_item` in `services/reports.py`, `_as_checklist_draft` in
+`services/study_plans.py`) and parsed back out in `services/tasks.py`'s `_task_item` — before
+this, `kind` was dropped the moment a `ReportItem`/`ProposedItem` became a checklist entry, so
+a real board checklist had no way to show what kind of thing an item was. `null` on a
+hand-added item or anything predating this field; no backfill (pre-launch, local-only data).
+`components/task/item-kind.tsx` owns the icon/label for all five kinds: `ItemKindBadge` (one
+item, used by `Checklist`, `ResearchReport`, `ProposedTaskCard`) and `ItemKindStrip` (a
+task-level summary chip, required solid-underlined and optional dotted-underlined and muted,
+joined by `+`).
+
+**A failed roadmap run offers "Resume"** (`ResearchViewPage.tsx`) — `start_roadmap` is
+manual-only, so there is no scheduled retry, and unlike a task-scoped run there is no task
+session to relaunch it from. Resume rereads the failed run's own session for the learner's
+original prompt (`start_roadmap` writes it there verbatim) and starts a fresh run with it.
+
+**`task_proposer` is instructed to give every task at least one required item, and
+`_validate_proposed_tasks` rejects one that has none** — a task's duration is the sum of its
+required items' minutes, so an empty `required[]` has no size.
+
+**`project_coach` can initiate a roadmap run itself, and act on what one produced.**
+`write_roadmap_brief`/`read_roadmap_brief` give the coach a structured intake — `subject` and
+`timeBudget` required, `specificTopics`/`additionalNotes` advisory — drafted across turns and
+held as one in-progress `roadmapBrief` on the project
+([02-data-model.md](02-data-model.md#projectsprojectid)). `propose_roadmap_brief` requires
+confirmation, the same gate `update_project_plan` uses; approval calls the same
+`ResearchService.start_roadmap` the button reaches, then clears the draft.
+`materialize_study_plan` is wired into `project_coach`'s catalogue, gated behind confirmation,
+alongside `view_study_plan` (the project's most recent plan) and `revise_study_plan` (the
+coach's own re-tailoring). A revision is a new document — `revisedFromPlanId` pointing back at
+the plan it replaces — never a patch, so `plan_tailor`'s verdict stays legible against
+whatever a learner and the coach decide instead.
+
+**`task_proposer` no longer reads the roadmap's own conversation, so it can no longer see the
+learner's total time budget — sizing the plan against that total stays `plan_tailor`'s job
+alone.** `task_proposer` used to share `include_contents="default"` with `plan_tailor`, which
+meant it could see the total budget (there is no structured field for it, only the opening
+request's prose) and start trimming and merging tasks to fit its own guess at it, ahead of
+`plan_tailor`, whose job that actually is once every task is proposed. `build_roadmap_workflow`
+gained two nodes after the `topic_researcher` fan-out to fix this without losing what
+`task_proposer` legitimately needs: `research_findings` (a plain, model-free step) zips
+`research_planner`'s sub-topic list onto each branch's findings; `task_proposer_scope` (an
+`LlmAgent`) rewrites the opening request into the roadmap's goal and preferences with the
+total budget left out. Both write explicit session state `task_proposer`'s instruction reads
+by name; `task_proposer` itself stays at the `single_turn` default, `include_contents="none"`.
+Neither node may sit *between* `research_planner` and the fan-out: `Workflow`'s edges are a
+sequential chain, the fan-out's own `node_input` has to be `research_planner`'s `list[str]`
+output, chain-adjacent, and `_ParallelWorker` wraps a non-list `node_input` in a single-item
+list rather than rejecting it — so a node placed between them silently narrows "one branch per
+sub-topic" to exactly one branch, with no construction-time error to catch it.
+`test_the_roadmap_run_fans_out_one_topic_researcher_branch_per_subtopic`
+(`tests/test_roadmap_workflow.py`) pins the fan-out's breadth directly.
+[03-agent-design.md](03-agent-design.md#the-taskless-case-task_proposer-and-plan_tailor-replace-reviewer_writer)
+has the full design. `plan_tailor` is unchanged: it still reads the whole prior conversation,
+budget included, because deciding whether the plan fits it is its job.
+
+**`PROJECT_KEY`/`render_project` are gone from `agents/prompt.py` entirely.** Nothing still
+used it: `project_coach` and `task_teacher` scope themselves through the board/task/item state
+they render separately (`{BOARD_KEY}`, `{FOCUS_KEY}`), and `propose_tasks_agent`
+(`agents/autonomous_agent.py`) the same way; `project_coach`, the one agent whose whole domain
+*is* the project, elicits and reasons about the goal through ordinary conversation history
+rather than a re-rendered summary of a field it can already see stated in the transcript.
+`PromptBuilder` no longer calls `ProjectService.require_owned` for its own sake either —
+`effective_prefs` and `list_board`, called immediately after in the same method, already
+enforce ownership internally.
+
+**Four more refinements, added to the milestone's scope once the roadmap/study-plan pipeline
+was in daily use:**
+
+- **A roadmap brief's referenced attachments are attached to the run it starts, and only
+  those.** `RoadmapBrief` gained `attachments`, a list of display names `write_roadmap_brief`
+  records when the learner references an upload while drafting the brief; `start_roadmap`'s
+  `attachment_names` narrows `_create_and_enqueue`'s existing upload carry-over
+  (`SessionService.list_attachments`) to that list — every other caller (the manual button,
+  task-scoped research) is unaffected, since a task's or an intake session's conversation is
+  already scoped to one topic where the project coach's ongoing conversation is not. The
+  confirmation dialog for `propose_roadmap_brief` renders `Project.roadmapBrief` — the
+  document `write_roadmap_brief` last stored — rather than the confirmation call's own
+  arguments, which are the model's restatement and not guaranteed to match. Neither tool
+  trusts a name it is given: `DomainTools._validate_attachment_names` checks every name
+  against the session's real uploads before storing it, since a model asked to attach an
+  uploaded PDF can name it by a title it inferred from reading the document rather than the
+  filename it was actually shown, and a `ValidationProblem` naming the mismatch (plus the real
+  list) lets it retry in the same turn. `write_roadmap_brief` also nudges once — an
+  `availableAttachments` field, only on the brief's first call and only if that call named
+  none while the conversation has some — and the confirmation dialog itself carries a
+  checklist, one row per conversation attachment, pre-checked to match the brief and freely
+  editable, which is what actually closes the gap regardless of whether the model gets it
+  right (`CONFIRMED_ATTACHMENTS_KEY`, `DomainTools._confirmed_attachments`).
+  ([03-agent-design.md](03-agent-design.md#the-taskless-case-task_proposer-and-plan_tailor-replace-reviewer_writer),
+  [06-frontend.md](06-frontend.md#task-workspace-projectsprojectidtaskstaskid))
+- **The learner's first message in a task's own session starts the task.**
+  `TurnService._start_task_if_not_started` moves a `not_started` task to `in_progress` the
+  moment a message lands in its `coach_task` session, the same transition the board row's
+  "Start" action makes ([02-data-model.md](02-data-model.md#task-state-machine), invariant 7).
+- **`Project.goal` is `Project.description`.** Roadmap research never read the field, so it
+  was renamed for what it actually is — a short description editable in project settings at
+  any time; `update_project_plan`'s `description` argument refines it, same as `goal` used to.
+  `materialize_study_plan`'s approval dialog gained a paired "Also update project description"
+  checkbox, checked by default when the project has none yet — the study plan's own
+  `shortDescription`/`longDescription` read badly as a project's own description, so the tool
+  takes a fresh `project_description` argument, a one-sentence factual candidate
+  `project_coach` composes for the project, applied only if the checkbox comes back checked.
+- **Learner-profile "Technologies" is "Skills," each scoped to the subject it was observed
+  in.** `TechnologyBelief` is `SkillBelief`, with a new `area` field — the subject or
+  technology the skill was actually observed in — because a belief formed studying one subject
+  says nothing about an unrelated one and rendering it without that context invites confusion.
+  `render_learner` and the Settings editor both show the pairing (`name (area, level)`)
+  ([02-data-model.md](02-data-model.md#usersuid),
+  [06-frontend.md](06-frontend.md#settings--what-your-coach-knows-about-you)).
+
+**Deliberately deferred:**
+
+| Item | Needed by | Note |
+| --- | --- | --- |
+| Dedup/merge quality evalset | M11/nightly | The dedup and merge logic lives entirely in `reviewer_writer`'s own reasoning — no code-level dedup step to unit-test — and "report quality is the nightly evalset's job" is this project's established line (`tests/test_research.py`'s module docstring, unchanged since M4) |
+| Cheap crash-mid-fan-out resume (reusing an `invocation_id` so `Workflow`'s replay skips `research_planner` on a `RunExecutor` retry) | — | Correctness and safety are both already true (one report, not two); this would only save the planner's one call on a retried run |
+| Per-*branch* transcript rendering (grouping/collapsing a fan-out's several `topic_researcher` branches) | — | `SessionPane` interleaves every branch by `seq` and labels each message's `author`, which is what M9 shipped; a *branch*-level disclosure is not built |
+| The taskless-research dispatch cutover for `POST /api/sessions/{sid}/research` to `build_roadmap_workflow` | — | `POST /api/sessions/{sid}/roadmap` gives the pipeline its own trigger instead; `/research`'s own dispatch, `GET /api/runs/{runId}/report`, and `ResearchReport` are unchanged |
+| Everything still open after M8-quotas | as recorded | Nightly live-API and evalset runs, content scanning on finalize (both **M11**); `prod` and `terraform destroy` (before release) |
+
+**Decisions made during implementation** that the design documents did not fix:
+
+| Decision | Why | Where |
+| --- | --- | --- |
+| `topic_researcher`'s output is wrapped (`TopicFindings.items`), not a bare list | Firestore's nested-array restriction — see above | `agents/research_workflow.py` |
+| `ModelThrottle` tracks a per-run *held count* rather than trusting `asyncio.Semaphore.release()` alone | `after_model` and `on_model_error` must not both release the same acquire — the stdlib semaphore has no guard against being over-released, and a leak in the other direction (never released) would deadlock the next call for the same run | `agents/research_workflow.py` |
+| `StubModel.capabilities` reports `output_schema_and_tools=True` | Keeps `topic_researcher` (which has both an `output_schema` and real tools) on the same `response_schema`-on-the-request path a real `gemini-3.7-flash` call already takes, rather than exercising ADK's tool-injection workaround for models that cannot combine the two — a path this project's production model never uses | `integrations/stub_model.py` |
+| The stub detects `research_planner`/`topic_researcher` by `response_schema` on the request, not by tool set or agent name | Neither node has a tool set distinctive enough to key on — `research_planner` has none at all, colliding with the disconnect-suite's plain double — but `output_schema` is set only by these two nodes anywhere in the agent graph | `integrations/stub_model.py` |
+
+---
+
+## M10 (beta) — Agent consistency, project/task UI polish, and README (~1.5–2 weeks)
+
+Beta-readiness scope: a review pass over agent instructions and tools for consistent
+behavior, a set of UI fixes and small polish items surfaced by daily use since M9, and
+bringing `README.md` up to date with what has actually shipped. Lighter on up-front design
+than a milestone that reworks a subsystem — most items here are review-and-fix against an
+already-decided architecture, not new decisions, so this section (unlike M8's or M9's) is a
+checklist rather than a settled specification.
+
+**Agent review, for consistency rather than new capability:**
+
+- `project_coach`'s instruction and tool catalogue (`agents/project_coach.py`) — review for
+  a tool that is no longer reachable or has stopped earning its place now that
+  `write_roadmap_brief`/`propose_roadmap_brief`/`materialize_study_plan`/`view_study_plan`/
+  `revise_study_plan` (M9) sit alongside the pre-existing board tools. Trim rather than
+  accrete.
+- `task_teacher`'s instruction and tool catalogue (`agents/task_teacher.py`) — same review.
+- **Consistency of `long_description` across the three agents that write one.**
+  `research_planner`/`reviewer_writer` (a report's items) and `task_proposer` (a proposed
+  task's items) each compose `long_description` prose independently
+  ([03-agent-design.md](03-agent-design.md#the-research-pipeline-since-m9),
+  [03-agent-design.md](03-agent-design.md#the-taskless-case-task_proposer-and-plan_tailor-replace-reviewer_writer)) —
+  review and align tone, length, and structure across the three so a report and a study
+  plan don't read like they came from different products.
+
+**Research concurrency:**
+
+- No cap today on how many research/roadmap runs may be in flight *at once,
+  system-wide*: a manual or roadmap run is enqueued directly at accept time, uncapped by
+  `TICK_PROJECT_CAP` (`services/scheduler.py`), and the only thing standing between a burst
+  of simultaneous runs and `429 RESOURCE_EXHAUSTED` is `max_concurrent_agent_runs`
+  (`core/config.py`, default 8) — a per-instance cap shared with every interactive chat turn
+  too, not one that treats research specially.
+- **Add a dedicated concurrency cap on simultaneous research/roadmap runs, at most 2,
+  applying uniformly to scheduled, requested, manual, and roadmap triggers alike.** Each
+  research job's own `topic_researcher` fan-out already throttles itself to one in-flight
+  model call
+  ([03-agent-design.md](03-agent-design.md#llm-throttling-at-most-one-inference-in-flight-per-research-job)),
+  but that throttle is per-run — nothing today stops several *different* runs from each
+  holding their own single slot at the same time, and Gemini's `429` threshold is closer to
+  "a handful of concurrent research jobs" than "a handful of concurrent chat turns."
+
+**Project state and archiving:**
+
+- Project state (`active`/`paused`/`archived`) becomes editable from project settings, not
+  only reachable through the API.
+- A dedicated view for archived projects.
+- A show/hide toggle for paused projects on the main project list.
+- A state chip on each project card, with a tooltip explaining that a `paused` or
+  `archived` project is skipped by the autonomous scheduler's presence/status guards
+  ([05-autonomous-runs.md](05-autonomous-runs.md)) — the chip exists so that guard is
+  visible, not just true.
+
+**Task board and task view polish:**
+
+- **Status color hints on task cards** (`components/board/TaskCard.tsx`, `STATE_LABELS` in
+  `components/board/task-state.ts`): `completed` renders in a green tuned for both themes,
+  prefixed with an encircled checkmark icon; `in_progress` renders in a blue tuned for both
+  themes, prefixed with a small dot icon (a real icon, vertically aligned with the text —
+  not the `·` glyph), with a subtle glow if it reads well once built. Every other state
+  stays as it is.
+- **The "Show details" button on the task workspace becomes a left-sidebar icon, placed in
+  front of the breadcrumb nav** rather than beside "← Back to the board" where it sits
+  today (`pages/TaskWorkspacePage.tsx` — currently a `Button` with a chevron and "Show
+  details"/"Hide details" text, in the header row above
+  `<nav aria-label="Breadcrumb">`).
+- **The chat/details split gets an explicit min/max width, in percent of the row's width**,
+  so a wide-rendering markdown block in the transcript (a table, a long code block) cannot
+  squeeze the task-details column into unreadable narrowness. Currently a plain `flex` row
+  (`pages/TaskWorkspacePage.tsx`) with no such constraint.
+- **Editing a task's items recalculates its displayed duration.** `TaskService.add_items`/
+  `replace_items`/`patch_item`/`delete_item` (`services/tasks.py`) write the `items` array
+  only — nothing recomputes `estimatedMinutes` from the required items' own `minutes`, so a
+  checklist edited after the task was sized shows a duration that no longer matches what's
+  on it.
+- **The task info strip's status chip re-renders the moment the first message flips a task
+  from `not_started` to `in_progress`.** `TurnService._start_task_if_not_started`
+  ([above](#status-after-m9)) changes the task's state as a side effect of sending a chat
+  message, not through the REST mutation the client's own cache update normally rides on —
+  so `useTask`'s query (`features/queries.ts`) is left stale until something else
+  invalidates it.
+- **The in-progress task's first uncompleted item gets a visual "you are here" indicator**
+  — a vertical rule beside the item, in the same blue as the "In progress" status text,
+  styled distinctly enough (e.g. a hand-drawn/ruled edge) not to read as a plain border.
+- **Item sources render as real links consistently.** `Checklist.tsx` and
+  `ResearchReport.tsx` already link out `item.url` for an unguided item ("Open"); review why
+  a guided item suppresses the link along with its `details` — the reasoning for hiding
+  *notes* (would hand over the answer) does not obviously apply to hiding the *source* — and
+  align with how `ProposedTaskCard.tsx` presents a proposed task's own item links.
+- **The roadmap research view's "Transcript" tab is relabeled "Transcript
+  (troubleshooting)"** (`ResearchViewPage.tsx`'s `ToggleGroupItem`) — a roadmap run's
+  transcript is multi-agent and mechanism-heavy in a way a learner has no reason to read by
+  default, and the label should say so.
+
+**README:**
+
+- Bring `README.md` up to date — it still reads "Status: M0–M7 landed," predating the M8,
+  M8-quotas, and M9 work entirely.
+
+**Exit:** every reviewed agent's tool list and instructions pass a read-through with no tool
+the agent cannot reach or no longer needs; a scripted burst of research/roadmap requests
+across several projects never runs more than 2 concurrently, verified by instrumenting the
+new cap rather than by inspection; the UI items above are in place and pass an
+accessibility/contrast check in both light and dark; `README.md` reflects the current
+feature set and status.
+
+---
+
+## M11 — Hardening and launch readiness (~1.5 weeks)
 
 - Observability: dashboards, alert policies, log-based metrics, trace sampling.
 - Error handling pass: retryable vs terminal, user-facing messages, empty states.
@@ -1024,5 +1462,9 @@ convenient. `M7` depends on M6, since its profile-driven prompt changes assume t
 project-coach/task-teacher split already exists. `M8` depends on M4 and M5 for the research
 and run machinery it reworks. `M8-quotas` depends on M8 for the run/session boundary it
 gates and on M5 for the `usage/*` collection and `autonomousRunsPerDay` guard it extends.
-`M9` closes out the list. Roughly 14.5 weeks of sequential work, ~12.5 with the M3/M4
-overlap.
+`M9` depends on M8 for the dedicated research session it runs the new pipeline inside, and on
+M8-quotas since the quota gate `TurnService.start` already applies has to keep working once a
+research turn's root is a `Workflow` instead of a single `LlmAgent`. `M10 (beta)` depends on
+M9 for the roadmap/study-plan surface and the queued-trigger machinery its review and UI
+items touch. `M11` closes out the list. Roughly 17.5 weeks of sequential work, ~15.5 with the
+M3/M4 overlap.

@@ -37,15 +37,16 @@ writes as `Default task length: 120 minutes` — and:
    discussing any of them, and one bad estimate failed the lot;
 3. once they cover it, answers in prose.
 
-## Research (M4)
+## Research (M4, reworked M9)
 
-Golden flow #5 needs a report, so the stub also answers as `research_agent`. It recognises
-that agent by its tool set — `post_research_report` present, `add_task` absent — and emits
-one report call, with a required list sized from the **research** budget line the prompt
-carries (`Budget: 45 minutes`, written by `agents/prompt.py`'s `render_budget`). That is a
-different number from the coach's `Default task length`, and parsing it separately is what
-makes the e2e assertion meaningful: the checklist fits the *task's* estimate because the
-prompt said so, not because the test and the stub agreed on 45.
+Golden flow #5 needs a report, so the stub also answers as `reviewer_writer`, the research
+pipeline's last node. It recognises that node by its tool set — `post_research_report`
+present, `add_task` absent — and emits one report call, with a required list sized from the
+**research** budget line the prompt carries (`Budget: 45 minutes`, written by
+`agents/prompt.py`'s `render_budget`). That is a different number from the coach's `Default
+task length`, and parsing it separately is what makes the e2e assertion meaningful: the
+checklist fits the *task's* estimate because the prompt said so, not because the test and
+the stub agreed on 45.
 
 That makes flow #7 a real assertion rather than a staged one: the *only* thing that
 differs between a project with a two-hour override and one on the 45-minute global
@@ -53,20 +54,55 @@ default is the number the prompt carried, so subtask sizes that follow the overr
 the pref reached the model. If `render_prefs` ever stops emitting the minutes, the stub
 falls back to `DEFAULT_BUDGET_MINUTES` and `tests/test_stub_model.py` fails on the
 mismatch — which is the point of parsing rather than being told.
+
+**Since M9, `research_planner` and `topic_researcher` need answering too**, and neither has
+a tool to key on the way `reviewer_writer` does — `research_planner` has no tools at all,
+and `topic_researcher`'s (`search_agent`, `fetch_url`, `youtube_find_by_duration`) are not
+distinctive enough to spot reliably. Both, though, carry a `response_schema` on the request
+(`agents/research_workflow.py` sets `output_schema=list[str]` / `list[dict[str, Any]]`),
+which is a signal nothing else in this project's agent graph sets — `_structured_reply`
+reads it straight off `llm_request.config.response_schema` and answers with schema-shaped,
+content-free JSON. What the two intermediate nodes' output actually *says* is not asserted
+anywhere: `reviewer_writer`'s stub reply is the same fixed `research_plan(budget)` it
+always was, independent of what came before it in the transcript, so every existing
+assertion about report shape holds unchanged. Report *quality* — whether a real model's
+planner/researcher output is any good, and whether `reviewer_writer` actually deduplicates
+and merges from it — is the nightly evalset's job, same as it always was.
+
+**`StubModel.capabilities` reports `output_schema_and_tools=True`**, so that
+`topic_researcher` (which has both an `output_schema` and real tools) takes the same
+`response_schema`-on-the-request path as `research_planner` rather than ADK's
+tool-injection workaround (`flows/llm_flows/_output_schema_processor.py`) for models that
+cannot combine the two — the workaround exists for models this project does not use in
+production either, so declaring the capability keeps the stub on the same code path a real
+`gemini-3.7-flash` request already takes.
+
+**`task_proposer` and `plan_tailor` (`build_roadmap_workflow`) are answered the same two
+ways**, not a third: `task_proposer` has an `output_schema` and no tools, so it is spotted
+and answered by `_structured_reply` exactly like `research_planner`; `plan_tailor` has
+`write_study_plan` and no `output_schema`, so it is spotted and answered by
+`_plan_tool_call` exactly like `reviewer_writer`. Not yet reachable through
+`ResearchService`/`RunExecutor` — see `agents/research_workflow.py`'s module docstring —
+but answering it here is what lets a test start an `agent="roadmap"` turn directly.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import os
 import re
 from collections.abc import AsyncGenerator
 from typing import Any
 
+from google.adk.models import LlmCapabilities
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
+
+from coach.agents.research_workflow import TopicFindings
+from coach.services.models import ProposedTaskCollection
 
 #: Milliseconds between chunks. Overridable so a slow CI machine can widen the window
 #: golden flow #4 disconnects inside without the test having to guess.
@@ -293,6 +329,73 @@ def research_plan(budget: int) -> dict[str, Any]:
     }
 
 
+#: `research_planner`'s stub sub-topics. Content is never asserted on — `reviewer_writer`'s
+#: reply is the fixed `research_plan(budget)`, independent of what came before it — only the
+#: *count* matters, and 3 is inside the "3 to 5" the real instruction asks for.
+_STUB_SUBTOPICS = ["First sub-topic", "Second sub-topic", "Third sub-topic"]
+
+#: `task_proposer`'s stub proposal, and what `write_study_plan`'s stub call below reuses as
+#: its own `proposed_tasks` — one shared definition, so the two can never drift apart the
+#: way two independently hand-written stub payloads could. Content is never asserted on,
+#: same rule as `_STUB_SUBTOPICS` and `reviewer_writer`'s stub reply: only the *shape* — one
+#: task, with a `slug` the plan below can reference — is what makes the pipeline's contract
+#: reachable from a test.
+_STUB_PROPOSED_TASK: dict[str, Any] = {
+    "slug": "stub-task",
+    "title": "A stub proposed task",
+    "description": "Stub content — never asserted on.",
+    "required": [
+        {
+            "kind": "article",
+            "title": "A stub finding",
+            "url": "https://example.com/stub-finding",
+            "minutes": 10,
+            "why": "Stub research output — content is never asserted on.",
+            "source": "web",
+        }
+    ],
+    "optional": [],
+    "prerequisite_tasks": [],
+}
+
+_STUB_PLAN_MEMO = "Stub memo — content is never asserted on."
+
+
+def _structured_reply(llm_request: Any) -> str | None:
+    """JSON text matching the request's `response_schema`, or `None` if it has none.
+
+    `research_planner`, `topic_researcher`, and `task_proposer` all carry one
+    (`agents/research_workflow.py` sets `output_schema=list[str]` /
+    `output_schema=TopicFindings` / `output_schema=ProposedTaskCollection`); nothing else in
+    this project's agent graph does, which is what makes this a reliable way to spot them
+    without adding an agent-name special case. See the module docstring's M9 section.
+    """
+    config = getattr(llm_request, "config", None)
+    schema = getattr(config, "response_schema", None) if config else None
+    if schema is None:
+        return None
+    if schema == list[str]:
+        return json.dumps(_STUB_SUBTOPICS)
+    if schema is TopicFindings:
+        return json.dumps(
+            {
+                "items": [
+                    {
+                        "kind": "article",
+                        "title": "A stub finding for this sub-topic",
+                        "url": "https://example.com/stub-finding",
+                        "minutes": 10,
+                        "why": "Stub research output — content is never asserted on.",
+                        "source": "web",
+                    }
+                ]
+            }
+        )
+    if schema is ProposedTaskCollection:
+        return json.dumps({"tasks": [_STUB_PROPOSED_TASK], "memo": _STUB_PLAN_MEMO})
+    return None
+
+
 def first_task_id(instruction: str) -> str | None:
     """The first task id on the rendered board, or `None` if the board is empty."""
     match = _TASK_ID_PATTERN.search(instruction)
@@ -329,6 +432,13 @@ class StubModel(BaseLlm):
     model: str = "stub-model"
 
     @property
+    def capabilities(self) -> LlmCapabilities:
+        """Declares `output_schema_and_tools=True`. See the module docstring's M9 section."""
+        return LlmCapabilities(
+            **super().capabilities.model_dump() | {"output_schema_and_tools": True}
+        )
+
+    @property
     def _delay_seconds(self) -> float:
         try:
             return int(os.environ.get(DELAY_ENV_VAR, DEFAULT_DELAY_MS)) / 1000
@@ -340,6 +450,18 @@ class StubModel(BaseLlm):
     ) -> AsyncGenerator[LlmResponse, None]:
         if _FAILURE_PATTERN.search(_last_user_text(llm_request)):
             raise RuntimeError(STUB_FAILURE_MESSAGE)
+
+        structured = _structured_reply(llm_request)
+        if structured is not None:
+            # `research_planner` / `topic_researcher`: schema-shaped, content-free JSON.
+            # See the module docstring's M9 section for why this skips tool calls entirely.
+            yield LlmResponse(
+                content=types.Content(role="model", parts=[types.Part(text=structured)]),
+                usage_metadata=types.GenerateContentResponseUsageMetadata(
+                    total_token_count=STUB_USAGE_TOKENS
+                ),
+            )
+            return
 
         call = _plan_tool_call(llm_request)
         if call is not None:
@@ -398,12 +520,38 @@ def _plan_tool_call(llm_request: Any) -> types.FunctionCall | None:
     responses = _turn_responses(llm_request)
 
     if "post_research_report" in tools:
-        # `research_agent`. One report, then prose — and nothing else, because the real one
+        # `reviewer_writer`. One report, then prose — and nothing else, because the real one
         # is instructed to deliver exactly one `post_research_report` call.
         if responses:
             return None
         plan = research_plan(research_budget_minutes(_instruction(llm_request)))
         return types.FunctionCall(name="post_research_report", args=plan)
+
+    if "write_study_plan" in tools:
+        # `plan_tailor`. One plan, then prose — the real one is instructed to deliver
+        # exactly one `write_study_plan` call, same shape as `reviewer_writer` above.
+        if responses:
+            return None
+        return types.FunctionCall(
+            name="write_study_plan",
+            args={
+                "title": "A stub study plan",
+                "short_description": "Stub content — never asserted on.",
+                "long_description": "Stub content — never asserted on.",
+                "memo": _STUB_PLAN_MEMO,
+                "proposed_tasks": [_STUB_PROPOSED_TASK],
+                "plan": [
+                    {
+                        "task_slug": _STUB_PROPOSED_TASK["slug"],
+                        "after": None,
+                        "prerequisite_tasks": [],
+                        "relevance": 4,
+                        "decision": "include",
+                        "why": "Stub reasoning — content is never asserted on.",
+                    }
+                ],
+            },
+        )
 
     if not tools & _DOMAIN_TOOLS:
         # No domain tools on this agent — the disconnect suite builds one that way, and

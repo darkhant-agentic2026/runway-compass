@@ -8,9 +8,15 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from coach.api.deps import ContainerDep, CurrentUser, Reports, Runs
+from coach.api.deps import ContainerDep, CurrentUser, Reports, Runs, StudyPlans
 from coach.api.idempotency import idempotency_guard
-from coach.api.schemas import ReportResponse, RunListResponse, RunResponse, RunUndoResponse
+from coach.api.schemas import (
+    ReportResponse,
+    RunListResponse,
+    RunResponse,
+    RunUndoResponse,
+    StudyPlanResponse,
+)
 from coach.core.errors import NotFound
 
 router = APIRouter(prefix="/api", tags=["runs"])
@@ -42,6 +48,25 @@ async def get_run_report(
     if report is None:
         raise NotFound(f"Run {run_id!r} has not posted a report.")
     return ReportResponse(report=report)
+
+
+@router.get("/runs/{run_id}/plan", response_model=StudyPlanResponse)
+async def get_run_plan(
+    run_id: str, principal: CurrentUser, runs: Runs, study_plans: StudyPlans
+) -> StudyPlanResponse:
+    """The `StudyPlan` a roadmap run wrote, once there is one.
+
+    `get_run_report`'s sibling for `build_roadmap_workflow`
+    (docs/03-agent-design.md#the-taskless-case-task_proposer-and-plan_tailor-replace-reviewer_writer):
+    a roadmap run's `steps[0].id == "roadmap"` and its final document is a `StudyPlan`, not
+    a `ResearchReport` — `GET /api/runs/{runId}/report` 404s for one. `404` while the run is
+    still working or if it never posted a plan.
+    """
+    run = await runs.get(principal, run_id)
+    plan = await study_plans.get_for_run(run.project_id, run.id)
+    if plan is None:
+        raise NotFound(f"Run {run_id!r} has not written a study plan.")
+    return StudyPlanResponse(plan=plan)
 
 
 @router.get("/projects/{project_id}/runs", response_model=RunListResponse)

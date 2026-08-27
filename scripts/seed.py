@@ -68,7 +68,7 @@ async def main() -> int:
     project = await container.projects.create(
         principal,
         title="Learn structured concurrency",
-        goal="Ship a worker pool I actually trust under cancellation.",
+        description="Ship a worker pool I actually trust under cancellation.",
     )
     # The brief's example, seeded so it is visible on the first screen: 45 minutes
     # globally, two hours in this project.

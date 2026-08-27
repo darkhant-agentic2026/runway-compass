@@ -16,6 +16,20 @@
  * after a reconnect deliberately overlaps, so exactly-once rendering is guaranteed by
  * sequence number rather than by the server and client agreeing on a boundary. Ordering
  * is by the same number, so an out-of-order arrival cannot interleave text.
+ *
+ * **A turn's content is one or more segments, one per author, not one flat buffer.** An
+ * ordinary chat turn has exactly one — the root agent never changes mid-turn — but a
+ * `research_workflow`/`build_roadmap_workflow` turn is several named agents
+ * (`research_planner`, `topic_researcher`, …) writing into the *same* turn
+ * (docs/03-agent-design.md#the-research-pipeline-since-m9), and the persisted transcript
+ * already renders one bubble per stored *event* (`lib/transcript.ts`'s `toMessages`),
+ * each with its own author. Before this, the live buffer had no such boundary: every
+ * delta for a turn landed in one `text` string regardless of which node produced it, so
+ * `research_planner` finishing and `topic_researcher` starting looked like one bubble
+ * quietly growing rather than two messages — invisible in a single-author chat turn,
+ * where it never had anything to hide, and wrong the instant a turn had more than one.
+ * A new segment starts whenever a frame's `author` differs from the current last
+ * segment's, mirroring the granularity the persisted view already has.
  */
 
 import { create } from 'zustand';
@@ -39,13 +53,21 @@ export interface ToolChip {
   args: Record<string, unknown>;
 }
 
+export interface StreamSegment {
+  /** ADK's `Event.author` — the root agent for ordinary chat, one of several node names
+   * across a research/roadmap turn. */
+  author: string;
+  text: string;
+  tools: ToolChip[];
+}
+
 export interface StreamState {
   turnId: string;
   sessionId: string | null;
-  text: string;
+  /** In arrival order. The last entry is the one still receiving deltas/chips. */
+  segments: StreamSegment[];
   lastSeq: number;
   status: StreamStatus;
-  tools: ToolChip[];
   error: { code: string; message: string; retryable: boolean } | null;
   /**
    * Monotonic, assigned when the buffer is created. It exists so "the turn this session is
@@ -65,13 +87,30 @@ function blank(turnId: string, sessionId: string | null = null): StreamState {
   return {
     turnId,
     sessionId,
-    text: '',
+    segments: [],
     lastSeq: 0,
     status: 'running',
-    tools: [],
     error: null,
     openedAt: opened,
   };
+}
+
+/**
+ * The segment a new frame from `author` belongs to: the last one, if it is already that
+ * author's, or a fresh one appended after it. Never merges into anything earlier than the
+ * last segment — a turn's segments are strictly chronological, the same as the persisted
+ * transcript's events are.
+ */
+function withSegment(
+  segments: StreamSegment[],
+  author: string,
+  update: (segment: StreamSegment) => StreamSegment,
+): StreamSegment[] {
+  const last = segments[segments.length - 1];
+  if (last && last.author === author) {
+    return [...segments.slice(0, -1), update(last)];
+  }
+  return [...segments, update({ author, text: '', tools: [] })];
 }
 
 /**
@@ -106,11 +145,12 @@ interface StreamStore {
 
   /** Register a turn started by `POST /turns`, before any frame has arrived. */
   begin: (turnId: string, sessionId: string) => void;
-  appendDelta: (turnId: string, seq: number, text: string) => void;
+  appendDelta: (turnId: string, seq: number, text: string, author: string) => void;
   noteToolCall: (
     turnId: string,
     seq: number,
     name: string,
+    author: string,
     args?: Record<string, unknown>,
   ) => void;
   noteToolResult: (turnId: string, seq: number, name: string, ok: boolean) => void;
@@ -151,7 +191,7 @@ export const useStreamStore = create<StreamStore>((set, get) => ({
     });
   },
 
-  appendDelta(turnId, seq, text) {
+  appendDelta(turnId, seq, text, author) {
     set((state) => {
       const current = state.turns[turnId] ?? blank(turnId);
       // The dedupe. Replay after a reconnect overlaps on purpose.
@@ -161,7 +201,10 @@ export const useStreamStore = create<StreamStore>((set, get) => ({
           ...state.turns,
           [turnId]: {
             ...current,
-            text: current.text + text,
+            segments: withSegment(current.segments, author, (segment) => ({
+              ...segment,
+              text: segment.text + text,
+            })),
             lastSeq: seq,
             status: 'running',
           },
@@ -170,7 +213,7 @@ export const useStreamStore = create<StreamStore>((set, get) => ({
     });
   },
 
-  noteToolCall(turnId, seq, name, args) {
+  noteToolCall(turnId, seq, name, author, args) {
     set((state) => {
       const current = state.turns[turnId] ?? blank(turnId);
       if (seq <= current.lastSeq) return state;
@@ -180,7 +223,10 @@ export const useStreamStore = create<StreamStore>((set, get) => ({
           [turnId]: {
             ...current,
             lastSeq: seq,
-            tools: [...current.tools, { seq, name, done: false, ok: true, args: args ?? {} }],
+            segments: withSegment(current.segments, author, (segment) => ({
+              ...segment,
+              tools: [...segment.tools, { seq, name, done: false, ok: true, args: args ?? {} }],
+            })),
           },
         },
       };
@@ -191,19 +237,30 @@ export const useStreamStore = create<StreamStore>((set, get) => ({
     set((state) => {
       const current = state.turns[turnId] ?? blank(turnId);
       if (seq <= current.lastSeq) return state;
-      // Close the most recent open chip with this name. Matching by name rather than by
-      // an id because the contract's `tool_result` carries no call id — and the model
-      // cannot have two calls to the same tool outstanding within one turn.
+      // Close the most recent open chip with this name, searching segments newest first
+      // — matching by name rather than by an id because the contract's `tool_result`
+      // carries no call id, and the model cannot have two calls to the same tool
+      // outstanding at once regardless of which segment issued the call.
       let closed = false;
-      const tools = [...current.tools].reverse().map((chip) => {
-        if (closed || chip.done || chip.name !== name) return chip;
-        closed = true;
-        return { ...chip, done: true, ok };
-      });
+      const segments = [...current.segments]
+        .reverse()
+        .map((segment) => {
+          if (closed) return segment;
+          const tools = [...segment.tools]
+            .reverse()
+            .map((chip) => {
+              if (closed || chip.done || chip.name !== name) return chip;
+              closed = true;
+              return { ...chip, done: true, ok };
+            })
+            .reverse();
+          return { ...segment, tools };
+        })
+        .reverse();
       return {
         turns: {
           ...state.turns,
-          [turnId]: { ...current, lastSeq: seq, tools: tools.reverse() },
+          [turnId]: { ...current, lastSeq: seq, segments },
         },
       };
     });
@@ -219,7 +276,10 @@ export const useStreamStore = create<StreamStore>((set, get) => ({
             ...current,
             lastSeq: Math.max(current.lastSeq, seq),
             status: 'complete',
-            tools: current.tools.map((chip) => ({ ...chip, done: true })),
+            segments: current.segments.map((segment) => ({
+              ...segment,
+              tools: segment.tools.map((chip) => ({ ...chip, done: true })),
+            })),
           },
         },
       };

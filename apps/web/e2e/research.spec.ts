@@ -17,8 +17,15 @@
  * below is the round trip every test in this file now makes: click the button, watch the
  * run finish on its own screen, and follow "Open task" back.
  *
- * The model is the deterministic stub, which recognises `research_agent` by its tool set
- * and sizes its report from the **research** budget line the prompt carries — the task's
+ * **That screen is a single pane toggled between "Transcript" and its results, not a
+ * split view**, since a later UI rework. Results is the default, so `researchTask` checks
+ * the report without switching anything; it switches to "Transcript" only to see the tool
+ * chips, since those render inside the transcript pane and are hidden (not unmounted —
+ * `ResearchViewPage`'s module docstring explains why) while results is showing.
+ *
+ * The model is the deterministic stub, which recognises `reviewer_writer` (the research
+ * pipeline's last node, since M9) by its tool set and sizes its report from the
+ * **research** budget line the prompt carries — the task's
  * own estimate, not the project default. So a 30-minute task getting a 30-minute checklist
  * is evidence that the estimate reached the model, on the same footing as flow #7's
  * duration override (`apps/api/src/coach/integrations/stub_model.py`).
@@ -48,10 +55,8 @@ async function researchTask(
   await page.waitForURL(/\/research\//);
   const researchUrl = page.url();
 
-  // The chips come from the research turn's `tool_call` frames, rendered by the same
-  // `Transcript` the task's own chat uses — a research run is an ordinary turn, which is
-  // what lets it reuse the streaming path unchanged.
-  await expect(page.getByTestId('tool-chips').first()).toBeVisible();
+  // Results is the default view, so the report is already showing once the run completes
+  // — no toggle click needed.
   const report = page.getByTestId('research-report');
   await expect(report).toBeVisible();
 
@@ -60,6 +65,14 @@ async function researchTask(
   const optional = page.getByTestId('report-optional');
   await expect(optional).toBeVisible();
   await expect(optional.getByRole('checkbox')).toHaveCount(0);
+
+  // The chips come from the research turn's `tool_call` frames, rendered by the same
+  // `Transcript` the task's own chat uses — a research run is an ordinary turn, which is
+  // what lets it reuse the streaming path unchanged. The transcript pane stayed mounted
+  // (and collecting events) the whole time, hidden rather than removed, so switching to it
+  // now finds the chips immediately rather than waiting for them to stream in again.
+  await page.getByRole('button', { name: 'Transcript' }).click();
+  await expect(page.getByTestId('tool-chips').first()).toBeVisible();
 
   await page.getByRole('link', { name: 'Open task' }).click();
   return researchUrl;
@@ -322,7 +335,6 @@ test('M8: research with no task, from the board, produces a taskless report and 
   // No task to open — the affordance every task-scoped run's header carries is absent.
   await expect(page.getByRole('link', { name: 'Open task' })).toHaveCount(0);
 
-  await expect(page.getByTestId('tool-chips').first()).toBeVisible();
   const report = page.getByTestId('research-report');
   await expect(report).toBeVisible();
   // The required list is a plan for the question, not a checklist — rendered here because
@@ -331,7 +343,121 @@ test('M8: research with no task, from the board, produces a taskless report and 
     'What answers the question',
   );
 
+  await page.getByRole('button', { name: 'Transcript' }).click();
+  await expect(page.getByTestId('tool-chips').first()).toBeVisible();
+
   await page.getByRole('link', { name: '← Back to the board' }).click();
   await expect(page.getByTestId('research-card')).toBeVisible();
   await expect(page.getByTestId('research-card')).toContainText('Project');
+});
+
+test('a roadmap run shows each agent as its own author, and a study-plan notice instead of a report', async ({
+  signedIn: page,
+}) => {
+  /*
+    The roadmap pipeline's own trigger (docs/03-agent-design.md#the-taskless-case-task_proposer-and-plan_tailor-replace-reviewer_writer):
+    `task_proposer` -> `plan_tailor` instead of `reviewer_writer`, so the run's final
+    document is a `StudyPlan`, not a `ResearchReport` — this is also the flow that exercises
+    the transcript's author labels and the "show event IDs" debug toggle, since a roadmap
+    run's session is the one place several *named* agents genuinely write into one
+    transcript.
+  */
+  await page.goto('/');
+  await page.getByLabel('New project').fill('Becoming a data engineer');
+  await page.getByRole('button', { name: 'Create' }).click();
+  await page.getByRole('link', { name: 'Becoming a data engineer' }).click();
+
+  await page.getByRole('button', { name: 'Build a roadmap for this project' }).click();
+  await page
+    .getByLabel('What should the roadmap cover?')
+    .fill('What do I need to learn to become a data engineer?');
+  await page.getByRole('button', { name: 'Build the roadmap' }).click();
+
+  await page.waitForURL(/\/research\//);
+  await expect(page.getByRole('heading', { name: 'Roadmap for this project' })).toBeVisible();
+
+  // Results defaults to showing — and, for a roadmap run, that means `StudyPlanView`, not
+  // the placeholder notice it replaced: `GET /api/runs/{runId}/plan` reads back
+  // `plan_tailor`'s `write_study_plan` call, rendered as a heading, a decision chip per
+  // proposed task, and — behind that task's own disclosure — the material it carries. The
+  // toggle itself names it "Study plan (draft)".
+  await expect(page.getByRole('button', { name: 'Study plan (draft)' })).toBeVisible();
+  const plan = page.getByTestId('study-plan');
+  await expect(plan).toBeVisible();
+  await expect(plan.getByRole('heading', { name: 'A stub study plan' })).toBeVisible();
+
+  const proposedTask = plan.getByTestId('proposed-task');
+  await expect(proposedTask).toHaveCount(1);
+  await expect(proposedTask).toContainText('A stub proposed task');
+  // The decision chip is the selection status this session's UI rework exists for — visible
+  // without expanding the card, same as the `why` beneath it.
+  await expect(proposedTask.getByTestId('decision-chip')).toHaveText('Included');
+  await expect(proposedTask.getByTestId('decision-why')).toBeVisible();
+
+  // Required material is collapsed until the card is expanded.
+  await expect(proposedTask.getByText('A stub finding')).toBeHidden();
+  await proposedTask.getByRole('button', { name: /expand/i }).click();
+  await expect(proposedTask.getByText('A stub finding')).toBeVisible();
+  // The material's own kind chip, consistent with the same chip everywhere else an item
+  // with a kind is listed (a report, a checklist).
+  await expect(proposedTask.getByTestId('item-kind').first()).toBeVisible();
+
+  // No report pane for a roadmap run — `GET /api/runs/{runId}/report` reads
+  // `research_reports`, and this run wrote to `study_plans` instead.
+  await expect(page.getByTestId('research-report')).toHaveCount(0);
+
+  // The transcript is a second, hidden-not-unmounted view now rather than a second pane —
+  // switch to it for the author labels and the debug toggle.
+  await page.getByRole('button', { name: 'Transcript' }).click();
+  // `plan_tailor`'s `write_study_plan` call, labelled with its own author rather than an
+  // anonymous "the coach" bubble. Two of its messages carry that author (the call, then
+  // its closing reply) — `.first()` is the call, which is all this needs to assert.
+  const meta = page.getByTestId('message-meta').filter({ hasText: 'plan_tailor' }).first();
+  await expect(meta).toBeVisible();
+
+  // The debug toggle: off by default, and it adds the event id next to the author once on.
+  await expect(meta.locator('code')).toHaveCount(0);
+  await page.getByTestId('toggle-event-ids').click();
+  await expect(meta.locator('code')).toBeVisible();
+
+  await page.getByRole('link', { name: '← Back to the board' }).click();
+  await expect(page.getByTestId('research-card')).toBeVisible();
+});
+
+test('a failed roadmap run offers Resume, which restarts it with the same reason', async ({
+  signedIn: page,
+}) => {
+  /*
+    `start_roadmap` is manual-only — there is no scheduled retry, and unlike a task-scoped
+    run's "Try again" there is no task session to relaunch it from. "Resume" reads the
+    failed run's own session back for the learner's original prompt and starts a fresh
+    roadmap run with it, rather than sending the learner back to retype it
+    (`ResearchViewPage.tsx`'s module docstring). The stub's deterministic failure trigger
+    is the whole prompt here, so the resumed run fails again too — which is exactly what
+    proves the original reason survived the round trip, not a flake in the test.
+  */
+  await page.goto('/');
+  await page.getByLabel('New project').fill('A roadmap that fails');
+  await page.getByRole('button', { name: 'Create' }).click();
+  await page.getByRole('link', { name: 'A roadmap that fails' }).click();
+
+  await page.getByRole('button', { name: 'Build a roadmap for this project' }).click();
+  await page.getByLabel('What should the roadmap cover?').fill('make this turn fail');
+  await page.getByRole('button', { name: 'Build the roadmap' }).click();
+
+  await page.waitForURL(/\/research\//);
+  const firstRunUrl = page.url();
+  await expect(page.getByTestId('research-failed')).toBeVisible();
+
+  const resumeButton = page.getByTestId('resume-roadmap');
+  await expect(resumeButton).toBeEnabled();
+  await resumeButton.click();
+
+  await page.waitForURL((url) => url.href !== firstRunUrl && /\/research\//.test(url.pathname));
+  expect(page.url()).not.toBe(firstRunUrl);
+  await expect(page.getByTestId('research-failed')).toBeVisible();
+
+  // Same reason carried over, read back from the failed run's own session — not retyped.
+  await page.getByRole('button', { name: 'Transcript' }).click();
+  await expect(page.getByText('make this turn fail')).toBeVisible();
 });

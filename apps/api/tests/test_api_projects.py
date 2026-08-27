@@ -11,7 +11,7 @@ import httpx
 
 
 async def _create_project(client: httpx.AsyncClient, title: str = "Learn Rust") -> dict:
-    response = await client.post("/api/projects", json={"title": title, "goal": "ship"})
+    response = await client.post("/api/projects", json={"title": title, "description": "ship"})
     assert response.status_code == 201, response.text
     return response.json()
 

@@ -55,19 +55,35 @@ class CountingStubModel(StubModel):
     `fail_with` is a *switch* rather than the stub's own text trigger
     (`_FAILURE_PATTERN`), because the message that starts a research turn is written by the
     executor and a test has no way to put a magic word into it.
+
+    `fail_after` is the M9 addition: raise starting on the call *after* the `fail_after`th,
+    so a test can let `research_planner`'s call succeed and then fail every call after it —
+    simulating a crash mid-`topic_researcher`-fan-out without needing to know which of the
+    fanned-out branches happens to go first.
     """
 
     fail_with: str | None = None
+    fail_after: int | None = None
     #: Per-instance by construction. A bare `[]` default here would be one list shared by
     #: every model built in a session, so one test's count would include the last one's.
     invocations: list[str] = Field(default_factory=list)
+    #: How many of those invocations were `research_planner`'s — identified by the
+    #: `list[str]` `response_schema` only that node's `output_schema` produces
+    #: (`agents/research_workflow.py`). What makes "the retry did not repeat the planner's
+    #: call" assertable, since `invocations` alone cannot tell nodes apart.
+    planner_invocations: int = 0
 
     async def generate_content_async(
         self, llm_request: Any, stream: bool = False
     ) -> AsyncGenerator[LlmResponse, None]:
         self.invocations.append(getattr(llm_request, "model", "") or self.model)
+        config = getattr(llm_request, "config", None)
+        if config is not None and getattr(config, "response_schema", None) == list[str]:
+            self.planner_invocations += 1
         if self.fail_with is not None:
             raise RuntimeError(self.fail_with)
+        if self.fail_after is not None and len(self.invocations) > self.fail_after:
+            raise RuntimeError("stub failure: fail_after threshold reached")
         async for response in super().generate_content_async(llm_request, stream):
             yield response
 

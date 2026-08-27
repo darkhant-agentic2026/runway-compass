@@ -123,4 +123,24 @@ describe('Checklist', () => {
     );
     expect(container).toBeEmptyDOMElement();
   });
+
+  it('shows the kind chip when the item carries one, and nothing for a hand-added item', () => {
+    render(
+      <Checklist
+        items={[
+          makeTaskItem({
+            itemId: 'i_kind',
+            shortDescription: 'Watch the intro',
+            kind: 'video',
+          }),
+          makeTaskItem({ itemId: 'i_no_kind', shortDescription: 'My own note', kind: null }),
+        ]}
+        budgetMinutes={45}
+        onToggle={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('item-kind')).toHaveTextContent('Video');
+    expect(screen.getAllByTestId('item-kind')).toHaveLength(1);
+  });
 });

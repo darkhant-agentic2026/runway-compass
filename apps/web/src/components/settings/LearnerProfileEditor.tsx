@@ -27,7 +27,7 @@ interface LearnerProfileEditorProps {
   profile: LearnerProfile;
 }
 
-const TECH_LEVELS = ['beginner', 'intermediate', 'advanced', 'expert'] as const;
+const SKILL_LEVELS = ['beginner', 'intermediate', 'advanced', 'expert'] as const;
 
 export function LearnerProfileEditor({ profile }: LearnerProfileEditorProps) {
   const patch = usePatchLearnerProfile();
@@ -35,9 +35,10 @@ export function LearnerProfileEditor({ profile }: LearnerProfileEditorProps) {
   // Local state for adding items
   const [newStrength, setNewStrength] = useState('');
   const [newGap, setNewGap] = useState('');
-  const [techName, setTechName] = useState('');
-  const [techLevel, setTechLevel] = useState<string>('intermediate');
-  const [techEvidence, setTechEvidence] = useState('');
+  const [skillName, setSkillName] = useState('');
+  const [skillArea, setSkillArea] = useState('');
+  const [skillLevel, setSkillLevel] = useState<string>('intermediate');
+  const [skillEvidence, setSkillEvidence] = useState('');
 
   const [thinkingStyle, setThinkingStyle] = useState(profile.thinkingStyle);
   const [pacing, setPacing] = useState(profile.pacing);
@@ -55,7 +56,7 @@ export function LearnerProfileEditor({ profile }: LearnerProfileEditorProps) {
       thinkingStyle: '',
       strengths: [],
       gaps: [],
-      technologies: [],
+      skills: [],
       pacing: '',
       feedbackNotes: [],
     });
@@ -85,26 +86,32 @@ export function LearnerProfileEditor({ profile }: LearnerProfileEditorProps) {
     patch.mutate({ gaps: profile.gaps.filter((g) => g !== item) });
   };
 
-  const handleAddTech = (e: React.FormEvent) => {
+  const handleAddSkill = (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmed = techName.trim();
+    const trimmed = skillName.trim();
     if (!trimmed) return;
-    const existing = profile.technologies.filter(
-      (t) => t.name.toLowerCase() !== trimmed.toLowerCase(),
+    const existing = profile.skills.filter(
+      (s) => s.name.toLowerCase() !== trimmed.toLowerCase(),
     );
     patch.mutate({
-      technologies: [
+      skills: [
         ...existing,
-        { name: trimmed, level: techLevel, evidence: techEvidence.trim() },
+        {
+          name: trimmed,
+          area: skillArea.trim() || 'general',
+          level: skillLevel,
+          evidence: skillEvidence.trim(),
+        },
       ],
     });
-    setTechName('');
-    setTechEvidence('');
+    setSkillName('');
+    setSkillArea('');
+    setSkillEvidence('');
   };
 
-  const handleRemoveTech = (name: string) => {
+  const handleRemoveSkill = (name: string) => {
     patch.mutate({
-      technologies: profile.technologies.filter((t) => t.name !== name),
+      skills: profile.skills.filter((s) => s.name !== name),
     });
   };
 
@@ -317,20 +324,21 @@ export function LearnerProfileEditor({ profile }: LearnerProfileEditorProps) {
 
         <Separator />
 
-        {/* Technologies */}
+        {/* Skills */}
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <div>
-              <Label className="text-sm font-medium">Technologies & tools</Label>
+              <Label className="text-sm font-medium">Skills</Label>
               <p className="text-xs text-muted-foreground">
-                Observed proficiency levels and evidence
+                Observed proficiency levels and evidence, each scoped to the subject it was
+                observed in — a skill from one subject is not assumed to carry over to another
               </p>
             </div>
-            {profile.technologies.length > 0 && (
+            {profile.skills.length > 0 && (
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => patch.mutate({ technologies: [] })}
+                onClick={() => patch.mutate({ skills: [] })}
                 className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
               >
                 Reset
@@ -339,32 +347,33 @@ export function LearnerProfileEditor({ profile }: LearnerProfileEditorProps) {
           </div>
 
           <div className="space-y-2">
-            {profile.technologies.length === 0 ? (
-              <p className="text-xs text-muted-foreground italic">
-                No technologies recorded yet
-              </p>
+            {profile.skills.length === 0 ? (
+              <p className="text-xs text-muted-foreground italic">No skills recorded yet</p>
             ) : (
-              profile.technologies.map((t) => (
+              profile.skills.map((s) => (
                 <div
-                  key={t.name}
+                  key={s.name}
                   className="flex items-center justify-between rounded-md border p-2 text-xs"
                 >
                   <div className="space-y-0.5">
                     <div className="flex items-center gap-2">
-                      <span className="font-semibold text-foreground">{t.name}</span>
+                      <span className="font-semibold text-foreground">{s.name}</span>
+                      <Badge variant="outline" className="text-[10px]">
+                        {s.area}
+                      </Badge>
                       <Badge variant="secondary" className="text-[10px] uppercase">
-                        {t.level}
+                        {s.level}
                       </Badge>
                     </div>
-                    {t.evidence && (
-                      <p className="text-[11px] text-muted-foreground">{t.evidence}</p>
+                    {s.evidence && (
+                      <p className="text-[11px] text-muted-foreground">{s.evidence}</p>
                     )}
                   </div>
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => handleRemoveTech(t.name)}
-                    aria-label={`Remove technology ${t.name}`}
+                    onClick={() => handleRemoveSkill(s.name)}
+                    aria-label={`Remove skill ${s.name}`}
                     className="size-7 p-0 text-muted-foreground hover:text-destructive"
                   >
                     <Trash2 className="size-3.5" />
@@ -375,39 +384,45 @@ export function LearnerProfileEditor({ profile }: LearnerProfileEditorProps) {
           </div>
 
           <form
-            onSubmit={handleAddTech}
+            onSubmit={handleAddSkill}
             className="space-y-2 rounded-md border border-dashed p-3"
           >
-            <div className="text-xs font-medium text-foreground">Add technology</div>
+            <div className="text-xs font-medium text-foreground">Add skill</div>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <Input
-                placeholder="Technology name (e.g. React)"
-                value={techName}
-                onChange={(e) => setTechName(e.target.value)}
+                placeholder="Skill name (e.g. Type hints)"
+                value={skillName}
+                onChange={(e) => setSkillName(e.target.value)}
                 className="h-8 text-xs"
               />
-              <Select
-                value={techLevel}
-                onValueChange={(val) => {
-                  if (val) setTechLevel(val);
-                }}
-              >
-                <SelectTrigger className="h-8 text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {TECH_LEVELS.map((lvl) => (
-                    <SelectItem key={lvl} value={lvl} className="text-xs">
-                      {lvl.charAt(0).toUpperCase() + lvl.slice(1)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Input
+                placeholder="Subject or area (e.g. Python)"
+                value={skillArea}
+                onChange={(e) => setSkillArea(e.target.value)}
+                className="h-8 text-xs"
+              />
             </div>
+            <Select
+              value={skillLevel}
+              onValueChange={(val) => {
+                if (val) setSkillLevel(val);
+              }}
+            >
+              <SelectTrigger className="h-8 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SKILL_LEVELS.map((lvl) => (
+                  <SelectItem key={lvl} value={lvl} className="text-xs">
+                    {lvl.charAt(0).toUpperCase() + lvl.slice(1)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Input
               placeholder="Evidence/context (e.g. Built production dashboards)"
-              value={techEvidence}
-              onChange={(e) => setTechEvidence(e.target.value)}
+              value={skillEvidence}
+              onChange={(e) => setSkillEvidence(e.target.value)}
               className="h-8 text-xs"
             />
             <Button
@@ -415,10 +430,10 @@ export function LearnerProfileEditor({ profile }: LearnerProfileEditorProps) {
               size="sm"
               variant="secondary"
               className="h-8 w-full text-xs"
-              disabled={!techName.trim()}
+              disabled={!skillName.trim()}
             >
               <Plus className="mr-1 size-3.5" />
-              Add technology
+              Add skill
             </Button>
           </form>
         </div>

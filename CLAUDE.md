@@ -44,6 +44,17 @@ Commit in the milestone's own vocabulary — what changed and why it was decided
 file list. Deviations from `docs/` belong in the roadmap's status section (see M0–M2 for the
 form), not only in the commit message, because that is where the next person looks.
 
+**Write `docs/` and code comments for a maintainer reading the system, not for a future
+coding session reading the history of how it was built.** The roadmap's status section is
+milestone-shaped prose — what changed and why, at the feature/decision level — not a
+changelog of coding sessions, passes, or background jobs. Never write "fixed in a later
+session," "in a follow-up pass," "a background job found," "a different session already
+changed X," or anything else that names *how the work happened to get done* rather than
+*what is true about the system*: it reads as noise to a human maintainer and, worse,
+contaminates a future coding session's context with process trivia it will have no way to
+verify or act on. If something is genuinely worth keeping only for continuity between your
+own coding sessions, it belongs in your memory, not in `docs/` or a comment.
+
 Pushing, opening a PR, and merging to `main` stay human steps. Ask before doing any of them.
 
 ## ADK: the installed source is the authority
