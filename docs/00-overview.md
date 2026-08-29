@@ -1,4 +1,4 @@
-# Self-Study Coach — Overview & Key Decisions
+# Runway Compass — Overview & Key Decisions
 
 An adaptive, agentic web app that helps a learner make progress on technical goals in
 bite-sized tasks. The agent keeps a durable model of the learner (thinking style,

@@ -168,6 +168,28 @@ resource "google_identity_platform_config" "this" {
     ],
     var.authorized_domains,
   ))
+
+  # Email/password sign-in, for accounts created by hand (Cloud Console → Identity
+  # Platform → Users → Add user) rather than through Google. There is no self-serve
+  # sign-up screen in the SPA, so `password_required = true` is not a hardening choice —
+  # it is the only mode the app's UI drives, since it never sends an email link.
+  sign_in {
+    email {
+      enabled           = true
+      password_required = true
+    }
+  }
+
+  # Enforces the "no self-serve sign-up" comment above: without this, the enabled
+  # email/password provider still accepts a sign-up from anyone holding the public Web
+  # API key, since that requires no OAuth consent the way Google sign-in does.
+  # infra/terraform/modules/blocking_function has the function itself.
+  blocking_functions {
+    triggers {
+      event_type   = "beforeCreate"
+      function_uri = var.password_signup_blocking_function_uri
+    }
+  }
 }
 
 resource "google_identity_platform_default_supported_idp_config" "google" {

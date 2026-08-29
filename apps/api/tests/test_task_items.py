@@ -470,122 +470,132 @@ async def test_a_subtask_that_inherits_a_finished_checklist_completes_itself(
     assert parent["items"] == []
 
 
-# --- the checklist against the task's budget ------------------------------------------------
+# --- the checklist and the task's own displayed duration --------------------------------
 
 
-async def test_a_checklist_inside_its_budget_says_nothing(container, alice, client) -> None:
-    """Silence is the signal. A field that is always present is one the model learns to
-    skip, so the total is reported only when there is something to report."""
-    from coach.agents.context import AgentContext
-    from coach.agents.tools import _checklist_budget
-    from coach.core.principal import Principal
-
-    task_id, _ = await _task_with_items(client, "Read §3")
-    task = await container.tasks.resolve(alice, task_id)
-    context = AgentContext(
-        principal=Principal(uid=alice.uid, source="agent"),
-        project_id=task.project_id,
-        task_id=task_id,
-        default_task_minutes=45,
-    )
-    assert _checklist_budget(task, context) == {}
-
-
-async def test_an_oversized_checklist_reports_the_total_but_does_not_refuse(
-    container, alice, client
+async def test_adding_items_recomputes_the_tasks_estimated_minutes(
+    client: httpx.AsyncClient,
 ) -> None:
-    """**Guidance, not a guard**, and the distinction is the whole design.
-
-    docs/02-data-model.md has no rule about a checklist's total and should not: a 50-minute
-    plan on a 45-minute task is a rounding difference, and refusing it would be the tool
-    overruling a judgement the coach is better placed to make with the learner in front of
-    it. What the tool owes the model is the *fact* — a running total it would otherwise have
-    to carry in its head across several calls.
-    """
-    from coach.agents.context import AgentContext
-    from coach.agents.tools import _checklist_budget
-    from coach.core.principal import Principal
-
-    project_id = await _project(client)
-    task = (
-        await client.post(f"/api/projects/{project_id}/tasks", json={"title": "Big"})
-    ).json()["task"]
-    # Accepted, not refused — this is the point.
-    added = await client.post(
-        f"/api/tasks/{task['id']}/items",
-        json={
-            "items": [
-                {"shortDescription": "Read the long thing", "minutes": 40},
-                {"shortDescription": "Do the long exercise", "minutes": 35},
-            ]
-        },
-    )
-    assert added.status_code == 201
-
-    stored = await container.tasks.resolve(alice, task["id"])
-    context = AgentContext(
-        principal=Principal(uid=alice.uid, source="agent"),
-        project_id=project_id,
-        task_id=task["id"],
-        default_task_minutes=45,
-    )
-    reported = _checklist_budget(stored, context)
-    assert reported["plannedMinutes"] == 75
-    assert reported["taskBudgetMinutes"] == 45
-    assert "add_subtask" in reported["note"]
-
-
-async def test_task_level_duration_override_is_respected_by_checklist_budget(
-    container, alice, client
-) -> None:
-    """M7: A task with its own estimatedMinutes override uses that budget instead of
-    the project's defaultTaskMinutes."""
-    from coach.agents.context import AgentContext
-    from coach.agents.tools import _checklist_budget
-    from coach.core.principal import Principal
-
+    """`estimatedMinutes` is what the checklist adds up to, not a separately-set budget
+    the checklist is measured against — that comparison predates multi-task planning and
+    has no standing now that a task too big for one sitting is split into subtasks instead
+    of merely warned about."""
     project_id = await _project(client)
     task = (
         await client.post(
             f"/api/projects/{project_id}/tasks",
-            json={"title": "Long Task", "estimatedMinutes": 120},
+            json={"title": "Sized task", "estimatedMinutes": 45},
         )
     ).json()["task"]
 
-    # Add 75 minutes of items: inside 120 min task budget, but exceeds 45 min project default.
     added = await client.post(
         f"/api/tasks/{task['id']}/items",
         json={
             "items": [
-                {"shortDescription": "Read the long paper", "minutes": 40},
-                {"shortDescription": "Do the long exercise", "minutes": 35},
+                {"shortDescription": "Read", "minutes": 20},
+                {"shortDescription": "Do the exercise", "minutes": 15},
             ]
         },
     )
-    assert added.status_code == 201
+    assert added.json()["task"]["estimatedMinutes"] == 35
 
-    stored = await container.tasks.resolve(alice, task["id"])
-    context = AgentContext(
-        principal=Principal(uid=alice.uid, source="agent"),
-        project_id=project_id,
-        task_id=task["id"],
-        default_task_minutes=45,
-    )
-    # Inside 120 minutes: reports nothing
-    assert _checklist_budget(stored, context) == {}
 
-    # Now add more items so planned is 140 min (> 120 min)
-    added_more = await client.post(
+async def test_a_hand_added_item_with_no_minutes_does_not_zero_the_estimate(
+    client: httpx.AsyncClient,
+) -> None:
+    """A checklist that adds up to nothing leaves the task's own size alone.
+
+    `Minutes` requires at least 1 (`coach.services.models`), and a task's size is still a
+    real fact about it even before every item on the plan carries its own duration.
+    """
+    project_id = await _project(client)
+    task = (
+        await client.post(
+            f"/api/projects/{project_id}/tasks",
+            json={"title": "Sized task", "estimatedMinutes": 45},
+        )
+    ).json()["task"]
+
+    added = await client.post(
         f"/api/tasks/{task['id']}/items",
-        json={"items": [{"shortDescription": "Bonus section", "minutes": 65}]},
+        json={"items": [{"shortDescription": "My own note"}]},
     )
-    assert added_more.status_code == 201
+    assert added.json()["task"]["estimatedMinutes"] == 45
 
-    stored2 = await container.tasks.resolve(alice, task["id"])
-    reported = _checklist_budget(stored2, context)
-    assert reported["plannedMinutes"] == 140
-    assert reported["taskBudgetMinutes"] == 120
-    assert "140 minutes against a 120-minute task" in reported["note"]
+
+async def test_editing_the_checklist_keeps_the_duration_in_step(
+    client: httpx.AsyncClient,
+) -> None:
+    project_id = await _project(client)
+    task = (
+        await client.post(
+            f"/api/projects/{project_id}/tasks",
+            json={"title": "Sized task", "estimatedMinutes": 45},
+        )
+    ).json()["task"]
+
+    added = await client.post(
+        f"/api/tasks/{task['id']}/items",
+        json={
+            "items": [
+                {"shortDescription": "Read", "minutes": 20},
+                {"shortDescription": "Do the exercise", "minutes": 15},
+            ]
+        },
+    )
+    items = added.json()["task"]["items"]
+    assert added.json()["task"]["estimatedMinutes"] == 35
+
+    removed = await client.delete(f"/api/tasks/{task['id']}/items/{items[0]['itemId']}")
+    assert removed.json()["task"]["estimatedMinutes"] == 15
+
+    # Emptying the checklist does not zero the estimate — this only says the task has no
+    # sized plan right now, not that it takes no time.
+    removed_last = await client.delete(f"/api/tasks/{task['id']}/items/{items[1]['itemId']}")
+    assert removed_last.json()["task"]["estimatedMinutes"] == 15
+
+
+async def test_moving_items_recomputes_both_tasks_durations(
+    container, alice, client: httpx.AsyncClient
+) -> None:
+    project_id = await _project(client)
+    parent = (
+        await client.post(f"/api/projects/{project_id}/tasks", json={"title": "Big"})
+    ).json()["task"]
+    await container.tasks.add_items(
+        alice,
+        parent["id"],
+        [
+            {"shortDescription": "Read §3", "minutes": 20},
+            {"shortDescription": "Do the exercise", "minutes": 15},
+        ],
+    )
+    first = (
+        await client.post(
+            f"/api/projects/{project_id}/tasks",
+            json={"title": "First half", "parentTaskId": parent["id"]},
+        )
+    ).json()["task"]
+    second = (
+        await client.post(
+            f"/api/projects/{project_id}/tasks",
+            json={"title": "Second half", "parentTaskId": parent["id"]},
+        )
+    ).json()["task"]
+    # The first subtask inherited both items, but its own `estimatedMinutes` came from the
+    # project default at creation — moving an item is what first ties the two together.
+    moving_item_id = next(
+        i["itemId"] for i in first["items"] if i["shortDescription"] == "Do the exercise"
+    )
+
+    source, target = await container.tasks.move_items(
+        alice,
+        from_task_id=first["id"],
+        to_task_id=second["id"],
+        item_ids=[moving_item_id],
+    )
+    assert source.estimated_minutes == 20
+    assert target.estimated_minutes == 15
 
 
 # --- moving items between a task and its subtasks -------------------------------------------

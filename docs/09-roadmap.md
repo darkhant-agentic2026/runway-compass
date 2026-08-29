@@ -1344,6 +1344,26 @@ checklist rather than a settled specification.
   [03-agent-design.md](03-agent-design.md#the-taskless-case-task_proposer-and-plan_tailor-replace-reviewer_writer)) —
   review and align tone, length, and structure across the three so a report and a study
   plan don't read like they came from different products.
+- **Model effort vs. `STEP_TIMEOUT_SECONDS`.** A research/roadmap run's `research` step —
+  `research_planner` through the `topic_researcher` fan-out through the terminal node — is
+  one `RunExecutor._run_steps` step (`services/executor.py`), so it has to land inside one
+  `STEP_TIMEOUT_SECONDS` window regardless of how many LLM calls happen inside it, and a
+  `topic_researcher` fan-out multiplies whatever thinking level each branch runs at by
+  however many sub-topics `research_planner` picked. `topic_researcher` (and the
+  `search_agent` it calls) are already `generation_config("low")` — the review should
+  confirm that stays true rather than creeping back up, since a raised effort there is the
+  most direct way to push the step over the limit. `task_proposer`, which synthesizes every
+  branch's findings into several sized tasks, is still `"high"` for a job this shape; lower
+  it to `"medium"` or `"low"` for the same reason.
+- **`topic_researcher`'s own node_input should carry a briefing's attachments, not just its
+  subtopic string.** `research_planner` sees a run's uploaded files because it reads the
+  workflow's own opening message directly, and its instruction already says so — but its
+  output feeding the fan-out is a bare `list[str]` of sub-topics, and `topic_researcher` is
+  `single_turn`/`include_contents="none"` (module docstring,
+  [03-agent-design.md](03-agent-design.md#the-research-pipeline-since-m9)), so a branch has
+  no other channel in. It researches blind to any file the learner attached to the run that
+  started it today. Thread the same attachment parts onto every branch's own node_input so a
+  sub-topic that references an upload gets research that actually reflects it.
 
 **Research concurrency:**
 
@@ -1361,6 +1381,23 @@ checklist rather than a settled specification.
   but that throttle is per-run — nothing today stops several *different* runs from each
   holding their own single slot at the same time, and Gemini's `429` threshold is closer to
   "a handful of concurrent research jobs" than "a handful of concurrent chat turns."
+- **Skip runs for users without enough points left, rather than let one fail partway
+  through and spend down toward a window it can no longer complete.** A background tick
+  choosing a candidate project, and any manual trigger — "research this task now" or a
+  roadmap run — all check the owner's remaining *monthly* points against a new
+  `plan.limits.runStartPointsThreshold` before the run is scheduled or enqueued, refusing
+  or skipping it if that remainder is under the threshold. Adjustable per user, on the same
+  footing as `monthlyPoints`/`fourHourPoints`, and defaulting to 800.
+- **Nag the learner in the UI before they hit that wall.** In the project view, once the
+  owner's remaining monthly points drop under `runStartPointsThreshold + 100` (900 by
+  default), a dismissable notification overlays the chat transcript — "You have 881 usage
+  points remaining. Your agent will not conduct research when usage points are below 800."
+  The number rides along on the model's own `turn_complete` message rather than a separate
+  poll, so the chat transcript component can decide whether to show it without an extra
+  request. Dismissal is session-local state, not persisted, so the notification does not
+  return on every turn once dismissed but does return on a reload. The same message
+  appears above a scheduled roadmap view's placeholder or failed panel whenever the run
+  itself is not `completed` or `running`.
 
 **Project state and archiving:**
 
@@ -1379,8 +1416,10 @@ checklist rather than a settled specification.
   `components/board/task-state.ts`): `completed` renders in a green tuned for both themes,
   prefixed with an encircled checkmark icon; `in_progress` renders in a blue tuned for both
   themes, prefixed with a small dot icon (a real icon, vertically aligned with the text —
-  not the `·` glyph), with a subtle glow if it reads well once built. Every other state
-  stays as it is.
+  not the `·` glyph, and sized down to about 3/4 of a card icon's usual size so it still
+  reads as a dot), with a subtle glow. Every other state stays as it is. The accent and
+  icon (`STATE_ACCENT`, `task-state.ts`) are shared with `TaskInfoStrip`'s own state chip
+  on the task workspace (`components/board/StateLabel.tsx`), so the two screens agree.
 - **The "Show details" button on the task workspace becomes a left-sidebar icon, placed in
   front of the breadcrumb nav** rather than beside "← Back to the board" where it sits
   today (`pages/TaskWorkspacePage.tsx` — currently a `Button` with a chevron and "Show
@@ -1390,11 +1429,31 @@ checklist rather than a settled specification.
   so a wide-rendering markdown block in the transcript (a table, a long code block) cannot
   squeeze the task-details column into unreadable narrowness. Currently a plain `flex` row
   (`pages/TaskWorkspacePage.tsx`) with no such constraint.
+- **The project view's board/conversation split gets the same min/max width**, for the same
+  reason. `BoardPage.tsx`'s two-panel row is a fixed `lg:w-3/5` (board) next to `lg:w-2/5`
+  (`SessionPane`, the planning conversation) with no `min-w`/`max-w` on either column, so the
+  same wide-markdown-in-the-transcript squeeze the task workspace item above fixes is
+  reachable here too.
+- **The composer's send button gets a visible "Ctrl + [Enter icon]" hint, in a monospace
+  font, next to the send icon**, so the keyboard shortcut is discoverable rather than
+  implicit. `Composer.tsx`'s send `Button` is icon-only today (`aria-label="Send"`, no
+  visible text or tooltip) even though its `onKeyDown` handler already wires `Ctrl`/`Cmd`+
+  Enter to submit.
 - **Editing a task's items recalculates its displayed duration.** `TaskService.add_items`/
-  `replace_items`/`patch_item`/`delete_item` (`services/tasks.py`) write the `items` array
-  only — nothing recomputes `estimatedMinutes` from the required items' own `minutes`, so a
-  checklist edited after the task was sized shows a duration that no longer matches what's
-  on it.
+  `replace_items`/`patch_item`/`delete_item`/`move_items` (`services/tasks.py`) now write
+  `estimatedMinutes` as the sum of the checklist's own `minutes` on every item write
+  (`_item_write_updates`), skipping the write only when that sum is zero — a task's size is
+  simply what its checklist adds up to. **This retires `_checklist_budget`**
+  (`agents/tools.py`), the `add_task_items`/`delete_task_item` guidance that compared the
+  checklist's total against `estimatedMinutes` as a separately-set budget and nudged the
+  model when the two diverged: once `estimatedMinutes` always tracks the checklist, the two
+  can never diverge, so the comparison could never fire again. That budget predated
+  multi-task planning (a task too big for one sitting is split into subtasks now, not
+  merely flagged), so the fix is to drop it rather than preserve a comparison with nothing
+  left to compare. **`task_teacher`'s own instruction (`agents/task_teacher.py`) is the
+  guidance's new home** — the split-into-a-subtask judgement now falls back to the
+  project's own default task length (already rendered into the prompt via `PREFS_KEY`),
+  never to a task-level number, since a task no longer carries one of its own.
 - **The task info strip's status chip re-renders the moment the first message flips a task
   from `not_started` to `in_progress`.** `TurnService._start_task_if_not_started`
   ([above](#status-after-m9)) changes the task's state as a side effect of sending a chat
@@ -1402,8 +1461,9 @@ checklist rather than a settled specification.
   so `useTask`'s query (`features/queries.ts`) is left stale until something else
   invalidates it.
 - **The in-progress task's first uncompleted item gets a visual "you are here" indicator**
-  — a vertical rule beside the item, in the same blue as the "In progress" status text,
-  styled distinctly enough (e.g. a hand-drawn/ruled edge) not to read as a plain border.
+  — a solid vertical rule beside the item, in the same blue as the "In progress" status
+  text. A dashed rule was tried first and dropped: it read as ragged rather than
+  deliberate, so plain and solid is the one that shipped.
 - **Item sources render as real links consistently.** `Checklist.tsx` and
   `ResearchReport.tsx` already link out `item.url` for an unguided item ("Open"); review why
   a guided item suppresses the link along with its `details` — the reasoning for hiding
@@ -1413,6 +1473,41 @@ checklist rather than a settled specification.
   (troubleshooting)"** (`ResearchViewPage.tsx`'s `ToggleGroupItem`) — a roadmap run's
   transcript is multi-agent and mechanism-heavy in a way a learner has no reason to read by
   default, and the label should say so.
+- **The account settings email is hidden by default, behind a "Show email" button beside
+  it.** `AccountCard.tsx` renders `me.email` in a plaintext, always-visible, disabled input
+  with no masking affordance — a button beside the field should mask it until pressed, the
+  way a password field defaults to hidden.
+- **The subtask creation form has no minutes input.** `SubtaskList.tsx`'s `AddSubtask`
+  asked for one and passed it straight through to `estimatedMinutes`; a subtask is sized
+  from the project's own default now, the same as any other task created without an
+  explicit override, and its displayed duration follows its checklist once one exists (the
+  duration-recompute item above) — a number nobody would set correctly ahead of a plan
+  that does not exist yet.
+- **The board's "Latest research" card names a completed roadmap run's plan, and marks a
+  materialized one "Approved."** `ResearchCard.tsx` previously summarized every run from
+  its `ResearchReport`, which a roadmap run never wrote — `GET /api/runs/{runId}/report`
+  404s for one, so its card either fetched nothing useful or read "Materials ready"
+  regardless of what the plan actually proposed. A roadmap run (`steps[0].id ===
+  'roadmap'`) now titles its card "Roadmap: {`StudyPlan.title`}" from `GET
+  /api/runs/{runId}/plan` instead, and gains an "Approved" chip once
+  `StudyPlan.materializedAt` is set (`materialize_study_plan` has run) — a plan still
+  sitting there as a proposal reads differently from one already accepted into real tasks.
+- **The board's and the task workspace's manual research/roadmap controls move behind a
+  "Manual actions" disclosure, collapsed on every page load.** Now that a roadmap is the
+  suggested way to populate a project's tasks and their materials (the troubleshooting
+  reset above exists specifically to make re-running one cheap), "Research something for
+  this project"/"Build a roadmap for this project" (`BoardPage.tsx`) and "Research this
+  task now"/"Have my coach prepare this" (`TaskWorkspacePage.tsx`) are the manual
+  fallback, not the first thing either screen should show. Not remembered across visits —
+  a plain `useState`, collapsed every load, the same as `StudyPlanView`'s memo disclosure
+  it borrows the chevron-button pattern from.
+- **"No materials yet" no longer shows for a task whose checklist a materialized roadmap
+  already filled in.** `TaskWorkspacePage.tsx`'s condition was `!report && !researching
+  && !queued` — true for any task with no `ResearchReport`, which is also true of every
+  task `materialize_study_plan` ever creates, since that pipeline writes `task.items[]`
+  directly and never produces a report. Added `task.items.length === 0` to the guard, so
+  the message reads correctly for a hand-added task or a genuinely unresearched one
+  without misdescribing a roadmap-sourced task as empty.
 
 **README:**
 
@@ -1425,6 +1520,86 @@ across several projects never runs more than 2 concurrently, verified by instrum
 new cap rather than by inspection; the UI items above are in place and pass an
 accessibility/contrast check in both light and dark; `README.md` reflects the current
 feature set and status.
+
+---
+
+## Status after M10
+
+**Nearly met — the `project_coach` tool-catalogue review and the `README.md` refresh are
+what's left of the checklist above; everything else on it has shipped.**
+
+**Agent review.** The catalogue review closed for `task_teacher` — trimmed for tools that no
+longer earn their place — while `project_coach`'s own pass is the one item still open. The
+`long_description` review across `research_planner`/`reviewer_writer` and `task_proposer`
+landed one concrete change: `plan_tailor`'s instruction now also asks for an ASCII roadmap
+diagram (task names and durations) inside `long_description`, alongside its existing prose
+write-up, so a study plan's summary card reads more like a report's. `task_proposer`'s own
+synthesis step now runs at `"medium"` thinking effort rather than `"high"`, since it shares
+one `STEP_TIMEOUT_SECONDS` step with the `topic_researcher` fan-out ahead of it;
+`topic_researcher`/`search_agent` stay at `"low"`, confirmed rather than raised. A new
+deterministic node, `_carry_attachments_into_subtopics`, threads a run's own attachment
+parts onto every `topic_researcher` branch's `node_input` in both `research_workflow` and
+`build_roadmap_workflow`, so a sub-topic that references an upload no longer researches
+blind to it.
+
+**Research concurrency.** `QuotaService.require_room_to_start_run` refuses a research or
+roadmap run before it starts, rather than letting it spend down toward a monthly-points
+window it may not finish inside of, by comparing remaining monthly points against a new
+per-user `plan.limits.runStartPointsThreshold` (default 800 — `monthlyPoints` moved up to
+1200 alongside it, since the threshold would otherwise have sat above every default
+account's own allowance). The same check sits behind both manual triggers and
+`SchedulerService._shared_guards`, so a learner's button and the scheduler's own tick agree
+on the answer. `turn_complete` now carries `pointsRemaining`/`pointsThreshold`, and the
+frontend turns that into a dismissable low-points banner shown over the chat transcript and
+over a roadmap run's placeholder/failed panel whenever the run itself isn't running or
+complete. A message's own usage cost in points is now shown next to its copy control, read
+from the `usage_metadata` already stored on every event. (A dedicated hard concurrency cap
+on simultaneous research/roadmap runs is not part of this slice — the points-threshold gate
+above is the mitigation that shipped.)
+
+**Project state and archiving.** Project state (`active`/`paused`/`archived`) is editable
+from project settings; archived projects get their own view with a restore action; paused
+projects drop out of the main project list behind a "Show paused projects" toggle; a shared
+`ProjectStateChip` marks state everywhere a project is listed, with a tooltip naming the
+scheduler guard it reflects. Active and paused projects are now fetched as two
+status-filtered queries merged client-side, rather than one unfiltered query —
+`ProjectRepository.list_for_owner`'s composite index is on `(ownerUid, status, updatedAt)`,
+and only a status-filtered query is a usable prefix of it on real Firestore, unlike the
+emulator.
+
+**Task board and task view polish — the full checklist, plus one item surfaced by daily use
+once the rest was in place.** Status colour hints on task cards and the task info strip; a
+"you are here" marker that slides to the next checklist item instead of jumping; the
+details-sidebar toggle moved beside the breadcrumb; explicit min/max widths on both the task
+workspace's and the board's split panes; a visible Ctrl+Enter hint on the composer; a
+hideable account email; consistent item-source links regardless of `guided`; a relabeled
+"Transcript (troubleshooting)" tab. Editing a task's checklist now recalculates
+`estimatedMinutes` as the sum of its items' own minutes, which retired
+`_checklist_budget`'s separate budget-vs-checklist comparison — the split-into-a-subtask
+judgement moved into `task_teacher`'s own instruction instead, anchored to the project's
+default task length rather than a number a task no longer carries. The board's task-creation
+form and `AddSubtask` both dropped their now-meaningless Minutes inputs; every new task is
+sized from the project's default instead. The "Latest research" card now titles a completed
+roadmap run from its `StudyPlan` rather than a `ResearchReport` a roadmap run never wrote,
+and gains an "Approved" chip once `materialize_study_plan` has run. A materialized task's
+optional roadmap material is reachable again via a new `Task.studyPlanRunId` pointer back to
+the plan that created it; project settings gained a troubleshooting "Delete all tasks" reset
+(behind a "Show troubleshooting settings" toggle) that also clears each plan's own
+materialization state, so `materialize_study_plan` can rebuild the board from research
+already paid for instead of hitting its own idempotency guard. The board's and the task
+workspace's manual research/roadmap controls now sit behind a collapsed "Manual actions"
+disclosure, since a roadmap is the suggested way to populate a project now rather than the
+first thing either screen shows; "No materials yet" no longer misdescribes a roadmap-sourced
+task that has checklist items but no `ResearchReport`. The item surfaced afterward: new task
+cards and a project's or task's first-appearance description now play an entrance animation
+(fade-in, letter-by-letter reveal, staggered content reveal) — never on a board's own first
+load, only when a card or description appears while its page is already open.
+
+**Not yet done:** the `project_coach` instruction/tool-catalogue review itself — trimming a
+tool that is no longer reachable or has stopped earning its place now that the M9 roadmap
+tools (`write_roadmap_brief`/`propose_roadmap_brief`/`materialize_study_plan`/
+`view_study_plan`/`revise_study_plan`) sit alongside the pre-existing board tools — and the
+`README.md` refresh, which still reads "Status: M0–M7 landed."
 
 ---
 

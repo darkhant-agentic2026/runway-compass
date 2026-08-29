@@ -26,3 +26,12 @@ variable "oauth_client_secret" {
   sensitive   = true
   description = "The matching client secret, read from Secret Manager by the caller."
 }
+
+variable "password_signup_blocking_function_uri" {
+  type        = string
+  description = <<-EOT
+    HTTPS trigger URL of the beforeCreate blocking function that rejects self-service
+    email/password sign-up (infra/terraform/modules/blocking_function, apps/functions).
+    Identity Platform calls this synchronously before saving a new user.
+  EOT
+}

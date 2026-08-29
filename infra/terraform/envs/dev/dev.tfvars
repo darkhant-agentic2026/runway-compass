@@ -26,6 +26,7 @@ notification_channels = []
 # It was 0 through M1, when there was no streaming to lose and an idle environment billed
 # essentially nothing. That trade is no longer available.
 min_instances = 1
+max_instances = 4
 
 # `gemini-3.7-flash` (docs/00-overview.md) is served to this project on the **global**
 # endpoint only. Probed 2026-08-17 with RUNBOOK.md section 8.5, which issues the real

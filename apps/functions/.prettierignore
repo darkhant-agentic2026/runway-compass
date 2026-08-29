@@ -1,0 +1,7 @@
+# Build output and dependencies.
+lib
+coverage
+node_modules
+
+# npm owns this file's formatting; reformatting it churns every install.
+package-lock.json

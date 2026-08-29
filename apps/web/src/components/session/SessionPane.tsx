@@ -42,6 +42,7 @@ import { useEffect, useRef, useState, type DragEvent } from 'react';
 import { Composer } from '@/components/session/Composer';
 import { ConfirmationPrompt } from '@/components/session/ConfirmationPrompt';
 import { ConnectionBanner } from '@/components/session/ConnectionBanner';
+import { LowPointsBanner } from '@/components/session/LowPointsBanner';
 import { QuestionPrompt } from '@/components/session/QuestionPrompt';
 import { Transcript } from '@/components/session/Transcript';
 import { Button } from '@/components/ui/button';
@@ -88,9 +89,20 @@ export interface SessionPaneProps {
    * generation ends, not on the next 2 s poll.
    */
   onTurnComplete?: () => void;
+  /**
+   * Overlay `LowPointsBanner` above the transcript — docs/09-roadmap.md#research-concurrency
+   * asks for it "in the project view" specifically, so this defaults off rather than
+   * showing on every screen a `SessionPane` happens to sit on (a task's own conversation,
+   * a research run's read-only transcript).
+   */
+  lowPointsBanner?: boolean;
 }
 
-const DEFAULT_CLASS =
+/**
+ * Exported so a caller that needs its own width constraint (the task workspace's
+ * chat/details split, `TaskWorkspacePage.tsx`) can extend it rather than duplicate it.
+ */
+export const DEFAULT_CLASS =
   'relative flex h-[70svh] flex-col rounded-lg border lg:h-auto lg:min-h-0 lg:flex-1';
 
 export function SessionPane({
@@ -101,6 +113,7 @@ export function SessionPane({
   className = DEFAULT_CLASS,
   readOnly = false,
   onTurnComplete,
+  lowPointsBanner = false,
 }: SessionPaneProps) {
   const queryClient = useQueryClient();
   const events = useSessionEvents(sessionId);
@@ -232,13 +245,16 @@ export function SessionPane({
         </p>
       ) : null}
 
-      <Transcript
-        messages={messages}
-        live={live}
-        pending={events.isPending}
-        sessionId={sessionId}
-        showEventIds={showEventIds}
-      />
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        {lowPointsBanner ? <LowPointsBanner className="absolute inset-x-2 top-2 z-10" /> : null}
+        <Transcript
+          messages={messages}
+          live={live}
+          pending={events.isPending}
+          sessionId={sessionId}
+          showEventIds={showEventIds}
+        />
+      </div>
 
       {/*
         One pending confirmation, two shapes. `ask_learner` asks a *question* through the

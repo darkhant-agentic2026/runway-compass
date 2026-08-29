@@ -16,6 +16,7 @@ import { getAuthProvider } from '@/lib/auth';
 import {
   boardSchema,
   couponClaimResponseSchema,
+  deleteAllTasksResponseSchema,
   effectivePrefsResponseSchema,
   learnerProfileResponseSchema,
   meSchema,
@@ -193,6 +194,16 @@ export const api = {
 
   archiveProject: (projectId: string) =>
     request(`/api/projects/${projectId}`, projectSchema, { method: 'DELETE' }),
+
+  /** Troubleshooting only — see `ProjectSettingsPage`'s own section. Hard-deletes every
+   * task in the project and resets any study plan's materialization, so
+   * `materialize_study_plan` can rebuild the board without a fresh (paid-for) roadmap run. */
+  deleteAllProjectTasks: (projectId: string, idempotencyKey?: string) =>
+    request(
+      `/api/projects/${projectId}/troubleshooting/delete-all-tasks`,
+      deleteAllTasksResponseSchema,
+      { method: 'POST', idempotencyKey },
+    ),
 
   getEffectivePrefs: (projectId: string) =>
     request(`/api/projects/${projectId}/effective-prefs`, effectivePrefsResponseSchema).then(

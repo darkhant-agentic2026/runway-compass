@@ -40,6 +40,7 @@ from coach.agents.tools import DomainTools
 from coach.core.app import APP_NAME
 from coach.core.config import Settings
 from coach.integrations.artifacts import artifact_part_uri, artifact_service_provider
+from coach.integrations.model import TokenRateLimiter
 from coach.ws.hub import BoardUpdateHub
 from test_import_without_credentials import DEPLOYED
 
@@ -104,6 +105,7 @@ async def test_a_runner_can_open_an_invocation_context(deployed_artifacts) -> No
         tools=DomainTools(cast(Any, None), cast(Any, None), BoardUpdateHub()),
         research_tools=ResearchTools(cast(Any, None), cast(Any, None), BoardUpdateHub()),
         research_throttle=ModelThrottle(),
+        token_limiter=TokenRateLimiter(),
         prompt=PromptBuilder(*(cast(Any, None),) * 4),
     )
     # A scripted model so that no model client is built either; the artifact service is

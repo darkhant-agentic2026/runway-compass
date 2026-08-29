@@ -25,6 +25,14 @@ export interface TranscriptMessage {
   /** What the coach did on this event. Rendered as chips, exactly like the live stream. */
   tools: TranscriptTool[];
   attachments: TranscriptAttachment[];
+  /**
+   * This event's own usage cost in points (`ceil(totalTokenCount / 1000)`, matching
+   * `POINTS_TOKEN_DIVISOR` in `apps/api/src/coach/repositories/usage.py`), or `null` when
+   * the stored event carries no `usage_metadata` — an older turn from before this field
+   * existed, or a non-model event (a tool response, a contentless state delta). `null` is
+   * a real state, not an error: the info icon simply does not render for it.
+   */
+  points: number | null;
 }
 
 export interface TranscriptTool {
@@ -187,6 +195,29 @@ interface FileLike {
   displayName?: unknown;
 }
 
+/** Same defensive both-spellings reasoning as `EventPart` above. */
+interface UsageMetadataLike {
+  total_token_count?: unknown;
+  totalTokenCount?: unknown;
+}
+
+/** `apps/api/src/coach/repositories/usage.py`: 1 point = 1,000 tokens, rounded up. */
+const POINTS_TOKEN_DIVISOR = 1000;
+
+/**
+ * This event's own cost in points, or `null` if it carries no usable
+ * `usage_metadata.total_token_count` — an older, pre-M10 event, or a stored event that
+ * simply is not a model response (a tool result, a contentless state delta).
+ */
+function pointsOf(event: Record<string, unknown>): number | null {
+  const usage = event.usage_metadata ?? event.usageMetadata;
+  if (!usage || typeof usage !== 'object') return null;
+  const usageLike = usage as UsageMetadataLike;
+  const tokens = usageLike.total_token_count ?? usageLike.totalTokenCount;
+  if (typeof tokens !== 'number' || tokens <= 0) return null;
+  return Math.ceil(tokens / POINTS_TOKEN_DIVISOR);
+}
+
 function partsOf(event: Record<string, unknown>): EventPart[] {
   const content = event.content;
   if (!content || typeof content !== 'object') return [];
@@ -253,6 +284,7 @@ export function toMessages(events: SessionEvent[]): TranscriptMessage[] {
       text,
       tools,
       attachments,
+      points: pointsOf(event),
     });
   }
   return messages;

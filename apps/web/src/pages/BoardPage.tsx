@@ -27,12 +27,19 @@ import {
   sortableKeyboardCoordinates,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import { BoardFilters } from '@/components/board/BoardFilters';
 import { CoachUpdateBanner } from '@/components/board/CoachUpdateBanner';
+import {
+  AnimatedText,
+  useDescriptionReveal,
+  useTaskRevealDelays,
+} from '@/components/board/task-reveal';
 import { TaskCard } from '@/components/board/TaskCard';
+import { ProjectStateChip } from '@/components/projects/ProjectStateChip';
 import { ResearchCard } from '@/components/research/ResearchCard';
 import { StartProjectResearch } from '@/components/research/StartProjectResearch';
 import { StartProjectRoadmap } from '@/components/research/StartProjectRoadmap';
@@ -70,6 +77,11 @@ export default function BoardPage() {
   const toggleFilter = useBoardUiStore((state) => state.toggleFilter);
   const isCollapsed = useBoardUiStore((state) => state.isCollapsed);
   const toggleCollapsed = useBoardUiStore((state) => state.toggleCollapsed);
+  // Collapsed on load, always — not remembered per project — since a roadmap is now the
+  // suggested way to populate a board's tasks and their materials
+  // (docs/09-roadmap.md#task-board-and-task-view-polish); these two buttons are the
+  // manual fallback, not the primary path a learner is meant to reach for first.
+  const [showManualActions, setShowManualActions] = useState(false);
 
   const project = useProject(projectId);
   const prefs = useEffectivePrefs(projectId);
@@ -88,6 +100,25 @@ export default function BoardPage() {
 
   const tasks = board.data ?? [];
   const nextUpTaskId = project.data?.nextUpTaskId ?? null;
+
+  /*
+   * Which of `tasks` are new since the board last had data, and how long each should wait
+   * before its entrance animation starts (docs/09-roadmap.md#task-board-and-task-view-polish).
+   * Never true for the board's first load or a not-yet-fetched filter combination — only for
+   * a task that appears after the board already has data (the coach proposing tasks, a
+   * manual add). A batch that appears in one update animates in sequence: each card's delay
+   * is the sum of the titles before it, so the next one starts exactly when the previous
+   * title finishes. `components/board/task-reveal.ts` has the mechanics.
+   */
+  const revealDelayMs = useTaskRevealDelays(board.data);
+
+  /*
+   * The project's own description types in the same way, the one time it *appears* while
+   * this page is already open — the coach naming the project partway through the intake
+   * conversation this page sits beside, not the board's own first load
+   * (docs/09-roadmap.md#task-board-and-task-view-polish).
+   */
+  const descriptionReveal = useDescriptionReveal(project.data?.description);
 
   function move(taskId: string, targetIndex: number) {
     const others = tasks.filter((task) => task.id !== taskId);
@@ -117,16 +148,31 @@ export default function BoardPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 p-4 sm:p-6 lg:flex-row lg:items-start">
-      <div className="w-full space-y-6 lg:w-3/5">
+      {/*
+        `lg:min-w`/`lg:max-w`, in percent of the row: the same constraint
+        `TaskWorkspacePage`'s chat/details split gets, and for the same reason — a
+        wide-rendering markdown block in the planning conversation beside this column
+        (a table, a long code block) cannot squeeze the board into unreadable narrowness.
+      */}
+      <div className="w-full space-y-6 lg:w-3/5 lg:max-w-[70%] lg:min-w-[45%]">
         <header className="space-y-1">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h1 className="text-2xl font-semibold">{project.data?.title ?? 'Board'}</h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-2xl font-semibold">{project.data?.title ?? 'Board'}</h1>
+              {project.data ? <ProjectStateChip status={project.data.status} /> : null}
+            </div>
             <Button variant="outline" render={<Link to={`/projects/${projectId}/settings`} />}>
               Project settings
             </Button>
           </div>
           {project.data?.description ? (
-            <p className="text-muted-foreground">{project.data.description}</p>
+            <p className="text-muted-foreground">
+              {descriptionReveal ? (
+                <AnimatedText text={project.data.description} startDelayMs={0} />
+              ) : (
+                project.data.description
+              )}
+            </p>
           ) : null}
           {project.data ? (
             <p className="text-sm text-muted-foreground">
@@ -159,15 +205,36 @@ export default function BoardPage() {
         */}
         <ResearchCard projectId={projectId} runs={runs.data ?? EMPTY_RUNS} />
 
-        <div className="flex flex-wrap gap-2">
-          <StartProjectResearch
-            projectId={projectId}
-            intakeSessionId={intake.data?.id ?? project.data?.intakeSessionId ?? null}
-          />
-          <StartProjectRoadmap
-            projectId={projectId}
-            intakeSessionId={intake.data?.id ?? project.data?.intakeSessionId ?? null}
-          />
+        {/*
+          Collapsed on load — a roadmap is the suggested way to populate the board now, and
+          these two are the manual fallback (docs/09-roadmap.md#task-board-and-task-view-polish).
+        */}
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowManualActions((current) => !current)}
+            aria-expanded={showManualActions}
+            className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            {showManualActions ? (
+              <ChevronDown className="size-3.5" aria-hidden="true" />
+            ) : (
+              <ChevronRight className="size-3.5" aria-hidden="true" />
+            )}
+            Manual actions
+          </button>
+          {showManualActions ? (
+            <div className="mt-2 flex flex-wrap gap-2">
+              <StartProjectResearch
+                projectId={projectId}
+                intakeSessionId={intake.data?.id ?? project.data?.intakeSessionId ?? null}
+              />
+              <StartProjectRoadmap
+                projectId={projectId}
+                intakeSessionId={intake.data?.id ?? project.data?.intakeSessionId ?? null}
+              />
+            </div>
+          ) : null}
         </div>
 
         <BoardFilters
@@ -206,6 +273,8 @@ export default function BoardPage() {
                     collapsed={isCollapsed(task.id)}
                     canMoveUp={index > 0}
                     canMoveDown={index < tasks.length - 1}
+                    isNew={revealDelayMs.has(task.id)}
+                    revealDelayMs={revealDelayMs.get(task.id)}
                     // From M5 the board is read-only while an autonomous run holds the
                     // project lease; until then nothing can hold it.
                     dragDisabled={false}
@@ -231,7 +300,8 @@ export default function BoardPage() {
         projectId={projectId}
         heading="Planning conversation with your coach"
         emptyHint="Tell your coach what you want to learn and how much time you have. It will ask a few questions before proposing tasks."
-        className="relative flex h-[70svh] w-full flex-col rounded-lg border lg:sticky lg:top-4 lg:h-[calc(100vh-8rem)] lg:w-2/5"
+        className="relative flex h-[70svh] w-full flex-col rounded-lg border lg:sticky lg:top-4 lg:h-[calc(100vh-8rem)] lg:w-2/5 lg:max-w-[45%] lg:min-w-[30%]"
+        lowPointsBanner
       />
     </div>
   );
@@ -247,7 +317,6 @@ function AddTaskForm({
   onAdd: (title: string, estimatedMinutes: number) => void;
 }) {
   const [title, setTitle] = useState('');
-  const [minutes, setMinutes] = useState(String(defaultMinutes));
 
   return (
     <form
@@ -256,9 +325,8 @@ function AddTaskForm({
         event.preventDefault();
         const trimmed = title.trim();
         if (!trimmed) return;
-        onAdd(trimmed, Number(minutes) || defaultMinutes);
+        onAdd(trimmed, defaultMinutes);
         setTitle('');
-        setMinutes(String(defaultMinutes));
       }}
     >
       <div className="min-w-48 flex-1">
@@ -268,17 +336,6 @@ function AddTaskForm({
           value={title}
           placeholder="What comes next?"
           onChange={(event) => setTitle(event.target.value)}
-        />
-      </div>
-      <div className="w-28">
-        <Label htmlFor="new-task-minutes">Minutes</Label>
-        <Input
-          id="new-task-minutes"
-          type="number"
-          min={1}
-          max={1440}
-          value={minutes}
-          onChange={(event) => setMinutes(event.target.value)}
         />
       </div>
       <Button type="submit" disabled={pending || title.trim().length === 0}>

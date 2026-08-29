@@ -1,7 +1,7 @@
 [project]
 name = "coach-api"
 version = "0.1.0"
-description = "Self-Study Coach API — FastAPI service, SPA host, and (from M2) ADK runner."
+description = "Runway Compass API — FastAPI service, SPA host, and ADK runner."
 requires-python = "==3.12.*"
 
 # Every dependency is pinned exactly; uv.lock is committed. See

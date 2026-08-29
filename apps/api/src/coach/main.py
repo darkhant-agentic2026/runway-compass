@@ -137,7 +137,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     configure_logging(settings.log_level, json_output=not settings.is_local)
 
     app = FastAPI(
-        title="Self-Study Coach API",
+        title="Runway Compass API",
         version="0.1.0",
         lifespan=lifespan,
         # No CORS configuration anywhere: the SPA is served from this same origin

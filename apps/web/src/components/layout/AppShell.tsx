@@ -18,7 +18,7 @@ export function AppShell() {
       <header className="border-b">
         <nav className="mx-auto flex w-full max-w-3xl items-center gap-3 p-3 sm:px-6">
           <Link to="/" className="font-semibold">
-            Self-Study Coach
+            Runway Compass
           </Link>
           <span className="flex-1" />
 

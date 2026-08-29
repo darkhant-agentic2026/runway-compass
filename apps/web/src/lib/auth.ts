@@ -7,7 +7,9 @@
  *   every deployed environment. The SDK silently refreshes the ID token before its
  *   one-hour expiry and surfaces it via `onIdTokenChanged`, so the fetch wrapper and the
  *   WebSocket ticket flow always attach a live token without a hand-rolled refresh loop
- *   (docs/06-frontend.md).
+ *   (docs/06-frontend.md). Identity Platform's Google and email/password sign-in methods
+ *   both issue the same token shape, so nothing past `signIn()` knows or cares which one
+ *   was used (docs/04-api-contract.md#authentication).
  * - **A `dev:<uid>` token** when `VITE_AUTH_MODE=dev`, which is local development and the
  *   Playwright suite. This is the client half of the `ENV=local` server path in
  *   docs/04-api-contract.md#authentication, and it exists for the same reason: Identity
@@ -33,6 +35,12 @@ export interface AuthProvider {
   subscribe(listener: (user: AuthUser | null) => void): () => void;
   getIdToken(): Promise<string | null>;
   signIn(): Promise<void>;
+  /**
+   * Email/password sign-in, for accounts created by hand in the Identity Platform console
+   * rather than through Google. The dev provider ignores both arguments and falls back to
+   * {@link AuthProvider.signIn}, since local dev never has real credentials to check.
+   */
+  signInWithPassword(email: string, password: string): Promise<void>;
   signOut(): Promise<void>;
 }
 
@@ -97,6 +105,11 @@ function createDevProvider(): AuthProvider {
       localStorage.setItem(DEV_UID_STORAGE_KEY, uid);
       listener?.(toUser(uid));
     },
+    async signInWithPassword() {
+      const uid = read() ?? defaultUid;
+      localStorage.setItem(DEV_UID_STORAGE_KEY, uid);
+      listener?.(toUser(uid));
+    },
     async signOut() {
       localStorage.removeItem(DEV_UID_STORAGE_KEY);
       listener?.(null);
@@ -153,6 +166,10 @@ function createIdentityPlatformProvider(): AuthProvider {
       const { auth, sdk } = await authPromise;
       const provider = new sdk.GoogleAuthProvider();
       await sdk.signInWithPopup(auth, provider);
+    },
+    async signInWithPassword(email, password) {
+      const { auth, sdk } = await authPromise;
+      await sdk.signInWithEmailAndPassword(auth, email, password);
     },
     async signOut() {
       const { auth, sdk } = await authPromise;

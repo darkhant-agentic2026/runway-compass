@@ -146,6 +146,16 @@ class BoardResponse(ResponseModel):
     tasks: list[TaskWithSubtasks]
 
 
+class DeleteAllTasksResponse(ResponseModel):
+    """`POST /api/projects/{id}/troubleshooting/delete-all-tasks` — project settings'
+    troubleshooting action, not a board mutation. `deleted_tasks` and `reset_plans` are
+    both counts rather than the empty board itself: the client already has `BoardResponse`
+    and `useProject`/`useBoard`'s own invalidation to refetch it."""
+
+    deleted_tasks: int
+    reset_plans: int
+
+
 # --- tasks ---------------------------------------------------------------------------
 
 

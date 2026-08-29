@@ -24,6 +24,7 @@ import pytest
 
 from coach.agents.context import RUN_ID_KEY
 from coach.agents.research_workflow import TOPIC_RESEARCHER_NAME
+from coach.core.clock import now
 from coach.core.ids import run_id as new_run_id
 from coach.core.principal import Principal
 from coach.integrations.stub_model import StubModel
@@ -157,6 +158,60 @@ async def test_the_roadmap_run_fans_out_one_topic_researcher_branch_per_subtopic
     branches = {event.event_data.get("branch") for event in topic_researcher_replies}
     assert len(topic_researcher_replies) == 3
     assert len(branches) == 3
+
+
+async def _staged_upload(
+    client: httpx.AsyncClient, container, content: bytes = b"the rubric"
+) -> str:
+    """Create an upload, pretend the browser's PUT landed, and finalize it. Same pattern as
+    `test_run_executor.py`'s own helper of the same name."""
+    created = (
+        await client.post(
+            "/api/uploads",
+            json={
+                "filename": "rubric.pdf",
+                "mimeType": "application/pdf",
+                "sizeBytes": max(len(content), 1),
+            },
+        )
+    ).json()
+    record = await container.upload_repository.get(created["uploadId"])
+    container.uploads._store.declare(
+        record["objectName"], len(content), "application/pdf", content
+    )
+    await client.post(f"/api/uploads/{created['uploadId']}/finalize")
+    return str(created["uploadId"])
+
+
+async def test_a_roadmap_run_with_an_attachment_still_completes(
+    client: httpx.AsyncClient, container, alice: Principal, stub_model: StubModel
+) -> None:
+    """`_carry_attachments_into_subtopics` (`agents/research_workflow.py`,
+    `test_research_workflow.py` for the unit coverage of what it actually builds) turns
+    every `topic_researcher` branch's own node_input into a multi-part `types.Content` —
+    text plus the run's attachment parts — rather than the bare string it was before. This
+    is the smoke test that the wiring survives contact with a real turn: the branch's own
+    input event is session-local, built only to feed the LLM request
+    (`prepare_llm_agent_input`), and is never itself a persisted Firestore event, so it is
+    not independently observable here — see the unit test for the part-by-part assertion.
+    """
+    fixture = await _intake(client)
+    upload_id = await _staged_upload(client, container)
+
+    run_id = new_run_id()
+    turn = await container.turns.start(
+        alice,
+        fixture["intake"]["id"],
+        text="What do I need to learn to become a data engineer?",
+        agent="roadmap",
+        attachments=[{"uploadId": upload_id, "mimeType": "application/pdf"}],
+        state_delta={RUN_ID_KEY: run_id},
+    )
+    finished = await _await_turn(client, turn.id)
+    assert finished["status"] == "complete", finished
+
+    plan = await container.study_plans.get(fixture["project"]["id"], f"plan_{run_id}")
+    assert plan is not None
 
 
 async def test_a_second_roadmap_turn_writes_a_second_plan(
@@ -293,6 +348,29 @@ async def test_roadmap_refuses_an_empty_reason(client: httpx.AsyncClient) -> Non
         f"/api/sessions/{fixture['intake']['id']}/roadmap", json={"reason": ""}
     )
     assert refused.status_code == 422
+
+
+async def test_roadmap_refuses_when_below_the_run_start_threshold(
+    client: httpx.AsyncClient, container
+) -> None:
+    """M10: the same gate `SchedulerService` applies to a tick's candidates, checked
+    before `start_roadmap` even acquires the lease (`ResearchService._create_and_enqueue`
+    is shared by `start_manual` and `start_roadmap` alike)."""
+    fixture = await _intake(client)
+    me = (await client.get("/api/me")).json()
+    threshold = me["plan"]["limits"]["runStartPointsThreshold"]
+    monthly_limit = me["plan"]["limits"]["monthlyPoints"]
+    await container.usage_repository.spend_points(
+        "u_alice", (monthly_limit - threshold + 1) * 1000, timezone="UTC", at=now()
+    )
+
+    refused = await client.post(
+        f"/api/sessions/{fixture['intake']['id']}/roadmap", json={"reason": "Anything"}
+    )
+
+    assert refused.status_code == 429, refused.text
+    assert refused.json()["type"] == "/problems/quota-below-threshold"
+    assert await container.run_repository.lease_holder(fixture["project"]["id"]) is None
 
 
 async def test_a_roadmap_run_and_a_research_run_share_the_project_lease(

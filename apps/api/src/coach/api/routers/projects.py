@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, status
 
-from coach.api.deps import CurrentUser, Projects, Sessions, Tasks
+from coach.api.deps import CurrentUser, Projects, Sessions, StudyPlans, Tasks
 from coach.api.idempotency import idempotency_guard
 from coach.api.schemas import (
     BoardResponse,
+    DeleteAllTasksResponse,
     EffectivePrefsResponse,
     ProjectCreate,
     ProjectListResponse,
@@ -127,3 +128,22 @@ async def list_tasks(
             include_postponed=include_postponed,
         )
     )
+
+
+@router.post(
+    "/{project_id}/troubleshooting/delete-all-tasks",
+    response_model=DeleteAllTasksResponse,
+    dependencies=[Depends(idempotency_guard)],
+)
+async def delete_all_tasks(
+    project_id: str, principal: CurrentUser, tasks: Tasks, study_plans: StudyPlans
+) -> DeleteAllTasksResponse:
+    """Project settings' troubleshooting action, not a board control — a hard, irreversible
+    delete of every task in the project (`TaskService.delete_all_tasks`), paired with
+    resetting every plan's materialization (`StudyPlanService.reset_materialization`) so
+    `materialize_study_plan` rebuilds the board from research already paid for, rather
+    than short-circuiting on ids that no longer exist. Never exposed as an agent tool.
+    """
+    deleted = await tasks.delete_all_tasks(principal, project_id)
+    reset = await study_plans.reset_materialization(project_id)
+    return DeleteAllTasksResponse(deleted_tasks=deleted, reset_plans=reset)

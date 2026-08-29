@@ -641,7 +641,6 @@ class DomainTools:
             "ok": True,
             "task": task_view(task),
             "items": items_view(task),
-            **_checklist_budget(task, context),
         }
 
     async def update_task_item(
@@ -842,7 +841,6 @@ class DomainTools:
             "ok": True,
             "items": items_view(task),
             "taskCompleted": task.state is TaskState.COMPLETED,
-            **_checklist_budget(task, context),
         }
 
     async def complete_task_item(
@@ -2023,37 +2021,6 @@ def _confirm_completions(tool_context: ToolContext, **_: Any) -> bool:
     `not True`.
     """
     return tool_context.state.get(CONFIRM_ITEMS_KEY, True) is not False
-
-
-def _checklist_budget(task: Task, context: AgentContext) -> dict[str, Any]:
-    """How long the checklist has grown, against what the learner asked a task to be.
-
-    **Guidance, not a guard.** docs/02-data-model.md#task-items has no rule about a
-    checklist's total, and there should not be one: a 50-minute plan on a 45-minute task is
-    a rounding difference, and refusing it would be the tool overruling a judgement the
-    coach is better placed to make with the learner in front of it. What the tool owes the
-    model is the *fact* — a running total it would otherwise have to keep in its head across
-    several calls, which is exactly the kind of arithmetic a model quietly gets wrong.
-
-    The budget is the task's own `estimated_minutes` override if set, falling back to the
-    project's `default_task_minutes`.
-
-    Reported only when there is something to report. A checklist inside its budget needs no
-    comment, and a field that is always present is one the model learns to skip.
-    """
-    planned = sum(item.minutes or 0 for item in task.items)
-    budget = task.estimated_minutes if task.estimated_minutes else context.default_task_minutes
-    if planned <= budget:
-        return {}
-    return {
-        "plannedMinutes": planned,
-        "taskBudgetMinutes": budget,
-        "note": (
-            f"This checklist now runs to {planned} minutes against a {budget}-minute task. "
-            "Consider whether it is really two pieces of work — `add_subtask` moves the "
-            "steps onto the first subtask."
-        ),
-    }
 
 
 def _answer_view(answer: Any, options: list[str]) -> dict[str, Any]:

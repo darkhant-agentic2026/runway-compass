@@ -545,6 +545,33 @@ Two other things that block the popup rather than letting it work:
   rather than the redirect, so it tends to surface a step later — but check it before
   chasing anything exotic.
 
+### Blocking function — self-service password sign-up should be rejected
+
+Identity Platform's own console has a documented history of being slow to pick up a
+2nd-gen blocking function (docs/07-infra-deploy.md#iam-least-privilege) — the
+`beforeCreate` trigger can show the function as "deleted or no longer exists" for a while
+right after `apply`. Confirm it actually took effect before trusting a clean `apply`:
+
+```bash
+API_KEY=$(terraform output -raw identity_api_key)
+curl -s -X POST \
+  "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=$API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"blocked-signup-check@example.com","password":"correct horse battery staple","returnSecureToken":true}'
+```
+
+Expect an error response — the blocking function rejecting the request — not a
+`idToken`/`localId` pair. If a real account gets created, delete it
+(Cloud Console → Identity Platform → Users) and check that the `beforeCreate` trigger in
+**Identity Platform → Settings → User actions → Blocking functions** actually points at
+`block-password-signup`; if it is missing or points at the wrong URL, re-apply.
+
+Then confirm the intended path still works: create a user by hand (Cloud Console →
+Identity Platform → Users → **Add user**, email + password) and sign in with it from the
+app's login screen. This path never reaches the blocking function at all — Admin
+SDK/console-created users don't fire `beforeCreate` — so it should succeed even with the
+check above rejecting the client-SDK path.
+
 ---
 
 ## 8. Closing the M2 exit criterion (HUMAN)

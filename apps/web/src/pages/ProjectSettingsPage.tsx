@@ -9,8 +9,11 @@
  * to inheriting.
  */
 
+import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { toast } from 'sonner';
 
+import { PROJECT_STATE_LABELS, type ProjectStatus } from '@/components/projects/project-state';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -23,11 +26,26 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
-import { useEffectivePrefs, useMe, usePatchProject, useProject } from '@/features/queries';
+import {
+  useDeleteAllProjectTasks,
+  useEffectivePrefs,
+  useMe,
+  usePatchProject,
+  useProject,
+} from '@/features/queries';
+import { ApiError } from '@/lib/api';
 import { formatMinutes } from '@/lib/format';
 import type { ProjectPrefs } from '@/lib/schemas';
 
 const DEPTHS: NonNullable<ProjectPrefs['researchDepth']>[] = ['light', 'standard', 'deep'];
+const STATES: ProjectStatus[] = ['active', 'paused', 'archived'];
+const STATE_EXPLAINER: Record<ProjectStatus, string> = {
+  active: 'Eligible for autonomous research and task proposals.',
+  paused:
+    "Paused: the autonomous scheduler's presence/status guard skips this project — no automatic research or task proposals until you switch it back to active.",
+  archived:
+    'Archived: skipped by the autonomous scheduler, the same as paused, and hidden from your main project list. Find it again under "Archived projects" there.',
+};
 const GUIDANCE_LEVELS: { value: NonNullable<ProjectPrefs['guidanceLevel']>; label: string }[] =
   [
     { value: 'mostly_guided', label: 'Mostly guided — hands-on walkthroughs with coach' },
@@ -35,12 +53,91 @@ const GUIDANCE_LEVELS: { value: NonNullable<ProjectPrefs['guidanceLevel']>; labe
     { value: 'mostly_unguided', label: 'Mostly independent — self-driven with curated links' },
   ];
 
+/**
+ * Hidden by default — off the switch at the bottom of the page — since everything in
+ * here is a maintenance action rather than a preference, and `deleteAllTasks` is
+ * genuinely destructive with no soft undo (`TaskService.delete_all_tasks`'s own
+ * docstring: every other removal in this app is `discard_task`'s reversible state).
+ * A second, explicit confirm step before the mutation actually fires, since a switch
+ * one scroll away is not the same as a click the learner meant.
+ */
+function TroubleshootingSection({ projectId }: { projectId: string }) {
+  const [confirming, setConfirming] = useState(false);
+  const deleteAllTasks = useDeleteAllProjectTasks(projectId);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Troubleshooting</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="space-y-1">
+          <p className="text-sm font-medium">Delete all tasks</p>
+          <p className="text-xs text-muted-foreground">
+            Permanently deletes every task on this project&apos;s board — there is no undo. If
+            any of them came from a materialized roadmap, its study plan resets too, so asking
+            your coach to materialize it again rebuilds the same tasks without re-running the
+            research.
+          </p>
+        </div>
+        {confirming ? (
+          <div className="flex items-center gap-2">
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={deleteAllTasks.isPending}
+              data-testid="confirm-delete-all-tasks"
+              onClick={() => {
+                deleteAllTasks.mutate(undefined, {
+                  onSuccess: (result) => {
+                    setConfirming(false);
+                    toast.success(
+                      result.deletedTasks > 0
+                        ? `Deleted ${result.deletedTasks} task${result.deletedTasks === 1 ? '' : 's'}.`
+                        : 'Nothing to delete — the board was already empty.',
+                    );
+                  },
+                  onError: (error) => {
+                    setConfirming(false);
+                    const detail = error instanceof ApiError ? error.problem.detail : '';
+                    toast.error(detail || 'Could not delete tasks.');
+                  },
+                });
+              }}
+            >
+              {deleteAllTasks.isPending ? 'Deleting…' : 'Yes, delete everything'}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={deleteAllTasks.isPending}
+              onClick={() => setConfirming(false)}
+            >
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          <Button
+            variant="destructive"
+            size="sm"
+            data-testid="delete-all-tasks"
+            onClick={() => setConfirming(true)}
+          >
+            Delete all tasks
+          </Button>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function ProjectSettingsPage() {
   const { projectId = '' } = useParams();
   const project = useProject(projectId);
   const effective = useEffectivePrefs(projectId);
   const me = useMe();
   const patch = usePatchProject(projectId);
+  const [showTroubleshooting, setShowTroubleshooting] = useState(false);
 
   const prefs = project.data?.prefs;
   const globalMinutes = me.data?.globalPrefs.defaultTaskMinutes;
@@ -89,6 +186,29 @@ export default function ProjectSettingsPage() {
                 if (value !== project.data?.description) patch.mutate({ description: value });
               }}
             />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="project-state">Project state</Label>
+            <Select
+              value={project.data?.status}
+              onValueChange={(value) => {
+                if (value) patch.mutate({ status: value as ProjectStatus });
+              }}
+            >
+              <SelectTrigger id="project-state">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {STATES.map((state) => (
+                  <SelectItem key={state} value={state}>
+                    {PROJECT_STATE_LABELS[state]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-sm text-muted-foreground" data-testid="state-explainer">
+              {STATE_EXPLAINER[project.data?.status ?? 'active']}
+            </p>
           </div>
         </CardContent>
       </Card>
@@ -257,6 +377,19 @@ export default function ProjectSettingsPage() {
           </div>
         </CardContent>
       </Card>
+
+      <div className="flex items-center gap-2">
+        <Switch
+          id="show-troubleshooting"
+          checked={showTroubleshooting}
+          onCheckedChange={(checked) => setShowTroubleshooting(Boolean(checked))}
+        />
+        <Label htmlFor="show-troubleshooting" className="font-normal">
+          Show troubleshooting settings
+        </Label>
+      </div>
+
+      {showTroubleshooting ? <TroubleshootingSection projectId={projectId} /> : null}
     </div>
   );
 }

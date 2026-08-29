@@ -84,6 +84,7 @@ whole of the difference between the two kinds:
 | No lease held | `projects/{id}/locks/agent` absent or expired | both |
 | Under run-count quota | `usage/{uid}_{today}.autonomousRuns < plan.limits.autonomousRunsPerDay` | both |
 | **Under points quota** (M8-quotas) | Neither the monthly nor the 4-hour point window is exhausted — same check `TurnService.start` makes before any turn, applied here so a project that cannot afford the run is never scheduled in the first place ([02-data-model.md](02-data-model.md#usage-quotas-m8-quotas)) | both |
+| **Above the run-start points threshold** (M10) | Remaining *monthly* points are at least `owner.plan.limits.runStartPointsThreshold` — refused earlier than outright exhaustion above, so a run is not started only to spend down toward a window it cannot finish inside of. `ResearchService`'s manual/roadmap triggers make the identical check (`QuotaService.require_room_to_start_run`) before enqueuing, so a learner pressing the button gets the same answer the tick would | both |
 | Work exists | Auto-scheduled: at least one task in `draft`/`not_started`/`in_progress` with `needsResearch` and `researchStatus ∈ {none, failed}`. Requested: at least one task in those states with `researchStatus == "pending"` | both, differently |
 
 `draft` is first in that list on purpose. From M4 it is the state a task starts in and the

@@ -11,6 +11,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
+import { titleRevealMs } from '@/components/board/task-reveal';
 import { transitionsFor } from '@/components/board/task-state';
 import { TaskCard } from '@/components/board/TaskCard';
 import type { TaskWithSubtasks } from '@/lib/schemas';
@@ -225,6 +226,81 @@ describe('row actions offer only legal transitions', () => {
   it('a discarded task offers restore and nothing destructive', () => {
     const options = transitionsFor('discarded');
     expect(options.map((option) => option.transition)).toEqual(['restore']);
+  });
+});
+
+describe('entrance animation', () => {
+  it('renders a plain, unanimated title when the card is not new', () => {
+    renderCard(makeParent({ title: 'Read chapter 1' }));
+
+    const card = screen.getByTestId('task-card');
+    expect(card.className).not.toContain('animate-task-card-in');
+    expect(screen.getByTestId('open-workspace')).toHaveTextContent('Read chapter 1');
+  });
+
+  it('plays the card, title, and chip entrance animations for a new card', () => {
+    renderCard(makeParent({ title: 'Read chapter 1', origin: 'agent' }), {
+      isNew: true,
+      revealDelayMs: 100,
+    });
+
+    const card = screen.getByTestId('task-card');
+    expect(card.className).toContain('animate-task-card-in');
+    expect(card.style.animationDelay).toBe('100ms');
+
+    // The title still reads as one string, letter-spans notwithstanding.
+    expect(screen.getByTestId('open-workspace')).toHaveTextContent('Read chapter 1');
+
+    const chip = screen.getByText('From your coach').closest('span');
+    expect(chip?.className).toContain('animate-task-chip-in');
+  });
+
+  it('reveals a new card’s content pieces one at a time, in the order they appear', () => {
+    const subtasks = [makeTask({ estimatedMinutes: 30 }), makeTask({ estimatedMinutes: 30 })];
+    const title = 'X';
+    const parent = makeParent({ title, origin: 'agent', researchStatus: 'done' }, subtasks);
+    renderCard(parent, { isNew: true, isNextUp: true, revealDelayMs: 100 });
+
+    const delayOf = (el: Element | null) =>
+      Number((el as HTMLElement | null)?.style.animationDelay.replace('ms', ''));
+
+    const delays = [
+      delayOf(screen.getByText('Next up')),
+      delayOf(screen.getByText('From your coach').closest('span')),
+      delayOf(screen.getByTestId('estimate')),
+      delayOf(screen.getByTestId('state-chip')),
+      delayOf(screen.getByTestId('research-status-chip')),
+      delayOf(screen.getByTestId('rollup')),
+    ];
+
+    // The first piece starts once the title finishes revealing, and every piece after it
+    // gets its own delay, 90ms apart — none of them skipped or shared.
+    const afterTitle = 100 + titleRevealMs(title);
+    for (const [index, delay] of delays.entries()) {
+      expect(delay).toBeCloseTo(afterTitle + index * 90, 5);
+    }
+  });
+
+  it('leaves no gap in the sequence for a card missing a piece', () => {
+    // No `isNextUp`, no agent origin, no research status — the pieces that are missing
+    // must not reserve a delay slot that pushes the ones after them later than necessary.
+    const title = 'X';
+    renderCard(
+      makeParent(
+        { title, estimatedMinutes: 30, items: [makeTaskItem({ kind: 'article' })] },
+        [],
+      ),
+      { isNew: true, revealDelayMs: 0 },
+    );
+
+    const delayOf = (el: Element | null) =>
+      Number((el as HTMLElement | null)?.style.animationDelay.replace('ms', ''));
+
+    const afterTitle = titleRevealMs(title);
+    expect(delayOf(screen.getByTestId('estimate'))).toBeCloseTo(afterTitle, 5);
+    expect(delayOf(screen.getByTestId('state-chip'))).toBeCloseTo(afterTitle + 90, 5);
+    expect(delayOf(screen.getByTestId('item-progress'))).toBeCloseTo(afterTitle + 180, 5);
+    expect(delayOf(screen.getByTestId('item-kind-strip'))).toBeCloseTo(afterTitle + 270, 5);
   });
 });
 

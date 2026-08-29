@@ -39,6 +39,15 @@
   --progress-fill: oklch(0.55 0.14 250);
   --agent-badge: oklch(0.95 0.03 300);
   --agent-badge-foreground: oklch(0.35 0.12 300);
+  /* A task card's `completed` status text (docs/09-roadmap.md#task-board-and-task-view-polish).
+   * `in_progress` reuses `--progress-fill` rather than a second token, since the two are
+   * meant to read as the same blue everywhere a "this is the one being worked on" signal
+   * shows up (the checklist's "you are here" rule included). */
+  --status-completed: oklch(0.6 0.16 145);
+  /* A `paused` project's state chip (docs/09-roadmap.md#project-state-and-archiving) —
+   * an amber tuned for both themes, distinct from the destructive red so "paused" doesn't
+   * read as an error. */
+  --status-paused: oklch(0.64 0.15 70);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
@@ -81,6 +90,8 @@
   --progress-fill: oklch(0.7 0.14 250);
   --agent-badge: oklch(0.3 0.06 300);
   --agent-badge-foreground: oklch(0.9 0.05 300);
+  --status-completed: oklch(0.72 0.17 145);
+  --status-paused: oklch(0.75 0.15 70);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
@@ -120,6 +131,8 @@
   --color-progress-fill: var(--progress-fill);
   --color-agent-badge: var(--agent-badge);
   --color-agent-badge-foreground: var(--agent-badge-foreground);
+  --color-status-completed: var(--status-completed);
+  --color-status-paused: var(--status-paused);
 
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -164,6 +177,7 @@
     *::before,
     *::after {
       animation-duration: 0.01ms !important;
+      animation-delay: 0s !important;
       animation-iteration-count: 1 !important;
       transition-duration: 0.01ms !important;
     }
@@ -197,5 +211,60 @@
     overflow-x: auto;
     overflow-y: hidden;
     padding-bottom: 0.25rem;
+  }
+}
+
+@layer utilities {
+  /*
+   * A newly-appeared board card's entrance (docs/09-roadmap.md#task-board-and-task-view-polish,
+   * `components/board/task-reveal.ts`). Each element's `animation-delay` is set inline by the
+   * caller — these classes only own the fade itself. `both` keeps the element at its 0%
+   * keyframe before the delay elapses, so nothing flashes at full opacity before its turn.
+   */
+  @keyframes task-card-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes task-letter-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes task-chip-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  .animate-task-card-in {
+    animation: task-card-in 150ms ease-out both;
+  }
+  .animate-task-letter-in {
+    /* Plain `inline`, not `inline-block`: a multi-line description needs to wrap at word
+     * boundaries, and `inline-block` makes every letter its own atomic box — which Chromium
+     * treats as its own break opportunity, wrapping mid-word ("unstructur|ed"). Adjacent
+     * `inline` spans with no whitespace between them in the DOM behave as one unbroken run
+     * for line-breaking, the same as ordinary text. */
+    /* A lone space as this span's only content still collapses to zero width under normal
+     * whitespace handling even as `inline` — and `pre` is the wrong fix for that: it
+     * preserves the space but also forbids a line break *inside this box*, which is the
+     * only place the break opportunity a space normally offers could live, so a paragraph
+     * stops wrapping at all. `pre-wrap` preserves the same way but keeps wrapping allowed. */
+    white-space: pre-wrap;
+    /* `task-reveal.ts`'s `LETTER_FADE_MS` — the two must agree. */
+    animation: task-letter-in 200ms ease-out both;
+  }
+  .animate-task-chip-in {
+    animation: task-chip-in 300ms ease-out both;
   }
 }

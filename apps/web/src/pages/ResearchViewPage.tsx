@@ -42,6 +42,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 
 import { StudyPlanView } from '@/components/research/StudyPlanView';
+import { LowPointsBanner } from '@/components/session/LowPointsBanner';
 import { SessionPane } from '@/components/session/SessionPane';
 import { ResearchReport } from '@/components/task/ResearchReport';
 import { Badge } from '@/components/ui/badge';
@@ -116,7 +117,7 @@ function ResearchInfoStrip({
         size="sm"
         data-testid="research-view-toggle"
       >
-        <ToggleGroupItem value="transcript">Transcript</ToggleGroupItem>
+        <ToggleGroupItem value="transcript">Transcript (troubleshooting)</ToggleGroupItem>
         <ToggleGroupItem value="results">{resultsLabel}</ToggleGroupItem>
       </ToggleGroup>
     </div>
@@ -258,6 +259,15 @@ export default function ResearchViewPage() {
           )}
           aria-label="Research results"
         >
+          {/*
+            docs/09-roadmap.md#research-concurrency: shown above the "coming soon"
+            placeholder or the failed panel below — a run that is not yet, or no longer,
+            in progress is exactly when a learner might otherwise try to start another one
+            and be refused.
+          */}
+          {status && status !== 'complete' && status !== 'running' ? (
+            <LowPointsBanner className="mb-4" />
+          ) : null}
           {status === 'running' || status === 'pending' ? (
             <p
               className="rounded-lg border border-dashed p-6 text-center text-muted-foreground"

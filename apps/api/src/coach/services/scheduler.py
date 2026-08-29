@@ -475,8 +475,9 @@ class SchedulerService:
         return candidates
 
     async def _shared_guards(self, project: Project, owner: User, result: TickResult) -> bool:
-        """The three guards both kinds of work are subject to: the lease, the run-count
-        quota, and — since M8-quotas — the points quota."""
+        """The four guards both kinds of work are subject to: the lease, the run-count
+        quota, the points quota (M8-quotas), and — since M10 — the run-start points
+        threshold."""
         holder = await self._runs.lease_holder(project.id)
         if holder is not None:
             result.skip("lease_held")
@@ -492,6 +493,15 @@ class SchedulerService:
             # Not retried specially: an exhausted project is simply a candidate again on
             # the tick after its window resets, same as `cooldown` or `quiet_hours`.
             result.skip("points_quota_exhausted")
+            return False
+        # docs/09-roadmap.md#research-concurrency: refused earlier than exhaustion, at the
+        # headroom `runStartPointsThreshold` asks to keep in reserve — a run started with
+        # only a sliver of the monthly window left is a run likely to fail partway through
+        # rather than one that should burn what remains trying. Same recovery story as the
+        # exhaustion guard above: simply a candidate again once the window rolls over.
+        threshold = owner.plan.limits.run_start_points_threshold
+        if points.monthly_remaining(owner.plan.limits) < threshold:
+            result.skip("points_below_threshold")
             return False
         return True
 

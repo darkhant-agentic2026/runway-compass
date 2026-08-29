@@ -36,6 +36,7 @@ from coach.core.principal import Principal
 from coach.integrations.queue import JobQueue
 from coach.repositories.runs import LeaseHeld, RunRepository
 from coach.services.models import AutonomousRun, ResearchStatus, RunStatus, RunStep, Task
+from coach.services.quotas import QuotaService
 from coach.services.sessions import SessionService
 from coach.services.tasks import TaskService
 
@@ -61,6 +62,7 @@ class ResearchService:
         tasks: TaskService,
         sessions: SessionService,
         queue: JobQueue,
+        quotas: QuotaService,
         *,
         instance_id: str,
     ) -> None:
@@ -68,6 +70,7 @@ class ResearchService:
         self._tasks = tasks
         self._sessions = sessions
         self._queue = queue
+        self._quotas = quotas
         self._instance_id = instance_id
 
     async def get(self, principal: Principal, run_id: str) -> AutonomousRun:
@@ -101,6 +104,8 @@ class ResearchService:
             Conflict: if the project's agent lease is held — carrying the in-flight
                 `runId`, so the client can attach instead of starting a duplicate — or if
                 the task already has materials and `force` was not set.
+            QuotaBelowThreshold: if the owner's remaining monthly points are under their
+                own `runStartPointsThreshold` (docs/09-roadmap.md#research-concurrency).
         """
         linkage = await self._sessions.require_owned(principal, session_id)
         if linkage.project_id is None:
@@ -194,6 +199,8 @@ class ResearchService:
                 `reason` is empty.
             Conflict: the project's agent lease is held — carries the in-flight `runId`,
                 so the client can attach to that run instead of starting a duplicate.
+            QuotaBelowThreshold: if the owner's remaining monthly points are under their
+                own `runStartPointsThreshold` (docs/09-roadmap.md#research-concurrency).
         """
         linkage = await self._sessions.require_owned(principal, session_id)
         if linkage.project_id is None:
@@ -243,11 +250,17 @@ class ResearchService:
         attachments: list[dict[str, str]] | None,
         attachment_names: list[str] | None = None,
     ) -> AutonomousRun:
-        """Shared by `start_manual` and `start_roadmap`: lease, ledger row, session,
-        enqueue. What differs between the two callers is entirely in their arguments —
-        which steps, what the turn should open with, and whether a task is involved —
-        not in how the run gets from "accepted" to "handed to the queue".
+        """Shared by `start_manual` and `start_roadmap`: the points threshold, lease,
+        ledger row, session, enqueue. What differs between the two callers is entirely in
+        their arguments — which steps, what the turn should open with, and whether a task
+        is involved — not in how the run gets from "accepted" to "handed to the queue".
         """
+        # docs/09-roadmap.md#research-concurrency: the same gate `SchedulerService`
+        # applies to a scheduled or requested run, checked first and cheaply so a run
+        # unlikely to finish inside the real quota is refused before the lease, the
+        # ledger row, or the research session are ever created.
+        await self._quotas.require_room_to_start_run(principal.uid)
+
         run_id = new_run_id()
         try:
             await self._runs.acquire_lease(project_id, run_id, self._instance_id)

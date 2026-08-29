@@ -727,6 +727,41 @@ many `topic_researcher` branches *execute* at once, not how many model calls two
 nodes (a lingering `topic_researcher` and an already-started `reviewer_writer`, say) might
 happen to overlap.
 
+#### M10: a process-wide token ceiling per Vertex model
+
+`ModelThrottle` above deliberately stops at shaping one research job's own burst — a
+*global* cap was explicitly ruled out there because it would also slow down interactive
+chat for no reason tied to the fan-out. That reasoning holds for concurrency, but not for
+Vertex's own token-per-minute ceiling on the model itself: that limit is real, shared by
+every caller against the same model regardless of which agent placed the call, and
+observed in practice as `429 RESOURCE_EXHAUSTED` from ordinary interactive turns, not only
+from `research_workflow`'s fan-out. `TokenRateLimiter` (`integrations/model.py`) is the
+second, independent throttle this calls for: an in-memory sliding window over
+`total_token_count` from every completed call to the configured model — `TOKEN_WINDOW_SECONDS`
+(2 minutes, a constant so it can be retuned against the real observed window) and
+`TOKEN_WINDOW_LIMIT` (200,000) — that makes the next call wait rather than reject once the
+trailing window is already at capacity.
+
+Attached beneath every agent this process builds, not through a `before_model_callback`
+the way `ModelThrottle` is: `ThrottledLlm` wraps the model itself at
+`integrations/model.py::build_model`, around `generate_content_async`, so `project_coach`
+and `task_teacher` are covered on the same terms as every `research_workflow` node and the
+`search_agent` sub-agent it calls, none of which carry `ModelThrottle`'s own callbacks
+today. One `TokenRateLimiter` is built once per process (`api/deps.py`, beside
+`ModelThrottle`) and threaded into `RunnerFactory`, so the five runners it builds — each
+`build_model()` call constructs its own `Gemini` instance — share one window rather than
+five independent ones. The stub backend is returned unwrapped: it never calls a real
+model, so there is no ceiling to respect, and the e2e harness wants its own scripted
+timing, not an extra wait.
+
+This does not reserve budget for a call in flight — a call's own token cost is unknown
+until it returns — so it bounds the *rate* of completed usage rather than an instantaneous
+hard ceiling: several calls admitted while the window still had room can still land
+concurrently and only be counted once they finish. Combined with `ModelThrottle`'s
+per-run concurrency cap and the retry/backoff on `generation_config`'s `http_options`
+(`integrations/model.py`), this is the third of three independent layers between this
+project's model traffic and a real `429`, not a replacement for either of the other two.
+
 #### `Workflow` as a turn root, and retrying a crash mid-fan-out
 
 **`Workflow` is a valid turn root, the same mechanism every other agent choice already

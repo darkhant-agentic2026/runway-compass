@@ -34,6 +34,7 @@ import { api } from '@/lib/api';
 import { parseServerFrame, type BoardUpdateFrame, type ClientFrame } from '@/lib/frames';
 import { useSocketStore } from '@/stores/socket';
 import { useStreamStore } from '@/stores/stream';
+import { useUsageStore } from '@/stores/usage';
 
 /** docs/06-frontend.md: capped at 30 s. */
 export const MAX_BACKOFF_MS = 30_000;
@@ -227,6 +228,16 @@ export class CoachSocket {
         break;
       case 'turn_complete':
         stream.complete(frame.turnId, frame.seq);
+        // Always set, `null` included: a hint absent from *this* turn's frame means the
+        // account has recovered (more monthly points, or the window rolled over), and a
+        // stale banner from an earlier turn should not survive that.
+        useUsageStore
+          .getState()
+          .setLowPoints(
+            frame.pointsRemaining != null && frame.pointsThreshold != null
+              ? { remaining: frame.pointsRemaining, threshold: frame.pointsThreshold }
+              : null,
+          );
         break;
       case 'turn_error':
         stream.fail(frame.turnId, frame.seq, {

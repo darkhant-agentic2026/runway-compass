@@ -1,6 +1,6 @@
-# Prettier's remit is `apps/web`, and this file is what makes that true even for someone
-# who runs `npx prettier --write .` from the repository root
-# (docs/07-infra-deploy.md#formatting-and-linting).
+# Prettier's remit is `apps/web` and `apps/functions` — the two TypeScript surfaces — and
+# this file is what makes that true even for someone who runs `npx prettier --write .`
+# from the repository root (docs/07-infra-deploy.md#formatting-and-linting).
 #
 # `docs/` and the root markdown are hand-wrapped prose whose tables are aligned for
 # reading in a terminal; reflowing eleven design documents produces a diff that says
@@ -8,12 +8,13 @@
 # each of those is the authority on its own language, and a second formatter with a
 # different opinion would just fight it.
 #
-# gitignore syntax: exclude everything, then re-admit one path, re-excluding each
+# gitignore syntax: exclude everything, then re-admit each path, re-excluding each
 # directory along the way so the negation can reach inside it.
 /*
 !/apps
 /apps/*
 !/apps/web
+!/apps/functions
 
 # `apps/web/.prettierignore` is not read from here — Prettier only loads the one in the
 # working directory — so the entries that are about content rather than about layout are

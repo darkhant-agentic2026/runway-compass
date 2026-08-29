@@ -120,3 +120,17 @@ variable "min_instances" {
     error_message = "min_instances must be between 0 and 10."
   }
 }
+
+variable "max_instances" {
+  type    = number
+  default = 4
+
+  description = <<-EOT
+    Cloud Run `max_instance_count`.
+  EOT
+
+  validation {
+    condition     = var.max_instances >= 0 && var.max_instances <= 10
+    error_message = "max_instances must be between 0 and 10."
+  }
+}

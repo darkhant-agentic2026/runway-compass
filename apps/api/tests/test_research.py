@@ -23,6 +23,7 @@ from typing import Any
 import httpx
 import pytest
 
+from coach.core.clock import now
 from coach.core.errors import Conflict, ValidationProblem
 from coach.integrations.stub_model import StubModel
 from coach.services.models import ReportItemKind, ResearchStatus, TaskState
@@ -603,6 +604,28 @@ async def test_research_from_the_project_coach_writes_a_taskless_report(
     # The intake conversation itself never saw the research turn.
     intake_events = (await client.get(f"/api/sessions/{intake['id']}/events")).json()["events"]
     assert intake_events == []
+
+
+async def test_a_run_below_the_start_threshold_is_refused_before_anything_is_created(
+    client: httpx.AsyncClient, container
+) -> None:
+    """M10: refused earlier than the lease or the ledger row, so a run unlikely to finish
+    inside the real quota never spends anything trying."""
+    fixture = await _task(client)
+    me = (await client.get("/api/me")).json()
+    threshold = me["plan"]["limits"]["runStartPointsThreshold"]
+    monthly_limit = me["plan"]["limits"]["monthlyPoints"]
+    await container.usage_repository.spend_points(
+        "u_alice", (monthly_limit - threshold + 1) * 1000, timezone="UTC", at=now()
+    )
+
+    refused = await client.post(f"/api/sessions/{fixture['sessionId']}/research", json={})
+
+    assert refused.status_code == 429, refused.text
+    problem = refused.json()
+    assert problem["type"] == "/problems/quota-below-threshold"
+    assert problem["remaining"] == threshold - 1
+    assert await container.run_repository.lease_holder(fixture["project"]["id"]) is None
 
 
 async def test_research_is_isolated_per_user(

@@ -15,6 +15,7 @@ import httpx
 import pytest
 
 from coach.core.clock import now
+from coach.core.errors import QuotaBelowThreshold
 from coach.core.principal import Principal
 from coach.repositories.usage import (
     local_four_hour_block,
@@ -117,8 +118,9 @@ async def test_a_new_account_starts_on_plans_free(app) -> None:
     assert response.status_code == 200
     assert response.json()["plan"]["limits"] == {
         "autonomousRunsPerDay": 20,
-        "monthlyPoints": 500,
+        "monthlyPoints": 1200,
         "fourHourPoints": 80,
+        "runStartPointsThreshold": 800,
     }
 
 
@@ -142,7 +144,7 @@ async def test_a_seeded_preset_is_copied_onto_the_account_not_referenced(
 async def test_get_me_reports_usage_for_both_windows(app) -> None:
     response = await _me(app, "u_usage_shape")
     usage = response.json()["usage"]
-    assert usage["monthly"]["limit"] == 500
+    assert usage["monthly"]["limit"] == 1200
     assert usage["fourHour"]["limit"] == 80
     for window in ("monthly", "fourHour"):
         assert usage[window]["spent"] == 0
@@ -283,3 +285,134 @@ async def test_a_blocked_turn_creates_no_turn_document_and_charges_nothing(
     assert response.status_code == 429
     snapshot = await container.usage_repository.points_snapshot("u_alice", "UTC", now())
     assert snapshot.four_hour == 0  # nothing was ever spent — there was no turn to spend from
+
+
+# --- the run-start points threshold, M10 (services/quotas.py) --------------------------
+
+
+async def test_require_room_to_start_run_raises_under_the_threshold(
+    client: httpx.AsyncClient, container
+) -> None:
+    await client.get("/api/me")  # materializes u_alice on the free preset
+    # 401 points spent leaves 1200 - 401 = 799 monthly remaining, one under the 800
+    # default `runStartPointsThreshold`.
+    await container.usage_repository.spend_points("u_alice", 401_000, timezone="UTC", at=now())
+
+    with pytest.raises(QuotaBelowThreshold) as excinfo:
+        await container.quotas.require_room_to_start_run("u_alice")
+    assert excinfo.value.extra == {"threshold": 800, "remaining": 799}
+
+
+async def test_require_room_to_start_run_allows_with_enough_headroom(
+    client: httpx.AsyncClient, container
+) -> None:
+    await client.get("/api/me")
+    await container.quotas.require_room_to_start_run("u_alice")  # 1200 remaining; no raise
+
+
+async def test_points_hint_is_none_with_comfortable_headroom(
+    client: httpx.AsyncClient, container
+) -> None:
+    await client.get("/api/me")
+    assert await container.quotas.points_hint("u_alice") is None
+
+
+async def test_points_hint_appears_once_under_threshold_plus_margin(
+    client: httpx.AsyncClient, container
+) -> None:
+    """850 remaining is inside the +100 nag margin above the 800 threshold, but not yet
+    under the threshold itself — the two are deliberately different numbers."""
+    await client.get("/api/me")
+    await container.usage_repository.spend_points("u_alice", 350_000, timezone="UTC", at=now())
+
+    assert await container.quotas.points_hint("u_alice") == (850, 800)
+
+
+async def test_points_hint_folds_in_a_turns_own_unspent_tokens(
+    client: httpx.AsyncClient, container
+) -> None:
+    """The hint has to reflect what a turn is *about* to cost, read before `record_spend`
+    writes it — not the balance from before this turn ran."""
+    await client.get("/api/me")
+    await container.usage_repository.spend_points("u_alice", 300_000, timezone="UTC", at=now())
+
+    hint = await container.quotas.points_hint("u_alice", extra_tokens=100_000)
+
+    assert hint == (800, 800)
+
+
+@pytest.fixture
+def socket_for(container, alice: Principal):
+    """Same construction as `test_streaming.py`'s fixture of the same name — duplicated
+    locally rather than shared, on the same footing as this file's own `drain_turns`
+    above: a Firestore-backed `SocketSession` is what proves `turn_complete` carries the
+    hint on the wire, not merely that `QuotaService.points_hint` returns one."""
+    from coach.ws.manager import SocketSession
+    from streaming_doubles import FakeWebSocket
+
+    class _Opener:
+        def __init__(self) -> None:
+            self.tasks: list[asyncio.Task[None]] = []
+
+        def open(self) -> FakeWebSocket:
+            websocket = FakeWebSocket()
+            session = SocketSession(
+                websocket,  # type: ignore[arg-type]
+                alice,
+                turns=container.turns,
+                broker=container.broker,
+                presence=container.presence_repository,
+                board_updates=container.board_updates,
+                runs=container.runs,
+            )
+            self.tasks.append(asyncio.create_task(session.run()))
+            return websocket
+
+    opener = _Opener()
+    yield opener
+    for task in opener.tasks:
+        task.cancel()
+
+
+async def test_turn_complete_carries_a_low_points_hint_once_under_the_margin(
+    client: httpx.AsyncClient,
+    container,
+    session_id: str,
+    scripted_model: ScriptedModel,
+    socket_for,
+    drain_turns: None,
+) -> None:
+    """docs/09-roadmap.md#research-concurrency: the frontend's whole signal for the
+    low-points nag, so the field has to actually reach the wire — not just
+    `QuotaService.points_hint`, already asserted above in isolation."""
+    scripted_model.usage_tokens = 350_000  # 350 points spent by this very turn
+    websocket = socket_for.open()
+
+    response = await client.post(f"/api/sessions/{session_id}/turns", json={"text": "hi"})
+    assert response.status_code == 202, response.text
+    websocket.send({"type": "subscribe", "turnId": str(response.json()["turnId"])})
+
+    frame = await websocket.wait_for("turn_complete")
+
+    # 1200 - 350 = 850 remaining, under the 800 threshold's +100 margin.
+    assert frame["pointsRemaining"] == 850
+    assert frame["pointsThreshold"] == 800
+
+
+async def test_turn_complete_carries_no_hint_with_comfortable_headroom(
+    client: httpx.AsyncClient,
+    container,
+    session_id: str,
+    scripted_model: ScriptedModel,
+    socket_for,
+    drain_turns: None,
+) -> None:
+    websocket = socket_for.open()
+
+    response = await client.post(f"/api/sessions/{session_id}/turns", json={"text": "hi"})
+    websocket.send({"type": "subscribe", "turnId": str(response.json()["turnId"])})
+
+    frame = await websocket.wait_for("turn_complete")
+
+    assert frame["pointsRemaining"] is None
+    assert frame["pointsThreshold"] is None

@@ -2,12 +2,13 @@ name: CI
 
 # docs/07-infra-deploy.md#ciyml-every-pr:
 #
-#   api:  uv sync -> ruff check -> ruff format --check -> mypy -> pytest (Firestore emulator)
-#   web:  npm ci -> prettier --check -> tsc --noEmit -> eslint -> vitest run --coverage -> vite build
-#   e2e:  docker compose (single app image + Firestore emulator) -> playwright test
-#   tf:   terraform fmt -check -> terraform validate -> tflint
+#   api:       uv sync -> ruff check -> ruff format --check -> mypy -> pytest (Firestore emulator)
+#   web:       npm ci -> prettier --check -> tsc --noEmit -> eslint -> vitest run --coverage -> vite build
+#   functions: npm ci -> prettier --check -> tsc --noEmit -> eslint -> vitest run -> tsc (build gate)
+#   e2e:       docker compose (single app image + Firestore emulator) -> playwright test
+#   tf:        terraform fmt -check -> terraform validate -> tflint
 #
-# Target: under 10 minutes. The four jobs are independent and run in parallel.
+# Target: under 10 minutes. The five jobs are independent and run in parallel.
 
 on:
   pull_request:
@@ -125,6 +126,42 @@ jobs:
       # reach production (docs/07-infra-deploy.md#ciyml-every-pr).
       - name: vite build (gate only)
         run: npx vite build
+
+  functions:
+    name: apps/functions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/functions
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/functions/package-lock.json
+
+      - run: npm ci
+
+      - name: prettier --check
+        run: npm run format:check
+
+      - name: tsc --noEmit
+        run: npm run typecheck
+
+      - name: eslint
+        run: npm run lint
+
+      - name: vitest
+        run: npm run test
+
+      # Gate only: this does not deploy anything. The actual Cloud Functions build runs
+      # inside `terraform apply`'s Cloud Build step, from the same `tsc` script
+      # (package.json's `gcp-build`) — see infra/terraform/modules/blocking_function.
+      - name: tsc (build gate)
+        run: npm run build
 
   e2e:
     name: e2e

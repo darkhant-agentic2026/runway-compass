@@ -94,6 +94,7 @@ export const taskSchema = z.object({
   researchStatus: z.enum(['none', 'pending', 'in_progress', 'done', 'failed']).default('none'),
   researchRequestedAt: z.string().nullable().default(null),
   latestReportId: z.string().nullable().default(null),
+  studyPlanRunId: z.string().nullable().default(null),
   items: z.array(taskItemSchema).default([]),
   rollup: rollupSchema.nullable().default(null),
   origin: z.enum(['user', 'agent']).default('user'),
@@ -158,6 +159,13 @@ export const projectSchema = z.object({
   updatedAt: z.string().nullable().default(null),
 });
 export type Project = z.infer<typeof projectSchema>;
+
+/** `POST /api/projects/{id}/troubleshooting/delete-all-tasks` — project settings'
+ * troubleshooting action, not a board mutation. */
+export const deleteAllTasksResponseSchema = z.object({
+  deletedTasks: z.number().int(),
+  resetPlans: z.number().int(),
+});
 
 export const effectivePrefsSchema = z.object({
   defaultTaskMinutes: z.number().int(),

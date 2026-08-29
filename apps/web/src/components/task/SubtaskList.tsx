@@ -44,8 +44,10 @@ interface SubtaskListProps {
   /** Tick or un-tick one of a subtask's checklist items. */
   onToggleItem: (taskId: string, itemId: string, completed: boolean) => void;
   itemsDisabled?: boolean;
-  /** Create one subtask under this task. */
-  onAdd: (title: string, estimatedMinutes: number) => void;
+  /** Create one subtask under this task. Sized by the project's own default — there is no
+   * per-subtask duration input, the same reasoning `estimatedMinutes` no longer needs one
+   * once a checklist exists to size it (docs/09-roadmap.md#task-board-and-task-view-polish). */
+  onAdd: (title: string) => void;
   addDisabled?: boolean;
   /**
    * Rendered even with no subtasks, because adding the first one is how a task *becomes*
@@ -127,17 +129,20 @@ function AddSubtask({
   onAdd,
   disabled,
 }: {
-  onAdd: (title: string, estimatedMinutes: number) => void;
+  onAdd: (title: string) => void;
   disabled: boolean;
 }) {
   const [title, setTitle] = useState('');
-  const [minutes, setMinutes] = useState('45');
 
   /*
     The hand path to a subtask, and the only one since `POST /api/tasks/{id}/split` was
     removed. It lives here rather than on the board's row menu because this is the screen a
     composite task is worked from — and because "Split into subtasks…" produced a whole
     breakdown from nothing, which is exactly the shape that made the tool unusable.
+
+    No minutes field: a subtask is sized from the project's own default, the same as any
+    other task created without an explicit override, and its displayed duration follows
+    its checklist once one exists (docs/09-roadmap.md#task-board-and-task-view-polish).
   */
   return (
     <form
@@ -147,7 +152,7 @@ function AddSubtask({
         event.preventDefault();
         const trimmed = title.trim();
         if (!trimmed) return;
-        onAdd(trimmed, Math.max(1, Number(minutes) || 45));
+        onAdd(trimmed);
         setTitle('');
       }}
     >
@@ -161,19 +166,6 @@ function AddSubtask({
           disabled={disabled}
           maxLength={300}
           onChange={(event) => setTitle(event.target.value)}
-        />
-      </div>
-      <div className="w-24 space-y-1">
-        <Label htmlFor="new-subtask-minutes" className="text-xs text-muted-foreground">
-          Minutes
-        </Label>
-        <Input
-          id="new-subtask-minutes"
-          type="number"
-          min={1}
-          value={minutes}
-          disabled={disabled}
-          onChange={(event) => setMinutes(event.target.value)}
         />
       </div>
       <Button type="submit" size="sm" variant="outline" disabled={disabled || !title.trim()}>
@@ -275,6 +267,7 @@ function SubtaskCard({
             onToggle={onToggleItem}
             headingId={`subtask-checklist-${subtask.id}`}
             heading="Steps for this subtask"
+            inProgress={subtask.state === 'in_progress'}
           />
         </div>
       ) : null}

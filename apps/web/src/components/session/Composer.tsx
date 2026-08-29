@@ -18,7 +18,7 @@
  * dispatches the message — sits right, on its own, where a reader's eye lands last.
  */
 
-import { Paperclip, Send, X } from 'lucide-react';
+import { CornerDownLeft, Paperclip, Send, X } from 'lucide-react';
 import { useRef, type ChangeEvent, type ClipboardEvent } from 'react';
 
 import { Button } from '@/components/ui/button';
@@ -166,6 +166,18 @@ export function Composer({
         ) : (
           <Button type="submit" disabled={!canSend} aria-label="Send">
             <Send className="size-4" aria-hidden="true" />
+            {/*
+              The hotkey, spelled out rather than left implicit — `onKeyDown` above already
+              wires Ctrl/Cmd+Enter to submit, but nothing on screen said so. Monospace reads
+              as a keycap; hidden below `sm` since a touch keyboard has no Ctrl to press.
+            */}
+            <span
+              className="hidden items-center gap-0.5 font-mono text-xs opacity-80 sm:flex"
+              aria-hidden="true"
+            >
+              Ctrl
+              <CornerDownLeft className="size-3" />
+            </span>
           </Button>
         )}
       </div>

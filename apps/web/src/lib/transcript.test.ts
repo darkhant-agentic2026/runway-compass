@@ -118,6 +118,53 @@ describe('the stored spelling, spelled out', () => {
   });
 });
 
+describe('points', () => {
+  it('reads snake_case usage_metadata.total_token_count, ceil-divided into points', () => {
+    // `apps/api/src/coach/repositories/usage.py`: 1 point = 1,000 tokens, rounded up.
+    const messages = toMessages([
+      event(1, {
+        author: 'coach',
+        content: { role: 'model', parts: [{ text: 'hi' }] },
+        usage_metadata: { total_token_count: 2001 },
+      }),
+    ]);
+
+    expect(messages[0]?.points).toBe(3);
+  });
+
+  it('still reads camelCase, so a future ADK change is not a regression', () => {
+    const messages = toMessages([
+      event(1, {
+        author: 'coach',
+        content: { role: 'model', parts: [{ text: 'hi' }] },
+        usageMetadata: { totalTokenCount: 500 },
+      }),
+    ]);
+
+    expect(messages[0]?.points).toBe(1);
+  });
+
+  it('is null when the event carries no usage_metadata — an older, pre-M10 turn', () => {
+    const messages = toMessages([
+      event(1, { author: 'coach', content: { role: 'model', parts: [{ text: 'hi' }] } }),
+    ]);
+
+    expect(messages[0]?.points).toBeNull();
+  });
+
+  it('is null for a zero-token response, rather than a claim of a free message', () => {
+    const messages = toMessages([
+      event(1, {
+        author: 'coach',
+        content: { role: 'model', parts: [{ text: 'hi' }] },
+        usage_metadata: { total_token_count: 0 },
+      }),
+    ]);
+
+    expect(messages[0]?.points).toBeNull();
+  });
+});
+
 function userText(seq: number, text: string): SessionEvent {
   return event(seq, { author: 'user', content: { role: 'user', parts: [{ text }] } });
 }

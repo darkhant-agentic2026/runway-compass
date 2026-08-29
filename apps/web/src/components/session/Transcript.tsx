@@ -24,6 +24,7 @@ import { useEffect, useRef } from 'react';
 import { Markdown } from '@/components/markdown/Markdown';
 import { AttachmentPreview } from '@/components/session/AttachmentPreview';
 import { CopyMessage } from '@/components/session/CopyMessage';
+import { MessageCost } from '@/components/session/MessageCost';
 import { ToolChips, type ChipView } from '@/components/session/ToolChips';
 import { describeTool } from '@/lib/tool-labels';
 import type { TranscriptAttachment, TranscriptMessage } from '@/lib/transcript';
@@ -75,6 +76,7 @@ function MessageBlock({
   showEventIds = false,
   streaming = false,
   placeholder = null,
+  points = null,
 }: {
   id: string;
   /**
@@ -93,6 +95,13 @@ function MessageBlock({
   streaming?: boolean;
   /** Shown in place of a bubble when there is no text yet — "Your coach is thinking…". */
   placeholder?: React.ReactNode;
+  /**
+   * This message's usage cost in points, or `null` — a live segment always passes `null`
+   * (the stream carries no `usage_metadata`; the cost is only known once the event is
+   * stored), same as an older turn from before this field existed. `null` simply means no
+   * info icon renders, never a placeholder value.
+   */
+  points?: number | null;
 }) {
   return (
     <div className="space-y-2">
@@ -167,13 +176,20 @@ function MessageBlock({
         placeholder
       )}
       {/*
-        Under the bubble and aligned with it, so the control sits with the message it
-        copies rather than in a corner of the row. Only when there is text: copying an
-        attachment-only message would put an empty string on the clipboard.
+        Under the bubble and aligned with it, so the controls sit with the message they
+        act on rather than in a corner of the row. Only when there is text: copying an
+        attachment-only message would put an empty string on the clipboard, and a
+        tool-only event has no generation cost of its own to show.
       */}
       {text ? (
-        <div className={cn('flex', role === 'user' ? 'justify-end' : 'justify-start')}>
+        <div
+          className={cn(
+            'flex items-center gap-1',
+            role === 'user' ? 'justify-end' : 'justify-start',
+          )}
+        >
           <CopyMessage text={text} />
+          {points !== null ? <MessageCost points={points} /> : null}
         </div>
       ) : null}
     </div>
@@ -297,6 +313,7 @@ export function Transcript({
           sessionId={sessionId}
           seq={message.seq}
           showEventIds={showEventIds}
+          points={message.points}
         />
       ))}
 

@@ -211,14 +211,22 @@ class LearnerProfile(DomainModel):
 class PlanLimits(DomainModel):
     """docs/02-data-model.md#usage-quotas-m8-quotas.
 
-    The two points fields are kept numerically equal to `plans/free`'s document so that
+    The points fields are kept numerically equal to `plans/free`'s document so that
     a missing preset (an unseeded emulator, chiefly) falls back to the same numbers a
     seeded one would hand out — see `PlanRepository.get_preset`.
     """
 
     autonomous_runs_per_day: int = 20
-    monthly_points: int = 500
+    monthly_points: int = 1200
     four_hour_points: int = 80
+    #: docs/09-roadmap.md#research-concurrency. Below this many *monthly* points
+    #: remaining, a research/roadmap run refuses to start rather than spend down toward a
+    #: window it is unlikely to finish inside of — checked by `QuotaService.
+    #: require_room_to_start_run` before a manual/roadmap trigger enqueues a run and by
+    #: `SchedulerService._shared_guards` before a tick schedules one. Monthly only, not the
+    #: 4-hour window: that window is a short-term burst throttle expected to run low under
+    #: ordinary use, not a signal that an account is running out of budget.
+    run_start_points_threshold: int = 800
 
 
 class Plan(DomainModel):
@@ -248,6 +256,14 @@ class UsagePoints(DomainModel):
         if self.four_hour >= limits.four_hour_points:
             return "4-hour"
         return None
+
+    def monthly_remaining(self, limits: PlanLimits) -> int:
+        """Monthly points left before the window is spent, floored at 0.
+
+        What `run_start_points_threshold` is compared against — see `PlanLimits` for why
+        that check is monthly-only.
+        """
+        return max(limits.monthly_points - self.monthly, 0)
 
 
 class UsageWindow(DomainModel):
@@ -476,6 +492,15 @@ class Task(DomainModel):
     #: (docs/05-autonomous-runs.md#two-kinds-of-work-and-the-only-difference-between-them).
     research_requested_at: datetime | None = None
     latest_report_id: str | None = None
+    #: The roadmap run whose `StudyPlan` this task was materialized from
+    #: (`StudyPlanService.materialize`), or `None` for a task created any other way.
+    #: `study_plans/{planId}` carries no ongoing relationship to the tasks it created
+    #: (`docs/02-data-model.md`), so this is the other direction — the pointer that lets
+    #: the task workspace still reach the plan's `optional[]` material after
+    #: materialization, the same way `latest_report_id` does for a `ResearchReport`.
+    #: A run id rather than a plan id because `GET /api/runs/{runId}/plan` — not a
+    #: plan-id lookup — is the only read path a plan has today.
+    study_plan_run_id: str | None = None
     #: LEAF tasks only. `items` and `rollup` are the same field in two moods — a leaf's plan
     #: is its checklist, a parent's is its subtasks — and are mutually exclusive by
     #: construction rather than by a validator: `split_task` refuses a task that already has

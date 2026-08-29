@@ -76,6 +76,16 @@ the LLM request never includes prior session history, only the node's own `node_
 `reviewer_writer` is the one exception — it sets `include_contents="default"` explicitly, so
 it reads `research_planner`'s own turn as ordinary prior history in their shared session.
 
+**`topic_researcher_brief` sits between `research_planner` and the fan-out, for the same
+chain-adjacency reason `task_proposer_scope` sits after it (see that function's own
+docstring).** `topic_researcher`'s only channel in is its own `node_input` — the plain
+sub-topic string `research_planner` produced would leave a branch blind to any file the
+learner attached to the run, since attachments live on the workflow's own opening message
+(`ctx.user_content`), not on `research_planner`'s structured output.
+`_carry_attachments_into_subtopics` rewrites the sub-topic list into one `types.Content` per
+sub-topic, each carrying the same attachment parts, before the fan-out ever sees it —
+`research_findings`'s zip against `SUBTOPICS_KEY` (state, not this chain) is unaffected.
+
 **The ledger stays a single `research` step**, not three, for the same reason: `Workflow`
 has no "run one node and stop" primitive — once triggered it runs to completion in one
 `Runner.run_async` call. `RunExecutor` and `ResearchService` drive `research_workflow` the
@@ -103,6 +113,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.tools.agent_tool import AgentTool
 from google.adk.workflow import START, Workflow, node
+from google.genai import types
 from pydantic import BaseModel, Field
 
 from coach.agents.context import RUN_ID_KEY
@@ -131,6 +142,10 @@ TASK_PROPOSER_SCOPE_NAME = "task_proposer_scope"
 RESEARCH_FINDINGS_NAME = "research_findings"
 TASK_PROPOSER_NAME = "task_proposer"
 PLAN_TAILOR_NAME = "plan_tailor"
+
+#: `research_planner` -> this node -> the `topic_researcher` fan-out, shared by both
+#: workflows the same way the fan-out itself is. See `_carry_attachments_into_subtopics`.
+TOPIC_RESEARCHER_BRIEF_NAME = "topic_researcher_brief"
 
 #: `research_planner`'s own sub-topic list, written to state as well as being
 #: `topic_researcher`'s `node_input` — so `research_findings` can zip it back onto each
@@ -189,6 +204,10 @@ that produced it, the overall project or task, or any other sub-topic — work o
 sub-topic in this message and the tools below. There is no time budget yet: that is decided
 once every sub-topic's findings are combined, so gather candidates rather than trying to
 guess what will make the final cut.
+
+If this message carries files, they are the learner's own uploads — read them before
+researching your sub-topic, since a sub-topic that mentions "the attached rubric" or "the
+syllabus" means part of the answer is already in front of you.
 
 How to work:
 1. `search_agent("…")` for authoritative material on your sub-topic. Prefer primary sources
@@ -387,6 +406,13 @@ up to, say so** — one sentence in `short_description`, more detail in `long_de
 Do not silently shrink the plan to fit; say the plan is bigger than the time available and
 let the learner decide.
 
+**`long_description` must include an ASCII diagram of the roadmap** — the `include`d tasks,
+in the order they happen, each labeled with its title and its duration (the combined length
+of its `required[]` items). Show `prerequisite_tasks` branching or merging where they do; a
+straight top-to-bottom or left-to-right chain is fine when the plan really is sequential.
+This is in addition to the prose write-up, not instead of it — a learner should be able to
+see the whole shape of the plan at a glance before reading the detail.
+
 Then call `write_study_plan` once with `title`, `short_description` (2-3 sentences — a
 plan's summary card shows this), `long_description` (the full write-up, in markdown),
 `memo` (`task_proposer`'s own memo, passed through unchanged), `proposed_tasks` (every
@@ -491,6 +517,36 @@ class ModelThrottle:
 
 def _run_id_of(callback_context: Context) -> str:
     return str(callback_context.state.get(RUN_ID_KEY) or "")
+
+
+def _carry_attachments_into_subtopics(
+    ctx: Context, node_input: list[str]
+) -> list[types.Content]:
+    """Rewrites `research_planner`'s sub-topic list into each branch's own node_input,
+    subtopic text plus whatever files the learner attached to the run that started this
+    workflow.
+
+    `topic_researcher` is `single_turn`/`include_contents="none"` (module docstring) — its
+    only channel in is this node's own `node_input` — so without this step, a briefing's own
+    attachments (visible to `research_planner` only because it reads `ctx.user_content`, the
+    workflow's own opening message, directly) never reach a fan-out branch at all.
+    `ctx.user_content` is unaffected by any LlmAgent node's own copy of the invocation
+    context (`prepare_llm_agent_context` copies it per agent call, never mutating the
+    shared one this plain function node reads), so it still holds the original message here,
+    after `research_planner` has already run.
+
+    Placed directly between `research_planner` and the fan-out — the same chain-adjacency
+    constraint `_build_task_proposer_scope`'s docstring explains, satisfied here on purpose:
+    this node's own output becomes the fan-out's `node_input`, one `types.Content` per
+    sub-topic, in the same order `research_planner` produced them — so `research_findings`'s
+    zip against `SUBTOPICS_KEY` still lines up.
+    """
+    parts = (ctx.user_content and ctx.user_content.parts) or []
+    attachment_parts = [part for part in parts if part.text is None]
+    return [
+        types.Content(role="user", parts=[types.Part(text=subtopic), *attachment_parts])
+        for subtopic in node_input
+    ]
 
 
 def _build_research_planner(
@@ -598,9 +654,10 @@ def build_research_workflow(
         after_model_callback=throttle.after_model,
         on_model_error_callback=throttle.on_model_error,
     )
+    brief = node(_carry_attachments_into_subtopics, name=TOPIC_RESEARCHER_BRIEF_NAME)
     return Workflow(
         name=RESEARCH_WORKFLOW_NAME,
-        edges=[(START, planner, fan_out, writer)],
+        edges=[(START, planner, brief, fan_out, writer)],
     )
 
 
@@ -637,7 +694,7 @@ def _build_task_proposer_scope(
             "left out."
         ),
         instruction=TASK_PROPOSER_SCOPE_INSTRUCTION,
-        generate_content_config=generation_config("low"),
+        generate_content_config=generation_config("high"),
         include_contents="default",
         output_key=TASK_PROPOSER_SCOPE_KEY,
         before_agent_callback=before_agent_callback,
@@ -711,7 +768,12 @@ def build_roadmap_workflow(
         model=model,
         description="Groups researched material into several sized, prerequisite-linked tasks.",
         instruction=TASK_PROPOSER_INSTRUCTION,
-        generate_content_config=generation_config("high"),
+        # "medium", not "high" — this node's own turn happens inside the same
+        # `research`/`roadmap` `RunExecutor` step as the `topic_researcher` fan-out
+        # (docs/09-roadmap.md#m10-beta--agent-consistency-projecttask-ui-polish-and-readme),
+        # and its job (grouping already-gathered findings into sized tasks) needs less
+        # depth than the research itself did.
+        generate_content_config=generation_config("medium"),
         output_schema=ProposedTaskCollection,
         # Left at the single_turn default (`include_contents="none"`) — deliberately, not
         # an oversight. `task_proposer` must not read the raw roadmap request (it carries
@@ -737,9 +799,10 @@ def build_roadmap_workflow(
         after_model_callback=throttle.after_model,
         on_model_error_callback=throttle.on_model_error,
     )
+    brief = node(_carry_attachments_into_subtopics, name=TOPIC_RESEARCHER_BRIEF_NAME)
     return Workflow(
         name=ROADMAP_WORKFLOW_NAME,
-        edges=[(START, planner, fan_out, findings, scope, proposer, tailor)],
+        edges=[(START, planner, brief, fan_out, findings, scope, proposer, tailor)],
     )
 
 
@@ -761,6 +824,7 @@ __all__ = [
     "TASK_PROPOSER_SCOPE_INSTRUCTION",
     "TASK_PROPOSER_SCOPE_KEY",
     "TASK_PROPOSER_SCOPE_NAME",
+    "TOPIC_RESEARCHER_BRIEF_NAME",
     "TOPIC_RESEARCHER_INSTRUCTION",
     "TOPIC_RESEARCHER_NAME",
     "ModelThrottle",

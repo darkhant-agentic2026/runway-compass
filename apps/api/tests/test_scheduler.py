@@ -254,6 +254,37 @@ async def test_an_exhausted_points_quota_stops_a_request_too(
     assert result.skipped["points_quota_exhausted"] >= 1
 
 
+async def test_points_below_the_run_start_threshold_stops_a_request_too(
+    client: httpx.AsyncClient, container, scheduler: SchedulerService
+) -> None:
+    """M10: refused earlier than outright exhaustion, at the headroom
+    `runStartPointsThreshold` asks an account to keep in reserve — a distinct guard from
+    `points_quota_exhausted` above, checked right after it in `_shared_guards`."""
+    project = await _project(client)
+    task = await _task(client, project["id"])
+    await client.post(f"/api/tasks/{task['id']}/research-request")
+    me = (await client.get("/api/me")).json()
+    threshold = me["plan"]["limits"]["runStartPointsThreshold"]
+    monthly_limit = me["plan"]["limits"]["monthlyPoints"]
+    # Leaves `threshold - 1` monthly points remaining: under the threshold, but nowhere
+    # near exhausting the (larger) monthly window outright. Spent 8 hours in the past —
+    # two 4-hour blocks back — so it lands in the monthly bucket without also exhausting
+    # the *current* 4-hour block `_shared_guards`'s exhaustion check reads; `spend_points`
+    # always charges both windows by the same amount in one call, and the 4-hour limit
+    # (80, unchanged by M10) is far smaller than what this spend needs to clear.
+    await container.usage_repository.spend_points(
+        "u_alice",
+        (monthly_limit - threshold + 1) * 1000,
+        timezone="UTC",
+        at=now() - timedelta(hours=8),
+    )
+
+    result = await scheduler.tick()
+
+    assert result.scheduled == []
+    assert result.skipped["points_below_threshold"] >= 1
+
+
 # --- priority ----------------------------------------------------------------------------
 
 

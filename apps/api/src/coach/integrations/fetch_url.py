@@ -186,7 +186,7 @@ async def fetch(url: str, *, client: httpx.AsyncClient | None = None) -> Fetched
     http = client or httpx.AsyncClient(
         timeout=TIMEOUT_SECONDS,
         follow_redirects=False,
-        headers={"User-Agent": "self-study-coach/1.0 (+research)"},
+        headers={"User-Agent": "runway-compass/1.0 (+research)"},
     )
     try:
         current = url

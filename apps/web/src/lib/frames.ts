@@ -65,6 +65,12 @@ export const turnCompleteFrame = z.object({
   turnId: z.string(),
   seq: z.number().int(),
   eventIds: z.array(z.string()).default([]),
+  // M10, docs/09-roadmap.md#research-concurrency: both `null` on almost every turn — set
+  // only once the owner's remaining monthly points drop under
+  // `runStartPointsThreshold + 100`, so this is the client's whole signal for the
+  // low-points nag banner without a separate `GET /api/me`.
+  pointsRemaining: z.number().int().nullable().default(null),
+  pointsThreshold: z.number().int().nullable().default(null),
 });
 
 export const turnErrorFrame = z.object({

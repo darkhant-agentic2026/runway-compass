@@ -31,6 +31,7 @@ function message(
     text: '',
     tools: [],
     attachments,
+    points: null,
   };
 }
 

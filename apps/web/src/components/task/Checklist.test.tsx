@@ -10,7 +10,7 @@
 
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Checklist } from '@/components/task/Checklist';
 import { makeTaskItem } from '@/test/factories';
@@ -76,15 +76,18 @@ describe('Checklist', () => {
     );
   });
 
-  it('a guided item offers no link even when the report gave it one', () => {
+  it('a guided item still links its source, because the link is not the coach’s notes', () => {
     render(
       <Checklist
-        items={[makeTaskItem({ guided: true, url: 'https://example.com/answers' })]}
+        items={[makeTaskItem({ guided: true, url: 'https://example.com/source' })]}
         budgetMinutes={45}
         onToggle={vi.fn()}
       />,
     );
-    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open' })).toHaveAttribute(
+      'href',
+      'https://example.com/source',
+    );
   });
 
   it('the budget meter counts the checklist and nothing else', () => {
@@ -142,5 +145,123 @@ describe('Checklist', () => {
 
     expect(screen.getByTestId('item-kind')).toHaveTextContent('Video');
     expect(screen.getAllByTestId('item-kind')).toHaveLength(1);
+  });
+
+  it('marks the first uncompleted item as "you are here" while the task is in progress', () => {
+    render(
+      <Checklist
+        items={[
+          makeTaskItem({ itemId: 'i_done', shortDescription: 'Read §3', completed: true }),
+          makeTaskItem({ itemId: 'i_next', shortDescription: 'Do the exercise' }),
+          makeTaskItem({ itemId: 'i_later', shortDescription: 'Write it up' }),
+        ]}
+        budgetMinutes={45}
+        onToggle={vi.fn()}
+        inProgress
+      />,
+    );
+
+    const marked = screen.getByTestId('you-are-here');
+    expect(marked).toHaveTextContent('Do the exercise');
+  });
+
+  it('marks nothing when the task is not in progress', () => {
+    render(
+      <Checklist
+        items={[makeTaskItem({ itemId: 'i_next', shortDescription: 'Do the exercise' })]}
+        budgetMinutes={45}
+        onToggle={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId('you-are-here')).not.toBeInTheDocument();
+  });
+
+  describe('the "you are here" rule slides rather than jumps', () => {
+    /*
+     * jsdom does no real layout, so `getBoundingClientRect` is stubbed: the checklist's
+     * container (`data-testid="checklist-items"`) and whichever item is currently marked
+     * `you-are-here` are the only two elements the component measures.
+     */
+    function stubRects(container: { top: number }, active: { top: number; height: number }) {
+      const rect = (r: { top: number; height?: number }) =>
+        ({
+          top: r.top,
+          height: r.height ?? 0,
+          bottom: 0,
+          left: 0,
+          right: 0,
+          width: 0,
+          x: 0,
+          y: r.top,
+          toJSON: () => ({}),
+        }) as DOMRect;
+
+      vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+        this: HTMLElement,
+      ) {
+        if (this.dataset.testid === 'checklist-items') return rect(container);
+        if (this.dataset.testid === 'you-are-here') return rect(active);
+        return rect({ top: 0, height: 0 });
+      });
+    }
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('positions the line at the current item, relative to the container', () => {
+      stubRects({ top: 10 }, { top: 40, height: 20 });
+
+      render(
+        <Checklist
+          items={[
+            makeTaskItem({ itemId: 'i_done', shortDescription: 'Read §3', completed: true }),
+            makeTaskItem({ itemId: 'i_next', shortDescription: 'Do the exercise' }),
+          ]}
+          budgetMinutes={45}
+          onToggle={vi.fn()}
+          inProgress
+        />,
+      );
+
+      const line = screen.getByTestId('you-are-here-line');
+      expect(line.style.top).toBe('30px');
+      expect(line.style.height).toBe('20px');
+    });
+
+    it('moves the line when a different item becomes current', () => {
+      stubRects({ top: 0 }, { top: 40, height: 20 });
+
+      const { rerender } = render(
+        <Checklist
+          items={[
+            makeTaskItem({ itemId: 'i_a', shortDescription: 'First', completed: false }),
+            makeTaskItem({ itemId: 'i_b', shortDescription: 'Second', completed: false }),
+          ]}
+          budgetMinutes={45}
+          onToggle={vi.fn()}
+          inProgress
+        />,
+      );
+      expect(screen.getByTestId('you-are-here-line').style.top).toBe('40px');
+      expect(screen.getByTestId('you-are-here')).toHaveTextContent('First');
+
+      // "First" completes — "Second" is now the current item, at a different position.
+      stubRects({ top: 0 }, { top: 90, height: 20 });
+      rerender(
+        <Checklist
+          items={[
+            makeTaskItem({ itemId: 'i_a', shortDescription: 'First', completed: true }),
+            makeTaskItem({ itemId: 'i_b', shortDescription: 'Second', completed: false }),
+          ]}
+          budgetMinutes={45}
+          onToggle={vi.fn()}
+          inProgress
+        />,
+      );
+
+      expect(screen.getByTestId('you-are-here')).toHaveTextContent('Second');
+      expect(screen.getByTestId('you-are-here-line').style.top).toBe('90px');
+    });
   });
 });

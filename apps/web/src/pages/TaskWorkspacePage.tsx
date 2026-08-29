@@ -24,23 +24,27 @@
  * covers the whole composite task, and it is this one.
  */
 
-import { ChevronDown, ChevronUp } from 'lucide-react';
-import { useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 
 import { ProgressRing } from '@/components/board/ProgressRing';
-import { STATE_LABELS } from '@/components/board/task-state';
+import { StateLabel } from '@/components/board/StateLabel';
+import { AnimatedText, useDescriptionReveal } from '@/components/board/task-reveal';
 import { ResearchCard } from '@/components/research/ResearchCard';
-import { SessionPane } from '@/components/session/SessionPane';
+import { DEFAULT_CLASS, SessionPane } from '@/components/session/SessionPane';
 import { Checklist } from '@/components/task/Checklist';
 import { SubtaskList } from '@/components/task/SubtaskList';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
+  queryKeys,
   useCreateSubtask,
   useProject,
   useResearchRequest,
+  useRun,
   useSetSubtaskState,
   useStartResearch,
   useSubtaskItemMutation,
@@ -78,7 +82,9 @@ function TaskInfoStrip({
       data-testid="task-info-strip"
     >
       <Badge variant="secondary">{formatMinutes(task.estimatedMinutes)}</Badge>
-      <Badge variant="outline">{STATE_LABELS[task.state]}</Badge>
+      <Badge variant="outline">
+        <StateLabel state={task.state} />
+      </Badge>
       {isComposite && task.rollup && task.rollup.subtaskCount > 0 ? (
         <div className="flex items-center gap-2 text-muted-foreground">
           <ProgressRing
@@ -108,6 +114,7 @@ function TaskInfoStrip({
 export default function TaskWorkspacePage() {
   const { projectId = '', taskId = '' } = useParams();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const project = useProject(projectId);
   const detail = useTask(taskId);
@@ -122,10 +129,39 @@ export default function TaskWorkspacePage() {
   const startResearch = useStartResearch(taskId, projectId);
   const researchRequest = useResearchRequest(taskId, projectId);
   const runs = useTaskRuns(taskId);
+  // A task materialized from a study plan (`StudyPlanService.materialize`) has no
+  // `AutonomousRun` of its own — the roadmap run that created it is project-scoped, since
+  // one roadmap run proposes several tasks at once — so `useTaskRuns` above never finds it.
+  // `task.studyPlanRunId` is the pointer `docs/02-data-model.md` describes; merging its one
+  // run into the list lets `ResearchCard` render it exactly as it already renders any other
+  // roadmap run, `optional[]` material included, with no new component.
+  const roadmapRun = useRun(task?.studyPlanRunId ?? '');
+  const combinedRuns = useMemo(() => {
+    const own = runs.data ?? EMPTY_RUNS;
+    const roadmap = roadmapRun.data;
+    if (!roadmap || own.some((run) => run.id === roadmap.id)) return own;
+    return [...own, roadmap].sort((a, b) =>
+      (b.createdAt ?? '').localeCompare(a.createdAt ?? ''),
+    );
+  }, [runs.data, roadmapRun.data]);
 
   const isComposite = (task?.subtasks.length ?? 0) > 0;
   const detailsCollapsed = useWorkspaceUiStore((state) => state.isDetailsCollapsed(taskId));
   const toggleDetails = useWorkspaceUiStore((state) => state.toggleDetails);
+  // Collapsed on load, always — `BoardPage`'s own "Manual actions" disclosure, for the
+  // same reason (docs/09-roadmap.md#task-board-and-task-view-polish): a roadmap-sourced
+  // task already arrives with its materials, so manual research is the fallback here too.
+  const [showManualActions, setShowManualActions] = useState(false);
+
+  /*
+   * The description reads in letter by letter, the same as a new board card's title, the
+   * one time it *appears* while this page happens to be open — a plan-materialization write
+   * landing under the learner, not the page's own first load
+   * (docs/09-roadmap.md#task-board-and-task-view-polish). `task?.description` is `undefined`
+   * until the task loads, which is exactly the signal `useDescriptionReveal` needs to tell
+   * "nothing to compare yet" apart from "the description really is empty."
+   */
+  const descriptionReveal = useDescriptionReveal(task?.description);
 
   /*
     Whether a research run this page started is still going.
@@ -199,50 +235,55 @@ export default function TaskWorkspacePage() {
           <Button variant="ghost" size="sm" render={<Link to={`/projects/${projectId}`} />}>
             ← Back to the board
           </Button>
-          {task ? (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => toggleDetails(taskId)}
-              aria-expanded={!detailsCollapsed}
-              data-testid="toggle-task-details"
-            >
-              {detailsCollapsed ? (
-                <ChevronDown className="size-4" aria-hidden="true" />
-              ) : (
-                <ChevronUp className="size-4" aria-hidden="true" />
-              )}
-              {detailsCollapsed ? 'Show details' : 'Hide details'}
-            </Button>
-          ) : null}
         </div>
 
         {/*
-          Breadcrumbs, added beside the existing "back" link rather than instead of it —
-          the two answer different questions ("where can I go" vs "where am I").
+          The details toggle sits in front of the breadcrumb nav, as a left-sidebar icon —
+          it used to be a labelled button beside "← Back to the board" above, which answered
+          a different question ("where can I go") than this one does ("what's on screen").
+          Breadcrumbs added beside the back link rather than instead of it, for the same
+          reason: the two answer different questions ("where can I go" vs "where am I").
         */}
-        <nav aria-label="Breadcrumb" className="text-sm text-muted-foreground">
-          <ol className="flex flex-wrap items-center gap-1">
-            <li>
-              <Link to="/" className="hover:underline">
-                Projects
-              </Link>
-            </li>
-            <li aria-hidden="true">/</li>
-            <li>
-              <Link to={`/projects/${projectId}`} className="hover:underline">
-                {project.data?.title ?? 'Project'}
-              </Link>
-            </li>
-            <li aria-hidden="true">/</li>
-            <li
-              aria-current="page"
-              className="max-w-[16rem] truncate font-medium text-foreground"
+        <div className="flex flex-wrap items-center gap-2">
+          {task ? (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => toggleDetails(taskId)}
+              aria-expanded={!detailsCollapsed}
+              aria-label={detailsCollapsed ? 'Show details' : 'Hide details'}
+              data-testid="toggle-task-details"
             >
-              {task?.title ?? 'Task'}
-            </li>
-          </ol>
-        </nav>
+              {detailsCollapsed ? (
+                <PanelLeftOpen className="size-4" aria-hidden="true" />
+              ) : (
+                <PanelLeftClose className="size-4" aria-hidden="true" />
+              )}
+            </Button>
+          ) : null}
+          <nav aria-label="Breadcrumb" className="text-sm text-muted-foreground">
+            <ol className="flex flex-wrap items-center gap-1">
+              <li>
+                <Link to="/" className="hover:underline">
+                  Projects
+                </Link>
+              </li>
+              <li aria-hidden="true">/</li>
+              <li>
+                <Link to={`/projects/${projectId}`} className="hover:underline">
+                  {project.data?.title ?? 'Project'}
+                </Link>
+              </li>
+              <li aria-hidden="true">/</li>
+              <li
+                aria-current="page"
+                className="max-w-[16rem] truncate font-medium text-foreground"
+              >
+                {task?.title ?? 'Task'}
+              </li>
+            </ol>
+          </nav>
+        </div>
 
         {/*
           The narrow, always-visible echo of the task card — progress and status survive
@@ -259,15 +300,24 @@ export default function TaskWorkspacePage() {
           same failure the chat pane was bounded to avoid: the transcript pins itself to its
           own bottom several times a second, and it can only do that if the page is not the
           thing that scrolls (docs/06-frontend.md).
+
+          `lg:min-w`/`lg:max-w` (in percent of the row) keep this column from being squeezed
+          by a wide-rendering markdown block in the transcript beside it (a table, a long
+          code block) — `lg:w-2/5` is the ordinary width, and the floor/ceiling only matter
+          once something on the other side of the row is fighting it for space.
         */}
         {task && !detailsCollapsed ? (
           <section
-            className="space-y-3 lg:min-h-0 lg:w-2/5 lg:overflow-y-auto"
+            className="space-y-3 lg:min-h-0 lg:w-2/5 lg:max-w-[45%] lg:min-w-[30%] lg:overflow-y-auto"
             aria-label="Task details"
           >
             {task.description ? (
               <p className="text-sm whitespace-pre-wrap text-muted-foreground">
-                {task.description}
+                {descriptionReveal ? (
+                  <AnimatedText text={task.description} startDelayMs={0} />
+                ) : (
+                  task.description
+                )}
               </p>
             ) : null}
 
@@ -287,9 +337,7 @@ export default function TaskWorkspacePage() {
               }
               hasItems={task.items.length > 0}
               addDisabled={addSubtask.isPending}
-              onAdd={(title, estimatedMinutes) =>
-                addSubtask.mutate({ title, estimatedMinutes, parentTaskId: taskId })
-              }
+              onAdd={(title) => addSubtask.mutate({ title, parentTaskId: taskId })}
             />
 
             {!isComposite ? (
@@ -300,6 +348,7 @@ export default function TaskWorkspacePage() {
                 onToggle={(itemId, completed) =>
                   itemMutation.mutate({ kind: 'toggle', itemId, completed })
                 }
+                inProgress={task.state === 'in_progress'}
               />
             ) : null}
 
@@ -308,81 +357,112 @@ export default function TaskWorkspacePage() {
               M8, linking into its own research view rather than rendering the full report
               inline (docs/06-frontend.md#task-workspace-projectsprojectidtaskstaskid).
             */}
-            <ResearchCard projectId={projectId} runs={runs.data ?? EMPTY_RUNS} />
+            <ResearchCard projectId={projectId} runs={combinedRuns} />
 
             {/*
-              "Research this task now" is the screen's primary action on a task with no
-              materials, and moves to a quieter "Research again" once there are some
+              "Research this task now" is the manual fallback, behind its own disclosure
+              (docs/09-roadmap.md#task-board-and-task-view-polish) — a roadmap-sourced task
+              already arrives with its materials, so this is not the first thing the screen
+              should show. Moves to a quieter "Research again" once there is a report
               (docs/06-frontend.md). Hidden entirely on a composite task: its subtasks are
               its plan, and each is researched on its own.
             */}
             {!isComposite ? (
-              <div className="space-y-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    variant={report ? 'outline' : 'default'}
-                    size="sm"
-                    disabled={researching || !sessionId}
-                    onClick={() => research(report !== null)}
-                  >
-                    {researching
-                      ? 'Your coach is preparing materials…'
-                      : report
-                        ? 'Research again'
-                        : 'Research this task now'}
-                  </Button>
-                  {/*
-                    The queued half of the pair. Same research, run headless by the next
-                    tick with priority over auto-scheduled work, so the learner can mark
-                    the task and close the tab (docs/06-frontend.md).
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setShowManualActions((current) => !current)}
+                  aria-expanded={showManualActions}
+                  className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+                >
+                  {showManualActions ? (
+                    <ChevronDown className="size-3.5" aria-hidden="true" />
+                  ) : (
+                    <ChevronRight className="size-3.5" aria-hidden="true" />
+                  )}
+                  Manual actions
+                </button>
+                {showManualActions ? (
+                  <div className="mt-2 space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        variant={report ? 'outline' : 'default'}
+                        size="sm"
+                        disabled={researching || !sessionId}
+                        onClick={() => research(report !== null)}
+                      >
+                        {researching
+                          ? 'Your coach is preparing materials…'
+                          : report
+                            ? 'Research again'
+                            : 'Research this task now'}
+                      </Button>
+                      {/*
+                        The queued half of the pair. Same research, run headless by the next
+                        tick with priority over auto-scheduled work, so the learner can mark
+                        the task and close the tab (docs/06-frontend.md).
 
-                    Two buttons for one outcome is a real cost and it is paid
-                    deliberately: the queued path is the one intended to become the
-                    *only* path once the autonomous agent is proven unattended, and the
-                    inline button is what keeps the feature usable while that is being
-                    established.
+                        Two buttons for one outcome is a real cost and it is paid
+                        deliberately: the queued path is the one intended to become the
+                        *only* path once the autonomous agent is proven unattended, and the
+                        inline button is what keeps the feature usable while that is being
+                        established.
 
-                    Hidden while a run holds the task, because by then `researchStatus`
-                    has left `pending` and the honest control is the turn's cancel, not
-                    this one.
-                  */}
-                  {!researching ? (
-                    <Button
-                      variant={queued ? 'secondary' : 'outline'}
-                      size="sm"
-                      disabled={researchRequest.isPending}
-                      data-testid="queue-research"
-                      onClick={() => researchRequest.mutate({ queued: !queued })}
-                    >
-                      {queued ? 'Starts soon — cancel' : 'Have my coach prepare this'}
-                    </Button>
-                  ) : null}
-                </div>
-                {queued ? (
-                  <p
-                    className="text-sm text-muted-foreground"
-                    data-testid="research-queued-note"
-                  >
-                    Queued. Your coach will prepare this in the background, ahead of anything it
-                    planned for itself — you can close this tab.
-                  </p>
-                ) : null}
-                {/*
-                  A failed run reads as an offer rather than an error, and the retry is a
-                  press rather than an automatic re-enqueue: a task the research agent
-                  cannot handle should cost one run per decision the learner makes, not
-                  one per tick.
-                */}
-                {task.researchStatus === 'failed' && !researching ? (
-                  <p className="text-sm text-muted-foreground" data-testid="research-failed">
-                    Your coach couldn&apos;t prepare this last time. Try again when you like.
-                  </p>
-                ) : null}
-                {!report && !researching && !queued ? (
-                  <p className="text-sm text-muted-foreground">
-                    No materials yet. Your coach can find reading, videos, and exercises sized
-                    to this task.
-                  </p>
+                        Hidden while a run holds the task, because by then `researchStatus`
+                        has left `pending` and the honest control is the turn's cancel, not
+                        this one.
+                      */}
+                      {!researching ? (
+                        <Button
+                          variant={queued ? 'secondary' : 'outline'}
+                          size="sm"
+                          disabled={researchRequest.isPending}
+                          data-testid="queue-research"
+                          onClick={() => researchRequest.mutate({ queued: !queued })}
+                        >
+                          {queued ? 'Starts soon — cancel' : 'Have my coach prepare this'}
+                        </Button>
+                      ) : null}
+                    </div>
+                    {queued ? (
+                      <p
+                        className="text-sm text-muted-foreground"
+                        data-testid="research-queued-note"
+                      >
+                        Queued. Your coach will prepare this in the background, ahead of
+                        anything it planned for itself — you can close this tab.
+                      </p>
+                    ) : null}
+                    {/*
+                      A failed run reads as an offer rather than an error, and the retry is a
+                      press rather than an automatic re-enqueue: a task the research agent
+                      cannot handle should cost one run per decision the learner makes, not
+                      one per tick.
+                    */}
+                    {task.researchStatus === 'failed' && !researching ? (
+                      <p
+                        className="text-sm text-muted-foreground"
+                        data-testid="research-failed"
+                      >
+                        Your coach couldn&apos;t prepare this last time. Try again when you
+                        like.
+                      </p>
+                    ) : null}
+                    {/*
+                      `!report` alone used to mean "no materials" — true before a roadmap
+                      could populate `task.items[]` directly, via `materialize_study_plan`,
+                      without ever writing a `ResearchReport`
+                      (docs/09-roadmap.md#task-board-and-task-view-polish). Checking the
+                      checklist too is what keeps this from misdescribing a roadmap-sourced
+                      task as empty.
+                    */}
+                    {!report && task.items.length === 0 && !researching && !queued ? (
+                      <p className="text-sm text-muted-foreground">
+                        No materials yet. Your coach can find reading, videos, and exercises
+                        sized to this task.
+                      </p>
+                    ) : null}
+                  </div>
                 ) : null}
               </div>
             ) : null}
@@ -393,6 +473,22 @@ export default function TaskWorkspacePage() {
           sessionId={sessionId}
           projectId={projectId}
           heading="Session with your coach"
+          // The width clamp only makes sense beside the details column — collapsed, this
+          // pane is the only thing in the row and should fill it, which is the whole point
+          // of collapsing it in the first place.
+          className={
+            task && !detailsCollapsed
+              ? `${DEFAULT_CLASS} lg:max-w-[70%] lg:min-w-[45%]`
+              : DEFAULT_CLASS
+          }
+          // `TurnService._start_task_if_not_started` can flip a task from `not_started` to
+          // `in_progress` as a side effect of the first message, not through the REST
+          // mutation the client's own cache update normally rides on — so the info strip's
+          // status chip above needs its own invalidation rather than relying on the generic
+          // board/project one `SessionPane` already does on every turn.
+          onTurnComplete={() =>
+            void queryClient.invalidateQueries({ queryKey: queryKeys.task(taskId) })
+          }
         />
       </div>
     </div>

@@ -30,6 +30,7 @@ from coach.agents.tools import DomainTools
 from coach.core.config import Settings
 from coach.core.principal import Principal
 from coach.integrations.artifacts import artifact_service_provider
+from coach.integrations.model import TokenRateLimiter
 from coach.integrations.queue import build_job_queue
 from coach.integrations.storage import build_object_store
 from coach.integrations.youtube import YouTubeClient
@@ -218,6 +219,10 @@ class Container:
         # `RunExecutor`/`ResearchService` (which call `release_run` once a research step
         # ends) — docs/03-agent-design.md, "LLM throttling" section.
         self.research_throttle = ModelThrottle()
+        # A second, independent throttle, process-wide rather than per-run — see
+        # `integrations/model.py`'s module docstring, "Token throttling" section, for why
+        # this is not the same job `research_throttle` already does.
+        self.token_limiter = TokenRateLimiter()
         self.prompt_builder = PromptBuilder(
             self.sessions, self.projects, self.tasks, self.users
         )
@@ -229,6 +234,7 @@ class Container:
             tools=self.domain_tools,
             research_tools=self.research_tools,
             research_throttle=self.research_throttle,
+            token_limiter=self.token_limiter,
             prompt=self.prompt_builder,
         )
         self.turns = TurnService(
@@ -273,6 +279,7 @@ class Container:
             self.tasks,
             self.sessions,
             self.queue,
+            self.quotas,
             instance_id=self.instance_id,
         )
         self.runs = RunService(self.run_repository, self.tasks, self.projects)

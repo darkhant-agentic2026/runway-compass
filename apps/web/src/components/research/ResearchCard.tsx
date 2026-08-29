@@ -23,9 +23,9 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { Badge } from '@/components/ui/badge';
-import { queryKeys, useRunReport } from '@/features/queries';
+import { queryKeys, useRunPlan, useRunReport } from '@/features/queries';
 import { api } from '@/lib/api';
-import type { AutonomousRun, ResearchReport } from '@/lib/schemas';
+import type { AutonomousRun, ResearchReport, StudyPlan } from '@/lib/schemas';
 
 const STATUS_LABEL: Record<string, string> = {
   running: 'Your coach is researching…',
@@ -34,6 +34,12 @@ const STATUS_LABEL: Record<string, string> = {
   cancelled: 'Cancelled',
   skipped_owner_present: 'Skipped — you were already here',
 };
+
+/** `steps[0].id` is how a roadmap run is told apart from an ordinary one — neither run
+ * carries a field naming its pipeline directly (`ResearchViewPage.tsx`, same convention). */
+function isRoadmapRun(run: AutonomousRun): boolean {
+  return run.steps[0]?.id === 'roadmap';
+}
 
 /** The report's `summary`, as a one-line preview. Markdown is not rendered here — this
  * is a card, not the report — so a heading or a list marker in the first line shows up
@@ -48,15 +54,25 @@ function summarize(run: AutonomousRun, report: ResearchReport | undefined): stri
   return report ? briefDescription(report.summary) : 'Materials ready';
 }
 
+/** A roadmap run has no `ResearchReport` — it wrote a `StudyPlan` instead — so its title
+ * names the plan rather than summarizing a report that does not exist for it. */
+function summarizeRoadmap(run: AutonomousRun, plan: StudyPlan | undefined): string {
+  if (run.status !== 'complete') return STATUS_LABEL[run.status] ?? run.status;
+  return plan ? `Roadmap: ${plan.title || 'Untitled roadmap'}` : 'Materials ready';
+}
+
 function RunCard({
   projectId,
   run,
   report,
+  plan,
 }: {
   projectId: string;
   run: AutonomousRun;
   report: ResearchReport | undefined;
+  plan: StudyPlan | undefined;
 }) {
+  const roadmap = isRoadmapRun(run);
   return (
     <Link
       to={`/projects/${projectId}/research/${run.id}`}
@@ -66,10 +82,20 @@ function RunCard({
     >
       <div className="flex items-center gap-2">
         <FlaskConical className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-        <span className="truncate text-sm font-medium">{summarize(run, report)}</span>
+        <span className="truncate text-sm font-medium">
+          {roadmap ? summarizeRoadmap(run, plan) : summarize(run, report)}
+        </span>
         {run.taskId === null ? (
           <Badge variant="outline" className="shrink-0 text-[0.7rem]">
             Project
+          </Badge>
+        ) : null}
+        {/* A roadmap is a draft until the learner accepts it into real tasks
+            (`materialize_study_plan`) — the chip is what tells a materialized plan apart
+            from one still sitting there as a proposal. */}
+        {roadmap && plan?.materializedAt ? (
+          <Badge variant="secondary" className="shrink-0 text-[0.7rem]" data-testid="approved">
+            Approved
           </Badge>
         ) : null}
       </div>
@@ -92,16 +118,34 @@ export function ResearchCard({
   const [showPrevious, setShowPrevious] = useState(false);
   const [latest, ...previous] = runs;
 
-  const latestReport = useRunReport(latest?.id ?? '', latest?.status === 'complete');
+  const latestIsRoadmap = latest !== undefined && isRoadmapRun(latest);
+  const latestReport = useRunReport(
+    latest?.id ?? '',
+    latest?.status === 'complete' && !latestIsRoadmap,
+  );
+  const latestPlan = useRunPlan(
+    latest?.id ?? '',
+    latest?.status === 'complete' && latestIsRoadmap,
+  );
 
-  // Fetched only once the disclosure is open, and only for runs that actually have a
-  // report to fetch — a `running` or `failed` earlier run has nothing behind it yet.
+  // Fetched only once the disclosure is open, and only for runs that actually have
+  // something to fetch — a `running` or `failed` earlier run has nothing behind it yet,
+  // and a roadmap run has a `StudyPlan` where an ordinary one has a `ResearchReport`.
   const previousReports = useQueries({
     queries: showPrevious
       ? previous.map((run) => ({
           queryKey: queryKeys.runReport(run.id),
           queryFn: () => api.getRunReport(run.id),
-          enabled: run.status === 'complete',
+          enabled: run.status === 'complete' && !isRoadmapRun(run),
+        }))
+      : [],
+  });
+  const previousPlans = useQueries({
+    queries: showPrevious
+      ? previous.map((run) => ({
+          queryKey: queryKeys.runPlan(run.id),
+          queryFn: () => api.getRunPlan(run.id),
+          enabled: run.status === 'complete' && isRoadmapRun(run),
         }))
       : [],
   });
@@ -110,7 +154,12 @@ export function ResearchCard({
 
   return (
     <div className="space-y-2">
-      <RunCard projectId={projectId} run={latest} report={latestReport.data} />
+      <RunCard
+        projectId={projectId}
+        run={latest}
+        report={latestReport.data}
+        plan={latestPlan.data}
+      />
 
       {previous.length > 0 ? (
         <div>
@@ -134,6 +183,7 @@ export function ResearchCard({
                     projectId={projectId}
                     run={run}
                     report={previousReports[index]?.data}
+                    plan={previousPlans[index]?.data}
                   />
                 </li>
               ))}

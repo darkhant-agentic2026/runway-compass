@@ -25,10 +25,13 @@
  *
  * The model is the deterministic stub, which recognises `reviewer_writer` (the research
  * pipeline's last node, since M9) by its tool set and sizes its report from the
- * **research** budget line the prompt carries — the task's
- * own estimate, not the project default. So a 30-minute task getting a 30-minute checklist
- * is evidence that the estimate reached the model, on the same footing as flow #7's
- * duration override (`apps/api/src/coach/integrations/stub_model.py`).
+ * **research** budget line the prompt carries — the task's own `estimatedMinutes`. There
+ * is no task-level minutes input any more (docs/09-roadmap.md#task-board-and-task-view-polish):
+ * a task's estimate starts as whichever default is in effect for its project, so flow #5
+ * below sets a project override (120 min, not the 45-minute global default) before
+ * creating the task, and a 120-minute checklist is the evidence that estimate reached the
+ * model — the same point flow #7 makes through the coach instead of research
+ * (`apps/api/src/coach/integrations/stub_model.py`).
  *
  * **The two state changes are the point of the flow, not decoration.** They are the halves
  * of M4 that no unit test sees end to end: a badge that moves because the server derived a
@@ -51,6 +54,10 @@ async function researchTask(
   page: Page,
   buttonName = 'Research this task now',
 ): Promise<string> {
+  // Behind the "Manual actions" disclosure now, collapsed on every load
+  // (docs/09-roadmap.md#task-board-and-task-view-polish) — a fresh workspace visit (this
+  // helper's own "Open task" return trip included) always starts collapsed.
+  await page.getByRole('button', { name: 'Manual actions' }).click();
   await page.getByRole('button', { name: buttonName }).click();
   await page.waitForURL(/\/research\//);
   const researchUrl = page.url();
@@ -71,7 +78,7 @@ async function researchTask(
   // what lets it reuse the streaming path unchanged. The transcript pane stayed mounted
   // (and collecting events) the whole time, hidden rather than removed, so switching to it
   // now finds the chips immediately rather than waiting for them to stream in again.
-  await page.getByRole('button', { name: 'Transcript' }).click();
+  await page.getByRole('button', { name: 'Transcript (troubleshooting)' }).click();
   await expect(page.getByTestId('tool-chips').first()).toBeVisible();
 
   await page.getByRole('link', { name: 'Open task' }).click();
@@ -96,19 +103,33 @@ async function send(page: Page, message: string) {
   await page.getByRole('button', { name: 'Send' }).click();
 }
 
+/**
+ * No minutes field: a task is sized from whichever default is in effect for its project
+ * at creation (docs/09-roadmap.md#task-board-and-task-view-polish) — global unless
+ * `projectMinutes` overrides it first, the same override flow #7 (`coach.spec.ts`) drives
+ * through the coach instead of research. It is that effective default the stub reads out
+ * of the rendered instruction once research runs.
+ */
 async function openWorkspace(
   page: Page,
   projectTitle: string,
   taskTitle: string,
-  minutes = 30,
+  projectMinutes?: number,
 ) {
   await page.goto('/');
   await page.getByLabel('New project').fill(projectTitle);
   await page.getByRole('button', { name: 'Create' }).click();
   await page.getByRole('link', { name: projectTitle }).click();
 
+  if (projectMinutes !== undefined) {
+    await page.getByRole('link', { name: 'Project settings' }).click();
+    await page.getByLabel('Default task length (minutes)').fill(String(projectMinutes));
+    await page.getByLabel('Default task length (minutes)').blur();
+    await expect(page.getByTestId('minutes-explainer')).toContainText('in effect');
+    await page.goBack();
+  }
+
   await page.getByLabel('New task').fill(taskTitle);
-  await page.getByLabel('Minutes').fill(String(minutes));
   await page.getByRole('button', { name: 'Add task' }).click();
   await page.getByTestId('open-workspace').filter({ hasText: taskTitle }).click();
 
@@ -118,7 +139,10 @@ async function openWorkspace(
 test('flow #5: research fills the checklist, and finishing it completes the task', async ({
   signedIn: page,
 }) => {
-  await openWorkspace(page, 'Async Python', 'Structured concurrency', 30);
+  // 120 rather than the 45-minute global default, so the checklist-budget assertion
+  // below is evidence the effective *project* default reached the model — there is no
+  // task-level override any more to prove the same thing with directly.
+  await openWorkspace(page, 'Async Python', 'Structured concurrency', 120);
 
   // A brand-new task has no plan, and the badge says so rather than calling it "not
   // started" — which would be a claim about the learner rather than about the task.
@@ -143,9 +167,11 @@ test('flow #5: research fills the checklist, and finishing it completes the task
   // report, linking back into the research view.
   await expect(page.getByTestId('research-card')).toBeVisible();
 
-  // The budget meter sums the checklist against the *task's* 30 minutes, not the project's
-  // 45-minute default — the number the stub read out of the rendered instruction.
-  await expect(page.getByTestId('checklist-budget')).toContainText('30 min of 30 min');
+  // The budget meter sums the checklist against this project's own 120-minute ("2 h")
+  // default, not the 45-minute global one — the number the stub read out of the rendered
+  // instruction, off the task's own `estimatedMinutes` (set from the project default at
+  // creation, since there is no task-level override any more).
+  await expect(page.getByTestId('checklist-budget')).toContainText('2 h of 2 h');
 
   // One guided, one unguided. The guided one carries the marker and — asserted in
   // `Checklist.test.tsx` and again here because it is the rule most likely to be undone by
@@ -174,7 +200,7 @@ test('flow #5: research fills the checklist, and finishing it completes the task
 test('flow #5: a second research run replaces the checklist without losing finished work', async ({
   signedIn: page,
 }) => {
-  await openWorkspace(page, 'Rust ownership', 'Borrow checker', 30);
+  await openWorkspace(page, 'Rust ownership', 'Borrow checker');
 
   const firstRunUrl = await researchTask(page);
   const checklist = page.getByTestId('checklist');
@@ -209,7 +235,7 @@ test('flow #5: a second research run replaces the checklist without losing finis
 test('flow #5: the board shows a leaf task’s checklist progress', async ({
   signedIn: page,
 }) => {
-  await openWorkspace(page, 'Board progress', 'A researched task', 30);
+  await openWorkspace(page, 'Board progress', 'A researched task');
 
   await researchTask(page);
   await expect(page.getByTestId('checklist')).toBeVisible();
@@ -237,16 +263,17 @@ test('a subtask’s checklist is visible and tickable inside the parent', async 
     The inheritance is the interesting half: the checklist is built by a research run on the
     parent, and then a subtask takes it over.
   */
-  await openWorkspace(page, 'Compilers', 'Write the parser', 30);
+  await openWorkspace(page, 'Compilers', 'Write the parser');
 
   await researchTask(page);
   await expect(page.getByTestId('checklist')).toBeVisible();
   await page.getByTestId('checklist').getByRole('checkbox').first().click();
   await expect(page.getByTestId('checklist-budget')).toContainText('1 of 2 done');
 
-  // Making it composite moves those steps — ticks and all — onto the new subtask.
+  // Making it composite moves those steps — ticks and all — onto the new subtask. No
+  // minutes field: a subtask is sized from the project's own default
+  // (docs/09-roadmap.md#task-board-and-task-view-polish).
   await page.getByLabel('New subtask').fill('Tokenizing');
-  await page.getByLabel('Minutes').fill('20');
   await page.getByRole('button', { name: 'Add subtask' }).click();
 
   const card = page.getByTestId('subtask-card').filter({ hasText: 'Tokenizing' });
@@ -278,7 +305,7 @@ test('the completion gate can be silenced from the dialog it interrupts', async 
     "the preference was written" would pass against a gate that only re-read the setting at
     process start.
   */
-  await openWorkspace(page, 'Drills', 'Quick practice', 30);
+  await openWorkspace(page, 'Drills', 'Quick practice');
   await researchTask(page);
   await expect(page.getByTestId('checklist')).toBeVisible();
 
@@ -324,6 +351,9 @@ test('M8: research with no task, from the board, produces a taskless report and 
   await page.getByRole('button', { name: 'Create' }).click();
   await page.getByRole('link', { name: 'Choosing a stack' }).click();
 
+  // Behind the board's own "Manual actions" disclosure now, collapsed on load
+  // (docs/09-roadmap.md#task-board-and-task-view-polish).
+  await page.getByRole('button', { name: 'Manual actions' }).click();
   await page.getByRole('button', { name: 'Research something for this project' }).click();
   await page
     .getByLabel('What should your coach research?')
@@ -343,7 +373,7 @@ test('M8: research with no task, from the board, produces a taskless report and 
     'What answers the question',
   );
 
-  await page.getByRole('button', { name: 'Transcript' }).click();
+  await page.getByRole('button', { name: 'Transcript (troubleshooting)' }).click();
   await expect(page.getByTestId('tool-chips').first()).toBeVisible();
 
   await page.getByRole('link', { name: '← Back to the board' }).click();
@@ -367,6 +397,7 @@ test('a roadmap run shows each agent as its own author, and a study-plan notice 
   await page.getByRole('button', { name: 'Create' }).click();
   await page.getByRole('link', { name: 'Becoming a data engineer' }).click();
 
+  await page.getByRole('button', { name: 'Manual actions' }).click();
   await page.getByRole('button', { name: 'Build a roadmap for this project' }).click();
   await page
     .getByLabel('What should the roadmap cover?')
@@ -408,7 +439,7 @@ test('a roadmap run shows each agent as its own author, and a study-plan notice 
 
   // The transcript is a second, hidden-not-unmounted view now rather than a second pane —
   // switch to it for the author labels and the debug toggle.
-  await page.getByRole('button', { name: 'Transcript' }).click();
+  await page.getByRole('button', { name: 'Transcript (troubleshooting)' }).click();
   // `plan_tailor`'s `write_study_plan` call, labelled with its own author rather than an
   // anonymous "the coach" bubble. Two of its messages carry that author (the call, then
   // its closing reply) — `.first()` is the call, which is all this needs to assert.
@@ -421,7 +452,13 @@ test('a roadmap run shows each agent as its own author, and a study-plan notice 
   await expect(meta.locator('code')).toBeVisible();
 
   await page.getByRole('link', { name: '← Back to the board' }).click();
-  await expect(page.getByTestId('research-card')).toBeVisible();
+  const card = page.getByTestId('research-card');
+  await expect(card).toBeVisible();
+  // The board's card names the plan rather than summarizing a report a roadmap run never
+  // wrote — `GET /api/runs/{runId}/report` 404s for one.
+  await expect(card).toContainText('Roadmap: A stub study plan');
+  // Not yet accepted into real tasks (`materialize_study_plan`), so no "Approved" chip.
+  await expect(card.getByTestId('approved')).toHaveCount(0);
 });
 
 test('a failed roadmap run offers Resume, which restarts it with the same reason', async ({
@@ -441,6 +478,7 @@ test('a failed roadmap run offers Resume, which restarts it with the same reason
   await page.getByRole('button', { name: 'Create' }).click();
   await page.getByRole('link', { name: 'A roadmap that fails' }).click();
 
+  await page.getByRole('button', { name: 'Manual actions' }).click();
   await page.getByRole('button', { name: 'Build a roadmap for this project' }).click();
   await page.getByLabel('What should the roadmap cover?').fill('make this turn fail');
   await page.getByRole('button', { name: 'Build the roadmap' }).click();
@@ -458,6 +496,6 @@ test('a failed roadmap run offers Resume, which restarts it with the same reason
   await expect(page.getByTestId('research-failed')).toBeVisible();
 
   // Same reason carried over, read back from the failed run's own session — not retyped.
-  await page.getByRole('button', { name: 'Transcript' }).click();
+  await page.getByRole('button', { name: 'Transcript (troubleshooting)' }).click();
   await expect(page.getByText('make this turn fail')).toBeVisible();
 });

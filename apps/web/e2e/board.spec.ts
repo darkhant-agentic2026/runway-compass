@@ -23,9 +23,13 @@ async function createProject(page: Page, title: string) {
   await expect(page.getByRole('heading', { name: title })).toBeVisible();
 }
 
-async function addTask(page: Page, title: string, minutes = 45) {
+/**
+ * No minutes field: a task is sized from the project's own default at creation, the same
+ * as a subtask (`addSubtasks` below) — its displayed duration only tracks its own
+ * checklist once one exists (docs/09-roadmap.md#task-board-and-task-view-polish).
+ */
+async function addTask(page: Page, title: string) {
   await page.getByLabel('New task').fill(title);
-  await page.getByLabel('Minutes').fill(String(minutes));
   await page.getByRole('button', { name: 'Add task' }).click();
   await expect(page.getByTestId('task-card').filter({ hasText: title })).toBeVisible();
 }
@@ -36,14 +40,17 @@ async function addTask(page: Page, title: string, minutes = 45) {
  * The only hand path to a subtask since `POST /api/tasks/{id}/split` was removed, and it
  * lives on the workspace rather than the board because that is the screen a composite task
  * is worked from. Leaves the page *on* the workspace, which is where both callers want it.
+ *
+ * No minutes field: a subtask is sized from the project's own default, the same as any
+ * other task created without an explicit override
+ * (docs/09-roadmap.md#task-board-and-task-view-polish).
  */
-async function addSubtasks(page: Page, taskTitle: string, subtasks: [string, number][]) {
+async function addSubtasks(page: Page, taskTitle: string, subtasks: string[]) {
   await page.getByTestId('open-workspace').filter({ hasText: taskTitle }).click();
   await expect(page.getByTestId('add-subtask')).toBeVisible();
 
-  for (const [title, minutes] of subtasks) {
+  for (const title of subtasks) {
     await page.getByLabel('New subtask').fill(title);
-    await page.getByLabel('Minutes').fill(String(minutes));
     await page.getByRole('button', { name: 'Add subtask' }).click();
     await expect(page.getByTestId('subtask-card').filter({ hasText: title })).toBeVisible();
   }
@@ -107,8 +114,8 @@ test('manage tasks by hand: add, start, complete, and hide-completed filters it 
 }) => {
   await createProject(page, 'Manage by hand');
 
-  await addTask(page, 'First task', 30);
-  await addTask(page, 'Second task', 90);
+  await addTask(page, 'First task');
+  await addTask(page, 'Second task');
   await expect(page.getByTestId('task-card')).toHaveCount(2);
 
   // Only legal transitions are offered: a task with no plan yet cannot be postponed,
@@ -181,17 +188,17 @@ test('a composite parent shows its subtask count and summed duration', async ({
   // subtasks…" row action and `POST /api/tasks/{id}/split` behind it were removed after
   // M4: one call producing a whole breakdown made the model commit to every piece before
   // discussing any of them, and there is no sensible hand version of that either.
+  //
+  // Each subtask is sized from the project's own default (45 min, unconfigured here) —
+  // there is no per-subtask duration input — so the rollup's sum is two of those.
   await createProject(page, 'Breaking up');
-  await addTask(page, 'Big thing', 120);
-  await addSubtasks(page, 'Big thing', [
-    ['First half', 60],
-    ['Second half', 60],
-  ]);
+  await addTask(page, 'Big thing');
+  await addSubtasks(page, 'Big thing', ['First half', 'Second half']);
 
   await page.getByRole('link', { name: 'Back to the board' }).click();
   const parent = page.getByTestId('task-card').filter({ hasText: 'Big thing' });
   await expect(parent.getByTestId('rollup')).toContainText('2 subtasks');
-  await expect(parent.getByTestId('rollup')).toContainText('2 h');
+  await expect(parent.getByTestId('rollup')).toContainText('1 h 30 m');
   await expect(parent.getByTestId('subtask')).toHaveCount(2);
 });
 
@@ -234,11 +241,8 @@ test('a composite task shows its subtasks in the workspace, and completing one l
   // the cards, the fact that none of them navigates, and the mutation reaching both the
   // detail query the workspace reads and the board query it does not.
   await createProject(page, 'Composite');
-  await addTask(page, 'Big piece', 120);
-  await addSubtasks(page, 'Big piece', [
-    ['First half', 60],
-    ['Second half', 60],
-  ]);
+  await addTask(page, 'Big piece');
+  await addSubtasks(page, 'Big piece', ['First half', 'Second half']);
 
   const cards = page.getByTestId('subtask-cards').getByTestId('subtask-card');
   await expect(cards).toHaveCount(2);
@@ -269,16 +273,19 @@ test('the workspace shows breadcrumbs and a collapsible detail column', async ({
   signedIn: page,
 }) => {
   await createProject(page, 'Breadcrumb trail');
-  await addTask(page, 'Read the paper', 30);
+  await addTask(page, 'Read the paper');
   await page.getByTestId('open-workspace').filter({ hasText: 'Read the paper' }).click();
 
   const breadcrumb = page.getByRole('navigation', { name: 'Breadcrumb' });
   await expect(breadcrumb.getByRole('link', { name: 'Breadcrumb trail' })).toBeVisible();
   await expect(breadcrumb.getByText('Read the paper')).toBeVisible();
 
-  // The narrow info strip — no title, since the breadcrumb already carries it.
+  // The narrow info strip — no title, since the breadcrumb already carries it. A fresh
+  // task has no checklist yet, so its duration is still the project's own default (45
+  // min, unconfigured here) rather than anything set at creation — there is no minutes
+  // input to have set it with.
   const strip = page.getByTestId('task-info-strip');
-  await expect(strip).toContainText('30 min');
+  await expect(strip).toContainText('45 min');
   await expect(strip).toContainText('No plan yet');
   await expect(strip).not.toContainText('Read the paper');
 

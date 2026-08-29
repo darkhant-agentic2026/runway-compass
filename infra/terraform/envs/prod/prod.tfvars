@@ -17,6 +17,11 @@ service_url_hint        = "https://coach-api-REPLACE_ME.us-central1.run.app"
 
 notification_channels = []
 
+# The variable's default is 4 (dev's value); prod was hardcoded at 10 in main.tf before
+# main.tf started reading this variable instead, so this preserves that value rather than
+# silently dropping to the default.
+max_instances = 10
+
 # Deliberately unset, unlike dev, which pins `vertex_location = "global"` because
 # `gemini-3.7-flash` was not served in `us-central1` there (probed 2026-08-17).
 #

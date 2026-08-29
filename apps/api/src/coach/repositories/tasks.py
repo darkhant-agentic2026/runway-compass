@@ -163,6 +163,19 @@ class TaskRepository:
             return
         await reference.update(payload)
 
+    async def delete(
+        self, project_id: str, task_id: str, transaction: AsyncTransaction | None = None
+    ) -> None:
+        """Hard delete — `TaskService.delete_all_tasks`'s own primitive, the troubleshooting
+        reset. No other caller: every other removal in this project is `discard_task`'s
+        soft `TaskState.DISCARDED`, which keeps the document around on purpose.
+        """
+        reference = self._doc(project_id, task_id)
+        if transaction is not None:
+            transaction.delete(reference)
+            return
+        await reference.delete()
+
     def patch_in_batch(
         self, batch: AsyncWriteBatch, project_id: str, task_id: str, patch: dict[str, Any]
     ) -> None:

@@ -21,13 +21,16 @@ __pycache__/
 coverage.xml
 htmlcov/
 
-# --- Node (apps/web) ---
+# --- Node (apps/web, apps/functions) ---
 node_modules/
 dist/
 dist-ssr/
 .vite/
 *.tsbuildinfo
 coverage/
+# apps/functions' compiled output (its package.json `main`); apps/web has no directory
+# by this name, so this is unambiguous without anchoring it to one app.
+lib/
 
 # --- Playwright ---
 test-results/

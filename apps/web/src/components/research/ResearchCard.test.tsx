@@ -18,7 +18,7 @@ import { ResearchCard } from '@/components/research/ResearchCard';
 import { createQueryClient } from '@/features/queries';
 import { api } from '@/lib/api';
 import type { AutonomousRun } from '@/lib/schemas';
-import { makeReport } from '@/test/factories';
+import { makeReport, makeStudyPlan } from '@/test/factories';
 
 let counter = 0;
 
@@ -97,6 +97,61 @@ describe('ResearchCard', () => {
   it('marks a project-scoped run (no taskId) distinctly', () => {
     renderCard([makeRun({ status: 'failed', taskId: null })]);
     expect(screen.getByText('Project')).toBeInTheDocument();
+  });
+
+  describe('a roadmap run', () => {
+    /** `steps[0].id === 'roadmap'` is how a roadmap run is told apart from an ordinary
+     * one (`ResearchViewPage.tsx`'s own convention) — neither run carries a field naming
+     * its pipeline directly. */
+    function makeRoadmapRun(overrides: Partial<AutonomousRun> = {}): AutonomousRun {
+      return makeRun({
+        taskId: null,
+        steps: [
+          {
+            id: 'roadmap',
+            status: 'complete',
+            startedAt: null,
+            endedAt: null,
+            output: null,
+            error: null,
+          },
+        ],
+        ...overrides,
+      });
+    }
+
+    it('titles the card "Roadmap: <plan title>" rather than summarizing a report', async () => {
+      const getReport = vi.spyOn(api, 'getRunReport');
+      vi.spyOn(api, 'getRunPlan').mockResolvedValue(
+        makeStudyPlan({ title: 'Get comfortable with async Python' }),
+      );
+      renderCard([makeRoadmapRun()]);
+
+      expect(
+        await screen.findByText('Roadmap: Get comfortable with async Python'),
+      ).toBeInTheDocument();
+      // A roadmap run has no `ResearchReport` — fetching one would just 404.
+      expect(getReport).not.toHaveBeenCalled();
+    });
+
+    it('shows an "Approved" chip once the plan has been materialized', async () => {
+      vi.spyOn(api, 'getRunPlan').mockResolvedValue(
+        makeStudyPlan({ title: 'A plan', materializedAt: '2026-08-20T12:00:00Z' }),
+      );
+      renderCard([makeRoadmapRun()]);
+
+      expect(await screen.findByTestId('approved')).toHaveTextContent('Approved');
+    });
+
+    it('shows no "Approved" chip while the plan is still a draft', async () => {
+      vi.spyOn(api, 'getRunPlan').mockResolvedValue(
+        makeStudyPlan({ title: 'A plan', materializedAt: null }),
+      );
+      renderCard([makeRoadmapRun()]);
+
+      await screen.findByText('Roadmap: A plan');
+      expect(screen.queryByTestId('approved')).not.toBeInTheDocument();
+    });
   });
 
   describe('previous research', () => {

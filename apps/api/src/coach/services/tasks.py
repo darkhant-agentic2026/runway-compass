@@ -297,6 +297,7 @@ class TaskService:
         after_task_id: str | None = None,
         needs_research: bool = True,
         origin: Origin = Origin.USER,
+        study_plan_run_id: str | None = None,
     ) -> Task:
         await self._project_service.require_owned(principal, project_id)
         if estimated_minutes is None:
@@ -346,6 +347,7 @@ class TaskService:
                 needs_research=needs_research,
                 items=inherited,
                 origin=origin,
+                study_plan_run_id=study_plan_run_id,
             )
             created = await self._tasks.create(task, transaction=transaction)
             tasks.append(created)
@@ -369,6 +371,42 @@ class TaskService:
             # `not_started` — and returning the pre-derivation object would answer the
             # create with a state the database does not have.
             return next(t for t in tasks if t.id == created.id)
+
+        async with self._project_lock(project_id):
+            return await self._db.run(txn)
+
+    async def delete_all_tasks(self, principal: Principal, project_id: str) -> int:
+        """Troubleshooting only: hard-deletes every task in the project, board and
+        subtasks alike, and resets `counts`/`nextUpTaskId` to the empty board's values.
+
+        Every other removal in this codebase is `discard_task`'s soft
+        `TaskState.DISCARDED` — deliberately reversible, because a learner's real work is
+        at stake. This one is not, and has exactly one legitimate use: clearing a board
+        so `materialize_study_plan` can recreate it from an already-written `StudyPlan`
+        (`StudyPlanService.reset_materialization`, the pointer's other half) without
+        re-running the research the plan already paid for. `POST
+        /api/projects/{id}/troubleshooting/delete-all-tasks` — never exposed as an agent
+        tool, and gated by its own confirmation dialog in project settings, not the
+        board's ordinary controls.
+
+        Returns the number of tasks deleted.
+        """
+        await self._project_service.require_owned(principal, project_id)
+
+        @async_transactional
+        async def txn(transaction: AsyncTransaction) -> int:
+            project, tasks = await self._read_board(transaction, project_id)
+            for task in tasks:
+                await self._tasks.delete(project_id, task.id, transaction=transaction)
+            updates: dict[str, Any] = {}
+            counts = compute_counts([])
+            if counts != project.counts:
+                updates["counts"] = counts.to_document()
+            if project.next_up_task_id is not None:
+                updates["nextUpTaskId"] = None
+            if updates:
+                await self._projects.patch(project.id, updates, transaction=transaction)
+            return len(tasks)
 
         async with self._project_lock(project_id):
             return await self._db.run(txn)
@@ -886,11 +924,9 @@ class TaskService:
                 (from_task_id, remaining),
                 (to_task_id, [*target.items, *moving]),
             ):
-                document = [item.to_document() for item in items]
-                await self._tasks.patch(
-                    project_id, task_id, {"items": document}, transaction=transaction
-                )
-                _apply(tasks, task_id, {"items": document})
+                updates = _item_write_updates(items)
+                await self._tasks.patch(project_id, task_id, updates, transaction=transaction)
+                _apply(tasks, task_id, updates)
 
             await self._write_derived(transaction, project, tasks)
             return (
@@ -930,11 +966,9 @@ class TaskService:
                 )
 
             items: list[TaskItem] = rewrite(list(current.items))
-            document = [item.to_document() for item in items]
-            await self._tasks.patch(
-                project_id, task_id, {"items": document}, transaction=transaction
-            )
-            _apply(tasks, task_id, {"items": document})
+            updates = _item_write_updates(items)
+            await self._tasks.patch(project_id, task_id, updates, transaction=transaction)
+            _apply(tasks, task_id, updates)
             await self._write_derived(transaction, project, tasks)
             return next(t for t in tasks if t.id == task_id)
 
@@ -1031,6 +1065,30 @@ class TaskService:
             updates["nextUpTaskId"] = next_up
         if updates:
             await self._projects.patch(project.id, updates, transaction=transaction)
+
+
+def _item_write_updates(items: list[TaskItem]) -> dict[str, Any]:
+    """The patch every item write applies: the array itself, and — as long as the items
+    carry a real total — the duration that array now adds up to.
+
+    docs/09-roadmap.md#task-board-and-task-view-polish: `add_items`/`replace_items`/
+    `patch_item`/`delete_item` (all funnelled through `_write_items`) and `move_items` used
+    to write `items` alone, so a checklist edited after the task was sized showed a
+    duration that no longer matched what was on it. `estimatedMinutes` is now simply what
+    the checklist adds up to — a task no longer carries a separately-set "budget" the
+    checklist is measured against, which was a pre-multi-task-planning idea that M9's
+    subtask/reordering machinery has since made redundant.
+
+    An empty list, or one whose items are all hand-added with no `minutes` of their own,
+    is left alone rather than zeroed — a task's `estimatedMinutes` must be at least 1
+    (`Minutes`, `coach.services.models`), and a task with no sized items at all still has a
+    duration that means something on its own (docs/02-data-model.md#task-items).
+    """
+    updates: dict[str, Any] = {"items": [item.to_document() for item in items]}
+    total = sum(item.minutes or 0 for item in items)
+    if total > 0:
+        updates["estimatedMinutes"] = total
+    return updates
 
 
 def _task_item(draft: dict[str, Any], *, source_report_id: str | None) -> TaskItem:

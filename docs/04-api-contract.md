@@ -16,7 +16,24 @@ or a row of user data.
 
 ## Authentication
 
-- Frontend signs in with **Cloud Identity Platform**, Google provider.
+- Frontend signs in with **Cloud Identity Platform**, either the Google provider or
+  email/password. There is no self-serve sign-up screen for the latter — accounts are
+  created by hand in the Identity Platform console (or `firebase_admin.auth.create_user`)
+  and the credentials handed to whoever needs to sign in, which is the intended path for a
+  developer without a Google account that's known in advance. Both providers issue the same
+  token shape, so nothing past the frontend's `signIn()` call — including everything below —
+  branches on which one was used.
+- **The "no self-serve sign-up" rule is enforced, not just unexposed.** Identity
+  Platform's `accounts:signUp` REST endpoint accepts a password sign-up from anyone
+  holding the public Web API key, regardless of what the SPA's UI offers. A `beforeCreate`
+  blocking function (`apps/functions`, wired on in
+  [07-infra-deploy.md](07-infra-deploy.md#resources-provisioned)) rejects the create
+  request when its credential's provider is `password`. Accounts created through the
+  Admin SDK or the console never reach this function at all — blocking triggers fire only
+  for client-SDK sign-up — so the operator-driven path above is unaffected. The Google
+  provider is untouched by this check; auto-provisioning any Google account on first
+  sign-in is the existing, deliberate design (no allowlist — see
+  `UserService.get_or_create` below).
 - REST: `Authorization: Bearer <id-token>`; verified with
   `firebase_admin.auth.verify_id_token` — the Admin SDK for `identitytoolkit`, and the only
   reason that dependency exists. Signature, audience, and expiry are checked **offline**
@@ -239,6 +256,10 @@ Behaviour:
 - Task-linked behaviour is unchanged from M4/M5: verifies the task is a leaf (a task with
   subtasks refuses — each subtask is researched on its own), and refuses with `409` if
   `researchStatus == "done"` and `force` was not set.
+- **Refuses with `429 quota-below-threshold` (M10) before anything else, if the owner's
+  remaining monthly points are under `plan.limits.runStartPointsThreshold`** — see
+  [below](#run-start-points-threshold-m10). Cheaper than the lease or the ledger row, both
+  of which this check runs ahead of.
 - Acquires the project agent lease. If the lease is held by an autonomous run, returns
   `409` with `{ runId }` of the in-flight run so the UI can attach to it instead of
   starting a duplicate.
@@ -388,7 +409,8 @@ are ownership-checked against the socket's principal at subscribe time.
 { "type": "tool_result",   "turnId": "…", "seq": 45, "name": "…", "ok": true }
 { "type": "artifact",      "turnId": "…", "seq": 46, "kind": "research_report",
                            "reportId": "…", "taskId": "…" }
-{ "type": "turn_complete", "turnId": "…", "seq": 47, "eventIds": ["…"] }
+{ "type": "turn_complete", "turnId": "…", "seq": 47, "eventIds": ["…"],
+                           "pointsRemaining": null, "pointsThreshold": null }
 { "type": "turn_error",    "turnId": "…", "seq": 47, "code": "…", "message": "…", "retryable": true }
 { "type": "board_update",  "projectId": "…", "taskIds": ["…"], "origin": "agent", "runId": "…" }
 { "type": "run_status",    "runId": "…", "step": "research", "status": "running" }
@@ -406,6 +428,12 @@ before.
 `board_update` is the invalidation push that keeps the task board live while the
 autonomous agent works — the client turns it into a TanStack Query invalidation rather
 than trying to patch state from the message.
+
+`turn_complete`'s `pointsRemaining`/`pointsThreshold` (M10, docs/09-roadmap.md#research-concurrency)
+are both `null` on almost every turn — they carry a value only once the owner's remaining
+*monthly* points have dropped under `plan.limits.runStartPointsThreshold + 100`. The client
+uses their presence as the whole signal for a low-points nag, so it never needs a separate
+`GET /api/me` just to check.
 
 ## Surviving client disconnects
 
@@ -494,3 +522,24 @@ No turn is created, so there is nothing to resume — the client's only affordan
 retry once `resetAt` has passed, which is a plain resend of the same message rather than a
 reconnect. See [02-data-model.md](02-data-model.md#usage-quotas-m8-quotas) for the windows,
 the points unit, and why enforcement is one gate.
+
+### Run-start points threshold (M10)
+
+`POST /api/sessions/{sid}/research` and `POST /api/sessions/{sid}/roadmap` are refused
+earlier than outright exhaustion, with `429` and `type: /problems/quota-below-threshold`,
+once the owner's remaining *monthly* points fall under their own
+`plan.limits.runStartPointsThreshold` (default 800):
+
+```jsonc
+{ "type": "/problems/quota-below-threshold", "title": "Too few points to start a new run",
+  "status": 429,
+  "detail": "Starting a new research run needs at least 800 monthly usage points; 640 remain.",
+  "threshold": 800, "remaining": 640 }
+```
+
+The same check gates `/internal/tick`'s scheduled and requested candidates
+([05-autonomous-runs.md](05-autonomous-runs.md#candidate-selection-and-guards)), so a
+learner pressing the button gets the same answer the tick would have given it. Distinct
+from `quota-exceeded` above: this is a voluntary stop with headroom still left in the
+window, meant to avoid spending points on a run likely to hit the real quota partway
+through and fail.

@@ -140,9 +140,12 @@ async function createProject(page: Page, title: string) {
   await expect(page.getByRole('heading', { name: title })).toBeVisible();
 }
 
-async function addTask(page: Page, title: string, minutes = 30) {
+/**
+ * No minutes field: a task is sized from the project's own default at creation, the same
+ * as a subtask (docs/09-roadmap.md#task-board-and-task-view-polish).
+ */
+async function addTask(page: Page, title: string) {
   await page.getByLabel('New task').fill(title);
-  await page.getByLabel('Minutes').fill(String(minutes));
   await page.getByRole('button', { name: 'Add task' }).click();
   await expect(page.getByTestId('open-workspace').filter({ hasText: title })).toBeVisible();
 }
@@ -180,6 +183,9 @@ test('flow #6: a run changes the board, the banner says what it did, and undo re
     .getByTestId('open-workspace')
     .filter({ hasText: 'Structured concurrency' })
     .click();
+  // Behind the "Manual actions" disclosure now, collapsed on load
+  // (docs/09-roadmap.md#task-board-and-task-view-polish).
+  await page.getByRole('button', { name: 'Manual actions' }).click();
   await page.getByTestId('queue-research').click();
   await expect(page.getByTestId('queue-research')).toHaveText(/Starts soon/);
 
@@ -271,6 +277,7 @@ test('flow #8: presence skips auto-scheduled work, and a request runs anyway', a
   await page.goto(projectA);
   await page.getByTestId('open-workspace').filter({ hasText: 'Task A' }).click();
   await expect(page.getByRole('heading', { name: 'Task A' })).toBeVisible();
+  await page.getByRole('button', { name: 'Manual actions' }).click();
 
   const first = await tick(page.request);
 
@@ -323,6 +330,7 @@ test('flow #9: a requested run is scheduled ahead of auto-scheduled work', async
   await addTask(page, 'Wanted task');
   await page.getByTestId('open-workspace').filter({ hasText: 'Wanted task' }).click();
   const wantedTaskUrl = page.url();
+  await page.getByRole('button', { name: 'Manual actions' }).click();
   await page.getByTestId('queue-research').click();
   await expect(page.getByTestId('queue-research')).toHaveText(/Starts soon/);
 

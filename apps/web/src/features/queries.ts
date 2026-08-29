@@ -351,7 +351,7 @@ export function useTaskItemMutation(taskId: string, projectId: string) {
 export function useCreateSubtask(parentTaskId: string, projectId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (body: { title: string; estimatedMinutes: number; parentTaskId: string }) =>
+    mutationFn: (body: { title: string; parentTaskId: string }) =>
       api.createTask(projectId, body, newIdempotencyKey()),
     onSettled() {
       void queryClient.invalidateQueries({
@@ -718,6 +718,20 @@ export function usePatchProject(projectId: string) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.effectivePrefs(projectId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects });
+    },
+  });
+}
+
+/** Project settings' troubleshooting action — see `ProjectSettingsPage`. Invalidates the
+ * board and the project (whose `counts`/`nextUpTaskId` just went to zero), the same pair
+ * every other task mutation above invalidates. */
+export function useDeleteAllProjectTasks(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.deleteAllProjectTasks(projectId, newIdempotencyKey()),
+    onSuccess() {
+      void queryClient.invalidateQueries({ queryKey: ['tasks', projectId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
     },
   });
 }

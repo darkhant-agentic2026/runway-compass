@@ -1,4 +1,4 @@
-# Self-Study Coach
+# Runway Compass
 
 An adaptive agentic coach that turns your technical goals into bite-sized tasks, prepares
 the material for the next one while you're away, and adjusts how it guides you as it

@@ -29,7 +29,7 @@ infra/terraform/
 
 | Resource | Notes |
 | --- | --- |
-| `google_project_service` × N | `run`, `firestore`, `cloudtasks`, `cloudscheduler`, `aiplatform`, `artifactregistry`, `secretmanager`, `storage`, `identitytoolkit`, `monitoring`, `logging`, `cloudtrace`; the **three separate IAM-family APIs** (`iam` for service accounts and the WIF pool, `iamcredentials` for SignBlob on the upload URLs, `cloudresourcemanager` for `projects.setIamPolicy`) plus `sts` for the GitHub OIDC exchange; and **`youtube.googleapis.com`** — the YouTube Data API is easy to forget because it is the one dependency reached with an API key rather than IAM, so nothing else in the stack references it |
+| `google_project_service` × N | `run`, `firestore`, `cloudtasks`, `cloudscheduler`, `aiplatform`, `artifactregistry`, `secretmanager`, `storage`, `identitytoolkit`, `cloudfunctions`, `cloudbuild` (the blocking function's own build and 2nd-gen runtime — [modules/blocking_function](../infra/terraform/modules/blocking_function)), `monitoring`, `logging`, `cloudtrace`; the **three separate IAM-family APIs** (`iam` for service accounts and the WIF pool, `iamcredentials` for SignBlob on the upload URLs, `cloudresourcemanager` for `projects.setIamPolicy`) plus `sts` for the GitHub OIDC exchange; and **`youtube.googleapis.com`** — the YouTube Data API is easy to forget because it is the one dependency reached with an API key rather than IAM, so nothing else in the stack references it |
 | `google_cloud_run_v2_service.coach_api` | Settings below |
 | `google_firestore_database` | Native mode, `us-central1`, PITR on in prod |
 | `google_firestore_index` × N | From [02-data-model.md](02-data-model.md) |
@@ -40,8 +40,9 @@ infra/terraform/
 | `google_secret_manager_secret` | `youtube-api-key`, `gemini-api-key` (dev only) |
 | Service accounts | `coach-api-sa`, `coach-scheduler-sa`, `coach-tasks-sa`, `github-deployer-sa` |
 | `google_iam_workload_identity_pool` | Keyless GitHub Actions → GCP auth |
-| `google_identity_platform_config` | Authorized domains = the Cloud Run service URL (+ custom domain in prod) |
+| `google_identity_platform_config` | Authorized domains = the Cloud Run service URL (+ custom domain in prod); `sign_in.email` also enables the email/password provider |
 | `google_identity_platform_default_supported_idp_config` | `idp_id = "google.com"`, client ID/secret from the OAuth client below |
+| `google_cloudfunctions2_function.block_password_signup` | The `beforeCreate` blocking function (`apps/functions`) that rejects self-service email/password sign-up; source zipped by `data.archive_file` and uploaded to its own bucket — see [modules/blocking_function](../infra/terraform/modules/blocking_function) |
 | Monitoring | Alert policies from [05-autonomous-runs.md](05-autonomous-runs.md), uptime check on `/livez`, log-based error metric |
 
 The SPA is served by the Cloud Run service itself (see [Container](#container)), so there is
@@ -62,10 +63,24 @@ tribal memory:
 2. **Create the OAuth 2.0 web client and consent screen** (APIs & Services → Credentials).
    Not cleanly Terraformable; put the secret in Secret Manager and pass the client ID in as
    a tfvar. Re-check whether `google_oauth_client` has stabilised before accepting this
-   permanently.
+   permanently. **This step is for the Google provider only** — the email/password
+   provider is a plain `sign_in.email { enabled = true }` block on
+   `google_identity_platform_config` and needs no OAuth client, no consent screen, and no
+   tfvar.
 
 Both `google_identity_platform_*` resources are in the GA `hashicorp/google` provider, so the
 stack needs no `google-beta` dependency.
+
+Email/password has no self-serve sign-up screen in the SPA (see
+[04-api-contract.md](04-api-contract.md#authentication)); accounts are created by hand —
+Cloud Console → Identity Platform → Users → Add user, or `firebase_admin.auth.create_user`
+— and the credentials handed out directly. This is the path for onboarding a developer
+whose email isn't known in advance: pick any address, set a password, and give both to
+them. Nothing about first sign-in differs from a Google account — `UserService.get_or_create`
+([04-api-contract.md](04-api-contract.md)) provisions the Firestore user on the first
+verified token regardless of provider, subject to the same global new-account rate limit
+(4 / 30 min — [04-api-contract.md](04-api-contract.md#rate-limits)), which is worth knowing
+before hand-creating a batch of test accounts back to back.
 
 `google_identity_platform_config` exports `client.api_key` and `client.firebase_subdomain`,
 so the Web API key and auth domain the SPA needs are Terraform *outputs* rather than values
@@ -83,10 +98,23 @@ by design.
 | `coach-scheduler-sa` | `run.invoker` on the service (OIDC audience = service URL) |
 | `coach-tasks-sa` | `run.invoker` on the service |
 | `github-deployer-sa` | `run.admin`, `artifactregistry.writer`, `iam.serviceAccountUser` — enough to build, push, and deploy an image, and deliberately not enough to apply Terraform ([why](#ci-does-not-run-terraform)) |
+| `coach-auth-blocking-fn` | No project-level roles — it only reads the `beforeCreate` event and throws or returns, nothing else. The grant that matters runs the other way: the identitytoolkit service agent (`service-<PROJECT_NUMBER>@gcp-sa-identitytoolkit.iam.gserviceaccount.com`) holds `roles/run.invoker` on this function's underlying Cloud Run service, so Identity Platform can call it |
 
 `roles/firebaseauth.admin` is the IAM role governing Identity Platform; `coach-api-sa` needs
 it so the `DELETE /api/me` cascade can remove the identity record. Token *verification* needs
 no IAM at all — it is an offline signature check against Google's public keys.
+
+**2nd-gen Cloud Functions run on Cloud Run, and the invoker grant has to follow that.**
+`google_cloudfunctions2_function_iam_member` does not reliably accept `roles/run.invoker`
+for a gen2 function (hashicorp/terraform-provider-google#15264); the grant goes on the
+underlying Cloud Run service (`google_cloud_run_service_iam_member`, naming
+`service_config[0].service`) instead. Identity Platform's own support for gen2 blocking
+functions has a separate rough edge on top of that: the console — and sometimes
+`terraform apply` itself — can report the function as "deleted or no longer exists" for a
+while right after the `beforeCreate` trigger is first wired up, before it settles. Confirm
+in the Cloud Console that the trigger shows the function as active after applying
+[modules/blocking_function](../infra/terraform/modules/blocking_function), rather than
+trusting a clean `apply` alone.
 
 `datastore.user` on `coach-api-sa` is the entire Firestore access boundary: no other
 principal can read the data, and no client-side path exists
@@ -209,11 +237,17 @@ handles cross-instance reconnects.
 ### `ci.yml` (every PR)
 
 ```
-api:  uv sync → ruff check → ruff format --check → mypy → pytest (Firestore emulator service)
-web:  npm ci → prettier --check → tsc --noEmit → eslint → vitest run --coverage → vite build
-e2e:  docker compose (single app image + Firestore emulator) → playwright test
-tf:   terraform fmt -check → terraform validate → tflint
+api:       uv sync → ruff check → ruff format --check → mypy → pytest (Firestore emulator service)
+web:       npm ci → prettier --check → tsc --noEmit → eslint → vitest run --coverage → vite build
+functions: npm ci → prettier --check → tsc --noEmit → eslint → vitest run → tsc (build gate)
+e2e:       docker compose (single app image + Firestore emulator) → playwright test
+tf:        terraform fmt -check → terraform validate → tflint
 ```
+
+`functions:` gates `apps/functions` — the `beforeCreate` blocking function — the same way
+`web:` gates the SPA. It does not deploy anything: the function ships through
+`terraform apply`, which is a human step, same as the rest of this stack
+([CI does not run Terraform](#ci-does-not-run-terraform)).
 
 The `web:` job still runs `vite build`, but only as a typecheck-and-lint gate. The
 *deployable* bundle is the one produced inside the Docker build, so there is exactly one
@@ -401,10 +435,21 @@ ESLint rule with an opinion about whitespace, so the two tools cannot produce a 
 through the linter makes every layout difference an error in the editor and slows lint by
 the cost of a full format.
 
-**Prettier's remit stops at `apps/web`.** `.prettierignore` excludes `docs/`, every other
-`*.md`, `infra/`, and `apps/api/`. The design documents are hand-wrapped prose with tables
-aligned for reading in a terminal; reflowing them would produce a large diff that says
-nothing.
+**Prettier's remit stops at `apps/web` and `apps/functions`** — the two TypeScript
+surfaces. `.prettierignore` excludes `docs/`, every other `*.md`, `infra/`, and
+`apps/api/`. The design documents are hand-wrapped prose with tables aligned for reading
+in a terminal; reflowing them would produce a large diff that says nothing.
+
+`apps/functions` (the `beforeCreate` blocking function) has its own `eslint.config.mjs`,
+`.prettierrc.json`, and `tsconfig.json` rather than sharing `apps/web`'s — it is a plain
+Node/Cloud Functions package with no React, no Tailwind, and no browser globals, and it
+compiles to CommonJS for the Cloud Functions buildpack rather than bundling with Vite. Its
+config file extensions are `.mjs`/`.mts` rather than `.js`/`.ts`: the package has no
+`"type": "module"` (its compiled `lib/*.js` output has to stay CommonJS, since that is
+what the buildpack expects), so a plain `.js`/`.ts` config using `import` syntax is
+ambiguous to Node and Vite's native config loader and prints a module-type warning on
+every run. `./scripts/dev.sh lint` and `./scripts/dev.sh test functions` cover it the same
+way as `apps/web`.
 
 Configuration lives in `apps/web/.prettierrc.json`:
 

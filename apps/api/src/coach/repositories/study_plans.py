@@ -34,6 +34,12 @@ class StudyPlanRepository:
             return None
         return _to_plan(snapshot)
 
+    async def list_all(self, project_id: str) -> list[StudyPlan]:
+        """Every plan in the project, unordered — the troubleshooting reset's own read.
+        `get_latest`'s ordered, single-document query covers the ordinary "what does
+        `project_coach` show" case; this one genuinely needs all of them."""
+        return [_to_plan(doc) async for doc in self._collection(project_id).stream()]
+
     async def get_latest(self, project_id: str) -> StudyPlan | None:
         """The most recently written plan for this project — a `plan_tailor` run's own
         write, or a later `project_coach` revision of one, whichever is newer.

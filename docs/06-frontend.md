@@ -69,6 +69,7 @@ the optimistic order matches the confirmed order.
 | `useComposerStore` | Draft text and pending attachments per session (survives navigation) |
 | `useBoardUiStore` | `hideCompleted`, `hideDiscarded`, collapsed parents, selection — persisted to `localStorage` |
 | `useThemeStore` | `pref` (`light \| dark \| system`) and the `resolved` value — persisted to `localStorage`. See [Theme](#theme-light-dark-system) |
+| `useUsageStore` | M10: the low-points nag's `{remaining, threshold}` hint, fed by `turn_complete`, plus a session-only `dismissed` flag — not persisted, so a reload can show it again |
 
 **Why streaming tokens must not go through the Query cache:** a delta arrives every few
 tens of milliseconds; writing each into `queryClient.setQueryData` invalidates observers
@@ -180,6 +181,12 @@ A single module owns the socket:
   Clicking it opens the [research view](#research-view-projectsprojectidresearchrunid).
   This is the board-level echo of the same card the task workspace shows for one task's
   own research, below — same component, different feed.
+  **A completed roadmap run (`steps[0].id === 'roadmap'`) names the plan rather than
+  summarizing a report** — "Roadmap: {`StudyPlan.title`}" — since a roadmap run wrote a
+  `StudyPlan`, not a `ResearchReport`; fetching the latter for one 404s. Once the plan has
+  been accepted into real tasks (`materialize_study_plan`, `StudyPlan.materializedAt` set),
+  the card also carries an "Approved" chip, so a materialized plan reads differently from
+  one still sitting there as a proposal.
 - **Beside it, "View previous research (N)"** reveals the rest of `GET
   /api/projects/{id}/runs`, each rendered as the same card. Collapsed by default and
   fetching nothing until opened — a project with a long research history costs no extra

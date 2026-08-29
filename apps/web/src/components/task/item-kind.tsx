@@ -13,6 +13,7 @@
  */
 
 import { BookOpen, Code2, Globe, PenLine, Play, type LucideIcon } from 'lucide-react';
+import type { CSSProperties } from 'react';
 
 import { Badge } from '@/components/ui/badge';
 import { formatMinutes, pluralize } from '@/lib/format';
@@ -117,11 +118,13 @@ export function ItemKindStrip({
   required,
   optional = [],
   className,
+  style,
 }: {
   minutes?: number | null;
   required: KindBearing[];
   optional?: KindBearing[];
   className?: string;
+  style?: CSSProperties;
 }) {
   const requiredGroups = groupByKind(required);
   const optionalGroups = groupByKind(optional);
@@ -135,6 +138,7 @@ export function ItemKindStrip({
         'flex flex-wrap items-center gap-2 text-xs text-muted-foreground',
         className,
       )}
+      style={style}
       data-testid="item-kind-strip"
     >
       {minutes ? <span>{formatMinutes(minutes)}</span> : null}

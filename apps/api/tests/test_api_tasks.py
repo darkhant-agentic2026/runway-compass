@@ -410,3 +410,40 @@ async def test_requests_without_a_key_are_not_deduplicated(
     for _ in range(2):
         await client.post(f"/api/projects/{project_id}/tasks", json={"title": "dup"})
     assert len(await _board(client, project_id)) == 2
+
+
+# --- troubleshooting: delete-all-tasks --------------------------------------------------
+
+
+async def test_delete_all_tasks_hard_deletes_the_whole_board(
+    client: httpx.AsyncClient,
+) -> None:
+    project_id = await _project(client)
+    parent = await _add(client, project_id, "parent")
+    await _add(client, project_id, "child", parentTaskId=parent["id"], estimatedMinutes=30)
+    await _add(client, project_id, "standalone", estimatedMinutes=60)
+
+    response = await client.post(f"/api/projects/{project_id}/troubleshooting/delete-all-tasks")
+    assert response.status_code == 200, response.text
+    assert response.json()["deletedTasks"] == 3
+
+    assert await _board(client, project_id) == []
+    project = (await client.get(f"/api/projects/{project_id}")).json()
+    assert project["counts"] == {"total": 0, "completed": 0, "openMinutes": 0}
+    assert project["nextUpTaskId"] is None
+
+    # Hard, not `discard_task`'s soft state — the task is genuinely gone, not hidden.
+    assert (await client.get(f"/api/tasks/{parent['id']}")).status_code == 404
+
+
+async def test_delete_all_tasks_is_isolated_per_user(
+    client: httpx.AsyncClient, other_client: httpx.AsyncClient
+) -> None:
+    project_id = await _project(client)
+    await _add(client, project_id, "mine")
+
+    refused = await other_client.post(
+        f"/api/projects/{project_id}/troubleshooting/delete-all-tasks"
+    )
+    assert refused.status_code == 404
+    assert len(await _board(client, project_id)) == 1

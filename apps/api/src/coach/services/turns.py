@@ -481,9 +481,20 @@ class TurnService:
 
                 seq += 1
                 await self._turns.finish(turn.id, TurnStatus.COMPLETE, last_seq=seq)
+                # docs/09-roadmap.md#research-concurrency: a read against the points this
+                # turn is *about* to spend, not yet written by `record_spend` below — so
+                # the hint reflects the balance the learner will actually see once this
+                # turn's own cost lands, without a second write racing that one.
+                points = await self._quotas.points_hint(principal.uid, total_tokens)
                 await self._broker.publish(
                     turn.id,
-                    TurnComplete(turn_id=turn.id, seq=seq, event_ids=event_ids).to_wire(),
+                    TurnComplete(
+                        turn_id=turn.id,
+                        seq=seq,
+                        event_ids=event_ids,
+                        points_remaining=points[0] if points else None,
+                        points_threshold=points[1] if points else None,
+                    ).to_wire(),
                 )
         except asyncio.CancelledError:
             # The user's cancel, or shutdown. Either way the turn ends here and the

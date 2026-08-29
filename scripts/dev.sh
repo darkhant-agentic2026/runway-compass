@@ -5,8 +5,9 @@
 #   ./scripts/dev.sh up                    emulator + API (--reload) + Vite
 #   ./scripts/dev.sh seed                  a demo user, project, and 8 tasks
 #   ./scripts/dev.sh tick [--loop 60s]     call /internal/tick locally
-#   ./scripts/dev.sh test [api|web|e2e]    test subsets
-#   ./scripts/dev.sh lint                  ruff, mypy, eslint --fix, prettier, tsc, tf fmt
+#   ./scripts/dev.sh test [api|web|functions|e2e]  test subsets
+#   ./scripts/dev.sh lint                  ruff, mypy, eslint --fix, prettier, tsc (web
+#                                           and functions), tf fmt
 #   ./scripts/dev.sh doctor                check the machine prerequisites
 #   ./scripts/dev.sh gen-ordering-vectors  regenerate the cross-language order-key vectors
 #   ./scripts/dev.sh gen-event-vectors     regenerate the stored-ADK-event vectors
@@ -16,6 +17,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 API_DIR="$REPO_ROOT/apps/api"
 WEB_DIR="$REPO_ROOT/apps/web"
+FUNCTIONS_DIR="$REPO_ROOT/apps/functions"
 
 FIRESTORE_PORT="${FIRESTORE_PORT:-8081}"
 API_PORT="${API_PORT:-8080}"
@@ -223,9 +225,10 @@ cmd_test() {
   case "$target" in
     api) test_api "$@" ;;
     web) test_web ;;
+    functions) test_functions ;;
     e2e) test_e2e ;;
-    all) test_api && test_web && test_e2e ;;
-    *) fail "Unknown test target: $target (expected api, web, e2e, or nothing)" ;;
+    all) test_api && test_web && test_functions && test_e2e ;;
+    *) fail "Unknown test target: $target (expected api, web, functions, e2e, or nothing)" ;;
   esac
 }
 
@@ -242,6 +245,11 @@ test_api() {
 test_web() {
   bold "== apps/web =="
   (cd "$WEB_DIR" && npm run test)
+}
+
+test_functions() {
+  bold "== apps/functions =="
+  (cd "$FUNCTIONS_DIR" && npm run typecheck && npm run test)
 }
 
 test_e2e() {
@@ -272,6 +280,8 @@ cmd_lint() {
   (cd "$WEB_DIR" && npm run format)
   bold "== tsc =="
   (cd "$WEB_DIR" && npm run typecheck)
+  bold "== apps/functions =="
+  (cd "$FUNCTIONS_DIR" && npm run lint:fix && npm run format && npm run typecheck)
   bold "== terraform =="
   if have terraform; then
     terraform -chdir="$REPO_ROOT/infra/terraform" fmt -recursive

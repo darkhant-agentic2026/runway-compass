@@ -144,7 +144,8 @@ collection query and one security boundary.
     "tier": "free",
     "limits": {
       "autonomousRunsPerDay": 20,          // unchanged since M5: a pacing cap on background work
-      "monthlyPoints": 500, "fourHourPoints": 80   // M8-quotas
+      "monthlyPoints": 1200, "fourHourPoints": 80,  // M8-quotas
+      "runStartPointsThreshold": 800       // M10 — see "Run-start points threshold" below
     }
   }
 }
@@ -276,6 +277,7 @@ dialog itself.
   "researchStatus": "none" | "pending" | "in_progress" | "done" | "failed",
   "researchRequestedAt": null | ts,      // set iff researchStatus == "pending"
   "latestReportId": null | "…",
+  "studyPlanRunId": null | "…",          // set iff materialize_study_plan created this task
   "items": [                             // LEAF tasks only; see Task items below
     { "itemId": "i_01J…", "shortDescription": "…", "details": "…",
       "kind": "article" | "video" | "exercise" | "doc" | "code_scaffold" | null,
@@ -643,7 +645,13 @@ just what made the cut. `materialize_study_plan` (an agent tool,
 `required[]` promoted into `items[]`, the same projection `post_research_report` uses —
 only for `include` and `additional` (deep-dive) decisions; `exclude`/`reject` never become
 a task. `prerequisiteTasks`/`after` order tasks at materialization time only; neither is
-a field on `Task` itself, so a plan carries no ongoing relationship once its tasks exist.
+a field on `Task` itself. `optional[]` is never promoted either — same rule
+`post_research_report` follows, "an optional item is material the learner may want and is
+not a thing they owe the task" (above) — so **`Task.studyPlanRunId`, set at materialization,
+is the one ongoing pointer back to the plan**: the run whose `StudyPlan` this task came
+from, read back through the same `GET /api/runs/{runId}/plan` a roadmap's research view
+already uses, which is how the task workspace still shows a materialized task's own
+`optional[]` after the fact — the same role `latestReportId` plays for a `ResearchReport`.
 `materializedAt`/`materializedTaskIds` make a second call a no-op rather than a duplicate
 board write, the way `report_{runId}` keying makes a retried research step safe.
 
@@ -857,10 +865,29 @@ is not retried specially — it is simply a candidate again on the next `/intern
 any exhausted window has rolled over, the same as a project skipped for `cooldown` or
 `quiet_hours`. Nothing chases a reset; the tick already runs every 15 minutes regardless.
 
+### Run-start points threshold (M10)
+
+`plan.limits.runStartPointsThreshold` (default 800) is a second, earlier gate on the same
+*monthly* points window — not the 4-hour one, which is a short-term burst throttle expected
+to run low under ordinary use rather than a signal an account is running out of budget.
+Before a research or roadmap run is created — scheduled, requested, or manual/roadmap
+alike — `QuotaService.require_room_to_start_run` (the same logic `SchedulerService.
+_shared_guards` applies to a tick's candidates) refuses the run if remaining monthly points
+are already under the threshold, rather than letting it start and spend down toward a
+window it is unlikely to finish inside of. Distinct from `exhaustedWindow` above: this fires
+with headroom still in the window, at whatever the account holder has decided is enough
+headroom to keep in reserve.
+
+`TurnComplete`'s `pointsRemaining`/`pointsThreshold` (docs/04-api-contract.md) are how the
+frontend learns to nag about this without a separate request: both are set only once
+remaining monthly points drop under `runStartPointsThreshold + 100`, so the nag reaches the
+learner with some headroom still left before a run they try to start is actually refused.
+
 ### `plans/{tier}`
 
 ```jsonc
-{ "limits": { "monthlyPoints": 500, "fourHourPoints": 80, "autonomousRunsPerDay": 20 } }
+{ "limits": { "monthlyPoints": 1200, "fourHourPoints": 80, "autonomousRunsPerDay": 20,
+              "runStartPointsThreshold": 800 } }
 ```
 
 The preset a new account's `plan.limits` is copied from at creation
@@ -889,8 +916,9 @@ in one round trip, so two requests racing the same code cannot both win
 minus the delete — a claimed coupon is kept, not consumed, since it is also the audit trail
 of who redeemed it and when). A successful claim **replaces**
 `plan.limits.{monthlyPoints,fourHourPoints}` on the claiming user outright — "the new …
-quotas it grants", not an addition to the old ones — and leaves `autonomousRunsPerDay`
-untouched, since a coupon is about spend, not pacing.
+quotas it grants", not an addition to the old ones — and leaves `autonomousRunsPerDay` and
+`runStartPointsThreshold` untouched, since a coupon is about spend, not pacing or when a
+run refuses to start.
 
 ### `rate_limits/{key}`
 

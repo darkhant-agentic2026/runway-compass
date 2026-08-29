@@ -32,7 +32,7 @@ from coach.agents.tools import DomainTools
 from coach.core.app import APP_NAME
 from coach.core.config import Settings
 from coach.integrations.artifacts import ArtifactServiceProvider
-from coach.integrations.model import build_model
+from coach.integrations.model import TokenRateLimiter, build_model
 
 
 class RunnerFactory:
@@ -48,6 +48,7 @@ class RunnerFactory:
         tools: DomainTools,
         research_tools: ResearchTools,
         research_throttle: ModelThrottle,
+        token_limiter: TokenRateLimiter,
         prompt: PromptBuilder,
     ) -> None:
         self._settings = settings
@@ -55,6 +56,7 @@ class RunnerFactory:
         self._memory_service = memory_service
         self._research_tools = research_tools
         self._research_throttle = research_throttle
+        self._token_limiter = token_limiter
         # Both are process-wide and stateless over the services they wrap. They are built
         # once for the same reason the `Runner` is: `LlmAgent` derives every tool's
         # declaration from the callable, and rebuilding the agent per turn would rebuild
@@ -210,7 +212,7 @@ class RunnerFactory:
         return self._autonomous
 
     def _build_model(self) -> BaseLlm:
-        return self._model or build_model(self._settings)
+        return self._model or build_model(self._settings, self._token_limiter)
 
 
 __all__ = ["RunnerFactory"]

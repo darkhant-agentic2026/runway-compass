@@ -16,6 +16,7 @@ import httpx
 import pytest
 
 from coach.core.errors import NotFound, ValidationProblem
+from coach.core.ids import run_id as new_run_id
 from coach.services.models import Origin, ReportItemKind, TaskState
 
 
@@ -305,6 +306,7 @@ async def test_materialize_creates_only_include_and_additional_tasks_in_dependen
     container, alice, client: httpx.AsyncClient
 ) -> None:
     project_id = await _project(client)
+    run_id = new_run_id()
     plan = await container.study_plans.post_plan(
         alice,
         project_id=project_id,
@@ -312,6 +314,7 @@ async def test_materialize_creates_only_include_and_additional_tasks_in_dependen
         short_description="",
         long_description="",
         memo="",
+        run_id=run_id,
         proposed_tasks=[
             _task_draft("intro"),
             _task_draft("advanced", prerequisite_tasks=["intro"]),
@@ -341,6 +344,10 @@ async def test_materialize_creates_only_include_and_additional_tasks_in_dependen
     assert [item.short_description for item in created[0].items] == ["so you know what to do"]
     assert [item.kind for item in created[0].items] == [ReportItemKind.ARTICLE]
     assert created[0].state is TaskState.NOT_STARTED
+    # `optional[]` is never promoted into `items[]` (same rule `post_research_report`
+    # follows), but the task keeps a pointer back to the plan's own run so its optional
+    # material stays reachable — the task workspace's "View roadmap" card.
+    assert all(task.study_plan_run_id == plan.run_id for task in created)
 
     board = (await client.get(f"/api/projects/{project_id}/tasks")).json()["tasks"]
     assert {task["title"] for task in board} == {"Task intro", "Task advanced"}
@@ -374,6 +381,73 @@ async def test_materialize_is_idempotent(container, alice, client: httpx.AsyncCl
 
     board = (await client.get(f"/api/projects/{project_id}/tasks")).json()["tasks"]
     assert len(board) == 1
+
+
+async def test_reset_materialization_lets_materialize_rebuild_the_board(
+    container, alice, client: httpx.AsyncClient
+) -> None:
+    """The troubleshooting pair: `POST .../troubleshooting/delete-all-tasks` wipes the
+    board and calls this, so a learner can recreate a materialized plan's tasks without
+    paying for the roadmap workflow again — the same `StudyPlan.proposedTasks` a fresh
+    `materialize` call reuses.
+    """
+    project_id = await _project(client)
+    run_id = new_run_id()
+    plan = await container.study_plans.post_plan(
+        alice,
+        project_id=project_id,
+        title="A roadmap",
+        short_description="",
+        long_description="",
+        memo="",
+        run_id=run_id,
+        proposed_tasks=[_task_draft("intro")],
+        plan=[_plan_entry("intro")],
+    )
+    first = await container.study_plans.materialize(
+        alice, project_id=project_id, plan_id=plan.id
+    )
+    assert len(first) == 1
+
+    reset_count = await container.study_plans.reset_materialization(project_id)
+    assert reset_count == 1
+
+    reloaded = await container.study_plans.get(project_id, plan.id)
+    assert reloaded is not None
+    assert reloaded.materialized_at is None
+    assert reloaded.materialized_task_ids == []
+
+    # Deleting the board out from under the plan is exactly what the troubleshooting
+    # action does before this — `materialize` no longer has the old ids to resolve, so
+    # this is the case the idempotency guard would otherwise return nothing for.
+    await container.tasks.delete_all_tasks(alice, project_id)
+    second = await container.study_plans.materialize(
+        alice, project_id=project_id, plan_id=plan.id
+    )
+    assert len(second) == 1
+    assert second[0].id != first[0].id
+    assert second[0].title == first[0].title
+
+
+async def test_reset_materialization_leaves_an_unmaterialized_plan_alone(
+    container, alice, client: httpx.AsyncClient
+) -> None:
+    project_id = await _project(client)
+    plan = await container.study_plans.post_plan(
+        alice,
+        project_id=project_id,
+        title="A roadmap",
+        short_description="",
+        long_description="",
+        memo="",
+        proposed_tasks=[_task_draft("intro")],
+        plan=[_plan_entry("intro")],
+    )
+
+    assert await container.study_plans.reset_materialization(project_id) == 0
+    reloaded = await container.study_plans.get(project_id, plan.id)
+    assert reloaded is not None
+    assert reloaded.materialized_at is None
 
 
 async def test_materialize_detects_a_prerequisite_cycle(

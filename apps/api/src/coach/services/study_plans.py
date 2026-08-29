@@ -182,6 +182,11 @@ class StudyPlanService:
                 # for a research run to do.
                 needs_research=False,
                 origin=Origin.AGENT,
+                # The plan's own `optional[]` never becomes a checklist item (below), so
+                # this is what lets the task workspace still reach it after the fact —
+                # `docs/02-data-model.md`'s "a plan carries no ongoing relationship once
+                # its tasks exist" is about `prerequisiteTasks`/`after`, not this pointer.
+                study_plan_run_id=plan.run_id,
             )
             if proposed.required:
                 task = await self._tasks.add_items(
@@ -200,6 +205,27 @@ class StudyPlanService:
             project_id, plan_id, {"materializedAt": now(), "materializedTaskIds": task_ids}
         )
         return [created[entry.task_slug] for entry in ordered]
+
+    async def reset_materialization(self, project_id: str) -> int:
+        """Troubleshooting only: clears `materializedAt`/`materializedTaskIds` on every
+        plan in the project, so a later `materialize` call rebuilds the board instead of
+        hitting its own idempotency guard and returning nothing (the guard's whole point
+        otherwise — this is the one caller meant to defeat it).
+
+        Paired with `TaskService.delete_all_tasks`, never called alone: a plan reset
+        without the board wipe just makes the next `materialize` call double the tasks,
+        and a board wipe without this reset leaves `materialize` resolving ids that no
+        longer exist and creating nothing.
+
+        Returns how many plans were reset.
+        """
+        plans = await self._plans.list_all(project_id)
+        reset = [plan for plan in plans if plan.materialized_at is not None]
+        for plan in reset:
+            await self._plans.patch(
+                project_id, plan.id, {"materializedAt": None, "materializedTaskIds": []}
+            )
+        return len(reset)
 
     async def revise(
         self,

@@ -9,15 +9,22 @@ the one place every interactive turn, research run, and autonomous pass converge
 from __future__ import annotations
 
 from coach.core.clock import now
-from coach.core.errors import QuotaExceeded
+from coach.core.errors import QuotaBelowThreshold, QuotaExceeded
 from coach.repositories.usage import (
+    POINTS_TOKEN_DIVISOR,
     RESET_FUNCS,
     UsageRepository,
     next_four_hour_reset,
     next_monthly_reset,
 )
 from coach.repositories.users import UserRepository
-from coach.services.models import UsageStatus, UsageWindow, User
+from coach.services.models import UsagePoints, UsageStatus, UsageWindow, User
+
+#: docs/09-roadmap.md#research-concurrency: `turn_complete` carries a low-points hint once
+#: remaining monthly points drop under `runStartPointsThreshold + LOW_POINTS_NAG_MARGIN` —
+#: enough headroom above the run-start gate itself that the learner sees the nag before a
+#: run they try to start is actually refused.
+LOW_POINTS_NAG_MARGIN = 100
 
 
 class QuotaService:
@@ -56,6 +63,51 @@ class QuotaService:
         user = await self._users.get(uid)
         timezone = user.global_prefs.timezone if user is not None else "UTC"
         await self._usage.spend_points(uid, total_tokens, timezone=timezone, at=now())
+
+    async def require_room_to_start_run(self, uid: str) -> None:
+        """Raise `QuotaBelowThreshold` if the owner's remaining monthly points are under
+        their own `runStartPointsThreshold`.
+
+        Called before a research/roadmap run is created or enqueued — manual, roadmap, and
+        (via `SchedulerService`'s own version of this check) scheduled and requested
+        triggers alike — so a run unlikely to finish inside the real quota is refused
+        before it spends anything, rather than after. A missing user allows, for the same
+        reason `require_available` does.
+        """
+        user = await self._users.get(uid)
+        if user is None:
+            return
+        remaining = await self._monthly_remaining(user)
+        threshold = user.plan.limits.run_start_points_threshold
+        if remaining < threshold:
+            raise QuotaBelowThreshold(threshold, remaining)
+
+    async def points_hint(self, uid: str, extra_tokens: int = 0) -> tuple[int, int] | None:
+        """`(remaining, threshold)` to attach to `turn_complete`, or `None` if there is no
+        need to nag.
+
+        A read, never a write: `extra_tokens` (a turn's own token spend, not yet recorded
+        by `record_spend`) is folded into the projection so the hint reflects the points
+        this turn is *about* to cost, without a second Firestore write racing the one
+        `record_spend` makes moments later in `TurnService._generate`'s `finally`.
+        """
+        user = await self._users.get(uid)
+        if user is None:
+            return None
+        at = now()
+        snapshot = await self._usage.points_snapshot(uid, user.global_prefs.timezone, at)
+        extra_points = -(-extra_tokens // POINTS_TOKEN_DIVISOR) if extra_tokens > 0 else 0
+        projected = UsagePoints(monthly=snapshot.monthly + extra_points)
+        threshold = user.plan.limits.run_start_points_threshold
+        remaining = projected.monthly_remaining(user.plan.limits)
+        if remaining >= threshold + LOW_POINTS_NAG_MARGIN:
+            return None
+        return remaining, threshold
+
+    async def _monthly_remaining(self, user: User) -> int:
+        at = now()
+        snapshot = await self._usage.points_snapshot(user.uid, user.global_prefs.timezone, at)
+        return snapshot.monthly_remaining(user.plan.limits)
 
     async def status(self, user: User) -> UsageStatus:
         """`GET /api/me`'s `usage` field: spend, limit, and reset time for both windows,

@@ -9,6 +9,7 @@ export interface AuthContextValue {
   user: AuthUser | null;
   mode: 'dev' | 'identity-platform';
   signIn: () => Promise<void>;
+  signInWithPassword: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
 }
 

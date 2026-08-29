@@ -76,7 +76,7 @@ same `TaskService.complete_task()` the user's button calls.
 ### Repo layout (monorepo, no workspace tooling required)
 
 ```
-self-study-coach-v1/
+runway-compass-v1/
 ├── apps/
 │   ├── api/                 # Python service (uv, ruff, pytest)
 │   │   ├── pyproject.toml

@@ -9,6 +9,8 @@
  * The server remains the authority — this is presentation, not enforcement.
  */
 
+import { CheckCircle2, Circle, type LucideIcon } from 'lucide-react';
+
 import type { TaskState } from '@/lib/schemas';
 
 export type Transition =
@@ -84,4 +86,31 @@ export const STATE_LABELS: Record<TaskState, string> = {
   postponed: 'Postponed',
   postponed_until: 'Postponed until',
   discarded: 'Discarded',
+};
+
+export interface StateAccent {
+  icon: LucideIcon;
+  /** Applied to both the icon and the label, so the colour carries the whole chip. */
+  className: string;
+  iconClassName?: string;
+}
+
+/**
+ * The two states a board card colours, tuned for both themes — every other state stays
+ * plain text (docs/09-roadmap.md#task-board-and-task-view-polish). `in_progress` reuses
+ * `--progress-fill` rather than its own token, so it is the same blue the checklist's
+ * "you are here" rule paints with.
+ */
+export const STATE_ACCENT: Partial<Record<TaskState, StateAccent>> = {
+  completed: {
+    icon: CheckCircle2,
+    className: 'text-status-completed',
+  },
+  in_progress: {
+    icon: Circle,
+    className: 'text-progress-fill',
+    // A real icon rather than the `·` glyph, filled solid, with a soft glow — sized down
+    // to about 3/4 of the default icon size, so it reads as a dot rather than a badge.
+    iconClassName: 'size-[9px] fill-current drop-shadow-[0_0_4px_currentColor]',
+  },
 };

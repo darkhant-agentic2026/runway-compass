@@ -63,9 +63,10 @@ describe('SubtaskList', () => {
     renderList([], vi.fn(), vi.fn(), onAdd);
 
     expect(screen.queryByTestId('subtask-card')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Minutes')).not.toBeInTheDocument();
     await userEvent.type(screen.getByLabelText('New subtask'), 'The parser');
     await userEvent.click(screen.getByRole('button', { name: 'Add subtask' }));
-    expect(onAdd).toHaveBeenCalledWith('The parser', 45);
+    expect(onAdd).toHaveBeenCalledWith('The parser');
   });
 
   it('warns that a first subtask will take the checklist', () => {

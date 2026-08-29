@@ -4,8 +4,16 @@
  * The display name is what the header shows in place of the signed-in email
  * (`components/layout/AppShell.tsx`) once set — see `PATCH /api/me` and
  * `display_name_customized` (docs/02-data-model.md#usersuid).
+ *
+ * **The email is masked by default**, behind a "Show email" button beside the field
+ * (docs/09-roadmap.md#task-board-and-task-view-polish) — the same discretion a password
+ * field gets by default, for a value that is otherwise sitting in plaintext on a screen
+ * someone might be sharing.
  */
 
+import { useState } from 'react';
+
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -16,8 +24,14 @@ interface AccountCardProps {
   me: Me;
 }
 
+/** `alice@example.com` → `••••••••••••••••` — same length, no characters given away. */
+function maskEmail(email: string): string {
+  return '•'.repeat(email.length);
+}
+
 export function AccountCard({ me }: AccountCardProps) {
   const patchDisplayName = usePatchDisplayName();
+  const [emailVisible, setEmailVisible] = useState(false);
 
   return (
     <Card>
@@ -48,7 +62,22 @@ export function AccountCard({ me }: AccountCardProps) {
 
         <div className="space-y-1">
           <Label htmlFor="account-email">Email</Label>
-          <Input id="account-email" value={me.email ?? ''} disabled readOnly />
+          <div className="flex items-center gap-2">
+            <Input
+              id="account-email"
+              value={emailVisible ? (me.email ?? '') : maskEmail(me.email ?? '')}
+              disabled
+              readOnly
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setEmailVisible((visible) => !visible)}
+            >
+              {emailVisible ? 'Hide email' : 'Show email'}
+            </Button>
+          </div>
         </div>
       </CardContent>
     </Card>

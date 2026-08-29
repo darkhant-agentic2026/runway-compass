@@ -1,6 +1,7 @@
-"""`ModelThrottle` and the `research_workflow` graph itself.
+"""`ModelThrottle`, `_carry_attachments_into_subtopics`, and the `research_workflow` graph
+itself.
 
-docs/03-agent-design.md#the-research-pipeline-since-m9. Two things worth testing at this
+docs/03-agent-design.md#the-research-pipeline-since-m9. Three things worth testing at this
 altitude, below a full turn:
 
 - **The throttle never lets two calls for the same run overlap**, instrumented directly
@@ -8,6 +9,13 @@ altitude, below a full turn:
   (docs/09-roadmap.md#m9--reworking-the-autonomous-research-workflow) asks for exactly
   this: "asserted to never have more than one model call in flight at once by
   instrumenting the throttle itself, not by timing it."
+- **`_carry_attachments_into_subtopics` threads the run's own attachments onto every
+  sub-topic**, the decision `docs/09-roadmap.md#m10-beta--agent-consistency-projecttask-ui-
+  polish-and-readme` asks the M10 review to confirm — pinned directly against the
+  function rather than against a full turn's persisted events, since the branch's own
+  input event is session-local (built only to feed the LLM request,
+  `workflow/_llm_agent_wrapper.py::prepare_llm_agent_input`) and never itself a persisted
+  Firestore event.
 - **The graph builds** against real `LlmAgent`/`Workflow` construction — `output_schema`,
   `parallel_worker`, and the `node()` wrapping are all new surface for this project
   (docs/03-agent-design.md#the-research-pipeline-since-m9), and a signature or semantics
@@ -18,9 +26,11 @@ altitude, below a full turn:
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any, cast
 
 from google.adk.workflow import Workflow
+from google.genai import types
 
 from coach.agents.context import RUN_ID_KEY
 from coach.agents.research_tools import ResearchTools
@@ -30,8 +40,10 @@ from coach.agents.research_workflow import (
     REVIEWER_WRITER_NAME,
     ROADMAP_WORKFLOW_NAME,
     TASK_PROPOSER_NAME,
+    TOPIC_RESEARCHER_BRIEF_NAME,
     TOPIC_RESEARCHER_NAME,
     ModelThrottle,
+    _carry_attachments_into_subtopics,
     build_research_workflow,
     build_roadmap_workflow,
 )
@@ -111,6 +123,44 @@ async def test_a_release_with_nothing_held_is_a_no_op() -> None:
     throttle.release_run("r_1")  # idempotent
 
 
+def test_carry_attachments_into_subtopics_threads_them_onto_every_branch() -> None:
+    """The decision the M10 review item pins: every sub-topic gets its own copy of the
+    run's attachment parts, alongside its own text, in the same order `research_planner`
+    produced them."""
+    file_part = types.Part(
+        file_data=types.FileData(file_uri="gs://bucket/rubric.pdf", mime_type="application/pdf")
+    )
+    opening_text = types.Part(text="the run's own opening message, not a sub-topic")
+    ctx = SimpleNamespace(
+        user_content=types.Content(role="user", parts=[opening_text, file_part])
+    )
+
+    result = _carry_attachments_into_subtopics(cast(Any, ctx), ["First sub-topic", "Second"])
+
+    assert [content.parts[0].text for content in result] == ["First sub-topic", "Second"]
+    assert all(content.parts[1:] == [file_part] for content in result)
+
+
+def test_carry_attachments_into_subtopics_with_no_attachments_is_just_the_subtopic() -> None:
+    ctx = SimpleNamespace(
+        user_content=types.Content(role="user", parts=[types.Part(text="no files here")])
+    )
+
+    result = _carry_attachments_into_subtopics(cast(Any, ctx), ["Only sub-topic"])
+
+    assert result == [types.Content(role="user", parts=[types.Part(text="Only sub-topic")])]
+
+
+def test_carry_attachments_into_subtopics_tolerates_no_user_content() -> None:
+    """A resumed invocation's `ctx.user_content` should still be the original opening
+    message (module docstring), but this must not raise if it were ever unset."""
+    ctx = SimpleNamespace(user_content=None)
+
+    result = _carry_attachments_into_subtopics(cast(Any, ctx), ["Only sub-topic"])
+
+    assert result == [types.Content(role="user", parts=[types.Part(text="Only sub-topic")])]
+
+
 def test_the_workflow_builds_with_three_nodes_and_a_bounded_fan_out() -> None:
     """Construction-time coverage for `output_schema`, `parallel_worker`, and `node()`.
 
@@ -127,7 +177,12 @@ def test_the_workflow_builds_with_three_nodes_and_a_bounded_fan_out() -> None:
     assert isinstance(workflow, Workflow)
     assert workflow.graph is not None
     names = {node.name for node in workflow.graph.nodes}
-    assert {RESEARCH_PLANNER_NAME, TOPIC_RESEARCHER_NAME, REVIEWER_WRITER_NAME} <= names
+    assert {
+        RESEARCH_PLANNER_NAME,
+        TOPIC_RESEARCHER_BRIEF_NAME,
+        TOPIC_RESEARCHER_NAME,
+        REVIEWER_WRITER_NAME,
+    } <= names
 
 
 def test_the_roadmap_workflow_builds_with_the_shared_fan_out_and_its_own_terminal_nodes() -> (
@@ -148,9 +203,18 @@ def test_the_roadmap_workflow_builds_with_the_shared_fan_out_and_its_own_termina
     names = {node.name for node in workflow.graph.nodes}
     expected = {
         RESEARCH_PLANNER_NAME,
+        TOPIC_RESEARCHER_BRIEF_NAME,
         TOPIC_RESEARCHER_NAME,
         TASK_PROPOSER_NAME,
         PLAN_TAILOR_NAME,
     }
     assert expected <= names
     assert workflow.name == ROADMAP_WORKFLOW_NAME
+
+    # Pinning the M10 review decision (docs/09-roadmap.md#m10-beta--agent-consistency-
+    # projecttask-ui-polish-and-readme): `task_proposer` shares the `research`/`roadmap`
+    # step's own `STEP_TIMEOUT_SECONDS` budget with the `topic_researcher` fan-out, so it
+    # must not creep back up to `"high"`.
+    proposer = next(node for node in workflow.graph.nodes if node.name == TASK_PROPOSER_NAME)
+    thinking_level = proposer.generate_content_config.thinking_config.thinking_level
+    assert thinking_level != types.ThinkingLevel.HIGH

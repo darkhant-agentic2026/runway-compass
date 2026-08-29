@@ -132,6 +132,12 @@ class TurnComplete(Frame):
     turn_id: str
     seq: int
     event_ids: list[str] = Field(default_factory=list)
+    #: docs/09-roadmap.md#research-concurrency. Set only once the owner's remaining
+    #: monthly points have dropped under `pointsThreshold + LOW_POINTS_NAG_MARGIN` —
+    #: `None`/`None` otherwise — so the client can show a low-points nag without a
+    #: separate `GET /api/me` round trip, and without carrying the field on every turn.
+    points_remaining: int | None = None
+    points_threshold: int | None = None
 
 
 class TurnError(Frame):

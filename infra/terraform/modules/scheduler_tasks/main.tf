@@ -21,7 +21,7 @@ resource "google_cloud_scheduler_job" "tick" {
   # The tick is specified as cheap and bounded (<= 30 s). This deadline is generous
   # enough not to abort a slow-but-working tick and short enough that a wedged one is
   # visibly wedged.
-  attempt_deadline = "320s"
+  attempt_deadline = "720s"
 
   retry_config {
     retry_count = 1

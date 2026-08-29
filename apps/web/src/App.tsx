@@ -17,6 +17,7 @@ import { startThemeSync } from '@/stores/theme';
 
 const LoginPage = lazy(() => import('@/pages/LoginPage'));
 const ProjectsPage = lazy(() => import('@/pages/ProjectsPage'));
+const ArchivedProjectsPage = lazy(() => import('@/pages/ArchivedProjectsPage'));
 const BoardPage = lazy(() => import('@/pages/BoardPage'));
 const TaskWorkspacePage = lazy(() => import('@/pages/TaskWorkspacePage'));
 const ResearchViewPage = lazy(() => import('@/pages/ResearchViewPage'));
@@ -42,6 +43,7 @@ export default function App() {
               }
             >
               <Route path="/" element={<ProjectsPage />} />
+              <Route path="/projects/archived" element={<ArchivedProjectsPage />} />
               <Route path="/projects/:projectId" element={<BoardPage />} />
               <Route
                 path="/projects/:projectId/tasks/:taskId"

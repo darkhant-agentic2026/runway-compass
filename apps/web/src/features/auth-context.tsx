@@ -39,6 +39,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       mode: getAuthProvider().mode,
       signIn: () => getAuthProvider().signIn(),
+      signInWithPassword: (email, password) =>
+        getAuthProvider().signInWithPassword(email, password),
       signOut: () => getAuthProvider().signOut(),
     }),
     [status, user],

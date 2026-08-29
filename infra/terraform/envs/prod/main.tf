@@ -19,6 +19,11 @@ locals {
     "secretmanager.googleapis.com",
     "storage.googleapis.com",
     "identitytoolkit.googleapis.com",
+    # For the beforeCreate blocking function (infra/terraform/modules/blocking_function):
+    # cloudfunctions.googleapis.com is the 2nd-gen function itself, and cloudbuild.googleapis.com
+    # is what actually compiles the uploaded source into a runnable revision.
+    "cloudfunctions.googleapis.com",
+    "cloudbuild.googleapis.com",
 
     # The IAM family, and the reason it is three entries rather than one. These are
     # genuinely different APIs and enabling one does not enable the others:
@@ -156,6 +161,16 @@ data "google_secret_manager_secret_version_access" "oauth_client_secret" {
 
 # --- Modules ------------------------------------------------------------------------------
 
+module "blocking_function" {
+  source = "../../modules/blocking_function"
+
+  project_id = var.project_id
+  region     = var.region
+  source_dir = "${path.module}/../../../../apps/functions"
+
+  depends_on = [time_sleep.api_enablement]
+}
+
 module "identity" {
   source = "../../modules/identity"
 
@@ -165,9 +180,10 @@ module "identity" {
   # list is seeded from the tfvar and reconciled on the second apply. This is the one
   # ordering wrinkle in the stack and it is why `terraform apply` is documented as
   # "run it twice on a brand-new project" in RUNBOOK.md.
-  authorized_domains  = var.authorized_domains
-  oauth_client_id     = var.oauth_client_id
-  oauth_client_secret = data.google_secret_manager_secret_version_access.oauth_client_secret.secret_data
+  authorized_domains                    = var.authorized_domains
+  oauth_client_id                       = var.oauth_client_id
+  oauth_client_secret                   = data.google_secret_manager_secret_version_access.oauth_client_secret.secret_data
+  password_signup_blocking_function_uri = module.blocking_function.function_uri
 
   depends_on = [time_sleep.api_enablement]
 }
@@ -202,7 +218,7 @@ module "cloud_run" {
   service_account_email = module.identity.api_service_account_email
 
   min_instances       = var.min_instances
-  max_instances       = 10
+  max_instances       = var.max_instances
   max_concurrency     = 40
   deletion_protection = true
 

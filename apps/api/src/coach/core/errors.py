@@ -123,3 +123,26 @@ class QuotaExceeded(CoachError):
             window=window,
             resetAt=reset_iso,
         )
+
+
+class QuotaBelowThreshold(CoachError):
+    """Too few monthly points left to safely start a new research/roadmap run.
+
+    docs/09-roadmap.md#research-concurrency. Distinct from :class:`QuotaExceeded`: that
+    fires once a window is fully spent; this fires earlier, at the headroom a user's own
+    `runStartPointsThreshold` asks to keep in reserve — the aim being to refuse a run
+    before it spends points on work likely to hit the real quota partway through and fail.
+    Raised before a run is created or enqueued, same as `QuotaExceeded`.
+    """
+
+    status = 429
+    title = "Too few points to start a new run"
+    code = "quota-below-threshold"
+
+    def __init__(self, threshold: int, remaining: int) -> None:
+        super().__init__(
+            f"Starting a new research run needs at least {threshold} monthly usage "
+            f"points; {remaining} remain.",
+            threshold=threshold,
+            remaining=remaining,
+        )

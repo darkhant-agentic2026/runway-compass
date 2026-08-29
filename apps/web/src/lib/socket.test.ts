@@ -21,6 +21,7 @@ import {
 } from '@/lib/socket';
 import { useSocketStore } from '@/stores/socket';
 import { useStreamStore } from '@/stores/stream';
+import { useUsageStore } from '@/stores/usage';
 
 /** A `WebSocket` stand-in that records what was sent and can be closed on demand. */
 class FakeSocket {
@@ -122,6 +123,7 @@ function harness(options: { tickets?: string[] } = {}) {
 beforeEach(() => {
   useStreamStore.setState({ turns: {} });
   useSocketStore.setState({ connection: 'idle', attempts: 0, presence: null });
+  useUsageStore.setState({ lowPoints: null, dismissed: false });
   vi.stubGlobal('location', { protocol: 'https:', host: 'coach.example' });
 });
 
@@ -333,6 +335,43 @@ describe('board updates', () => {
     rig.last().open();
 
     expect(() => rig.last().receive({ type: 'not_a_real_frame', turnId: 't_1' })).not.toThrow();
+  });
+});
+
+describe('low-points hint', () => {
+  it('feeds turn_complete pointsRemaining/pointsThreshold into the usage store', async () => {
+    const rig = harness();
+    await rig.socket.connect();
+    rig.last().open();
+
+    rig.last().receive({
+      type: 'turn_complete',
+      turnId: 't_1',
+      seq: 1,
+      eventIds: [],
+      pointsRemaining: 640,
+      pointsThreshold: 800,
+    });
+
+    expect(useUsageStore.getState().lowPoints).toEqual({ remaining: 640, threshold: 800 });
+  });
+
+  it('clears a stale hint once a later turn reports comfortable headroom', async () => {
+    useUsageStore.setState({ lowPoints: { remaining: 640, threshold: 800 }, dismissed: false });
+    const rig = harness();
+    await rig.socket.connect();
+    rig.last().open();
+
+    rig.last().receive({
+      type: 'turn_complete',
+      turnId: 't_2',
+      seq: 1,
+      eventIds: [],
+      pointsRemaining: null,
+      pointsThreshold: null,
+    });
+
+    expect(useUsageStore.getState().lowPoints).toBeNull();
   });
 });
 

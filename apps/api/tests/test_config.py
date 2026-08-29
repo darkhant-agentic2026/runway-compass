@@ -109,10 +109,11 @@ def test_the_stub_model_backend_is_allowed_when_local() -> None:
 def test_the_stub_model_is_what_the_stub_backend_builds() -> None:
     """Pins the wiring, not just the setting: the guard above is worthless if
     `build_model` ignored the backend and returned Gemini anyway."""
-    from coach.integrations.model import build_model
+    from coach.integrations.model import TokenRateLimiter, build_model
     from coach.integrations.stub_model import StubModel
 
-    assert isinstance(build_model(Settings(env="local", model_backend="stub")), StubModel)
+    settings = Settings(env="local", model_backend="stub")
+    assert isinstance(build_model(settings, TokenRateLimiter()), StubModel)
 
 
 @pytest.mark.parametrize("env", ["dev", "prod"])

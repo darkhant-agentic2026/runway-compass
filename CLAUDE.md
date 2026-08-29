@@ -1,4 +1,4 @@
-# Self-Study Coach — working agreement
+# Runway Compass — working agreement
 
 ## Read the design before writing code
 

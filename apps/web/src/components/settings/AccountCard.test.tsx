@@ -1,5 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -60,13 +61,24 @@ describe('AccountCard', () => {
     vi.restoreAllMocks();
   });
 
-  it('shows the current display name and the read-only email', () => {
+  it('shows the current display name, and the email masked by default', () => {
     renderCard(makeMe({ displayName: 'Alice Example', email: 'alice@example.com' }));
 
     expect(screen.getByLabelText('Display name')).toHaveValue('Alice Example');
     const emailField = screen.getByLabelText('Email');
-    expect(emailField).toHaveValue('alice@example.com');
+    expect(emailField).toHaveValue('•'.repeat('alice@example.com'.length));
     expect(emailField).toBeDisabled();
+  });
+
+  it('reveals and re-hides the email on request', async () => {
+    renderCard(makeMe({ email: 'alice@example.com' }));
+    const emailField = screen.getByLabelText('Email');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Show email' }));
+    expect(emailField).toHaveValue('alice@example.com');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Hide email' }));
+    expect(emailField).toHaveValue('•'.repeat('alice@example.com'.length));
   });
 
   it('saves a trimmed display name on blur', async () => {
