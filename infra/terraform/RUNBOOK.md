@@ -547,10 +547,8 @@ Two other things that block the popup rather than letting it work:
 
 ### Blocking function — self-service password sign-up should be rejected
 
-Identity Platform's own console has a documented history of being slow to pick up a
-2nd-gen blocking function (docs/07-infra-deploy.md#iam-least-privilege) — the
-`beforeCreate` trigger can show the function as "deleted or no longer exists" for a while
-right after `apply`. Confirm it actually took effect before trusting a clean `apply`:
+Confirm the trigger actually took effect before trusting a clean `apply` — the function
+must be 1st gen (docs/07-infra-deploy.md#iam-least-privilege):
 
 ```bash
 API_KEY=$(terraform output -raw identity_api_key)

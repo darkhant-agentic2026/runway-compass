@@ -1,5 +1,7 @@
-import { beforeUserCreated } from 'firebase-functions/v2/identity';
+import * as gcipCloudFunctions from 'gcip-cloud-functions';
 
 import { blockPasswordSignUp } from './blockPasswordSignUp';
 
-export const beforeCreate = beforeUserCreated(blockPasswordSignUp);
+const authClient = new gcipCloudFunctions.Auth();
+
+export const beforeCreate = authClient.functions().beforeCreateHandler(blockPasswordSignUp);

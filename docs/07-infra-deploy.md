@@ -29,7 +29,7 @@ infra/terraform/
 
 | Resource | Notes |
 | --- | --- |
-| `google_project_service` × N | `run`, `firestore`, `cloudtasks`, `cloudscheduler`, `aiplatform`, `artifactregistry`, `secretmanager`, `storage`, `identitytoolkit`, `cloudfunctions`, `cloudbuild` (the blocking function's own build and 2nd-gen runtime — [modules/blocking_function](../infra/terraform/modules/blocking_function)), `monitoring`, `logging`, `cloudtrace`; the **three separate IAM-family APIs** (`iam` for service accounts and the WIF pool, `iamcredentials` for SignBlob on the upload URLs, `cloudresourcemanager` for `projects.setIamPolicy`) plus `sts` for the GitHub OIDC exchange; and **`youtube.googleapis.com`** — the YouTube Data API is easy to forget because it is the one dependency reached with an API key rather than IAM, so nothing else in the stack references it |
+| `google_project_service` × N | `run`, `firestore`, `cloudtasks`, `cloudscheduler`, `aiplatform`, `artifactregistry`, `secretmanager`, `storage`, `identitytoolkit`, `cloudfunctions`, `cloudbuild` (the blocking function's own build and runtime — [modules/blocking_function](../infra/terraform/modules/blocking_function)), `monitoring`, `logging`, `cloudtrace`; the **three separate IAM-family APIs** (`iam` for service accounts and the WIF pool, `iamcredentials` for SignBlob on the upload URLs, `cloudresourcemanager` for `projects.setIamPolicy`) plus `sts` for the GitHub OIDC exchange; and **`youtube.googleapis.com`** — the YouTube Data API is easy to forget because it is the one dependency reached with an API key rather than IAM, so nothing else in the stack references it |
 | `google_cloud_run_v2_service.coach_api` | Settings below |
 | `google_firestore_database` | Native mode, `us-central1`, PITR on in prod |
 | `google_firestore_index` × N | From [02-data-model.md](02-data-model.md) |
@@ -42,7 +42,7 @@ infra/terraform/
 | `google_iam_workload_identity_pool` | Keyless GitHub Actions → GCP auth |
 | `google_identity_platform_config` | Authorized domains = the Cloud Run service URL (+ custom domain in prod); `sign_in.email` also enables the email/password provider |
 | `google_identity_platform_default_supported_idp_config` | `idp_id = "google.com"`, client ID/secret from the OAuth client below |
-| `google_cloudfunctions2_function.block_password_signup` | The `beforeCreate` blocking function (`apps/functions`) that rejects self-service email/password sign-up; source zipped by `data.archive_file` and uploaded to its own bucket — see [modules/blocking_function](../infra/terraform/modules/blocking_function) |
+| `google_cloudfunctions_function.block_password_signup` | The `beforeCreate` blocking function (`apps/functions`) that rejects self-service email/password sign-up; source zipped by `data.archive_file` and uploaded to its own bucket — see [modules/blocking_function](../infra/terraform/modules/blocking_function). **1st gen, deliberately**: Identity Platform's blocking-functions trigger is built against the 1st gen Cloud Functions API and does not work with a 2nd gen (Cloud Run-backed) one — see [IAM (least privilege)](#iam-least-privilege) |
 | Monitoring | Alert policies from [05-autonomous-runs.md](05-autonomous-runs.md), uptime check on `/livez`, log-based error metric |
 
 The SPA is served by the Cloud Run service itself (see [Container](#container)), so there is
@@ -98,23 +98,20 @@ by design.
 | `coach-scheduler-sa` | `run.invoker` on the service (OIDC audience = service URL) |
 | `coach-tasks-sa` | `run.invoker` on the service |
 | `github-deployer-sa` | `run.admin`, `artifactregistry.writer`, `iam.serviceAccountUser` — enough to build, push, and deploy an image, and deliberately not enough to apply Terraform ([why](#ci-does-not-run-terraform)) |
-| `coach-auth-blocking-fn` | No project-level roles — it only reads the `beforeCreate` event and throws or returns, nothing else. The grant that matters runs the other way: the identitytoolkit service agent (`service-<PROJECT_NUMBER>@gcp-sa-identitytoolkit.iam.gserviceaccount.com`) holds `roles/run.invoker` on this function's underlying Cloud Run service, so Identity Platform can call it |
+| `coach-auth-blocking-fn` | No project-level roles — it only reads the `beforeCreate` event and throws or returns, nothing else. `allUsers` holds `roles/cloudfunctions.invoker` on the function itself, per the note below |
 
 `roles/firebaseauth.admin` is the IAM role governing Identity Platform; `coach-api-sa` needs
 it so the `DELETE /api/me` cascade can remove the identity record. Token *verification* needs
 no IAM at all — it is an offline signature check against Google's public keys.
 
-**2nd-gen Cloud Functions run on Cloud Run, and the invoker grant has to follow that.**
-`google_cloudfunctions2_function_iam_member` does not reliably accept `roles/run.invoker`
-for a gen2 function (hashicorp/terraform-provider-google#15264); the grant goes on the
-underlying Cloud Run service (`google_cloud_run_service_iam_member`, naming
-`service_config[0].service`) instead. Identity Platform's own support for gen2 blocking
-functions has a separate rough edge on top of that: the console — and sometimes
-`terraform apply` itself — can report the function as "deleted or no longer exists" for a
-while right after the `beforeCreate` trigger is first wired up, before it settles. Confirm
-in the Cloud Console that the trigger shows the function as active after applying
-[modules/blocking_function](../infra/terraform/modules/blocking_function), rather than
-trusting a clean `apply` alone.
+**The blocking function is publicly invocable, and that is not a hole.** Identity
+Platform authenticates its call to a blocking function at the *application* layer — a
+signed JWT included in the request body, which `apps/functions`' `gcip-cloud-functions`
+dependency verifies before `blockPasswordSignUp` ever runs — not via a Cloud IAM invoker
+check. `allUsers` holding `roles/cloudfunctions.invoker` on
+`google_cloudfunctions_function.block_password_signup` is the same grant
+`gcloud functions deploy --allow-unauthenticated` makes; the request would carry no
+`Authorization` header for IAM to check even if the grant were narrower.
 
 `datastore.user` on `coach-api-sa` is the entire Firestore access boundary: no other
 principal can read the data, and no client-side path exists

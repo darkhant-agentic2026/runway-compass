@@ -49,6 +49,8 @@ blob-report/
 *.tfstate.*
 *.auto.tfvars
 *secret*.tfvars
+# modules/blocking_function's data.archive_file build output.
+infra/terraform/modules/**/.build/
 crash.log
 crash.*.log
 override.tf
