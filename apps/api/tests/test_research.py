@@ -536,7 +536,16 @@ async def test_manual_research_ignores_needs_research(
     assert task["researchStatus"] == "done"
     assert task["items"]
 
-    run = await container.research.get(alice, body["runId"])
+    # The executor settles the ledger out shortly after the turn goes terminal, so post_report
+    # can still be `running` right after _await_queued_run returns.
+    # Also see test_the_run_is_recorded_in_the_ledger()
+    async with asyncio.timeout(TURN_TIMEOUT_SECONDS):
+        while True:
+            run = await container.research.get(alice, body["runId"])
+            if run.status.value != "running":
+                break
+            await asyncio.sleep(0.05)
+
     steps = {step.id: step.status.value for step in run.steps}
     assert steps == {"research": "complete", "post_report": "complete"}
 
