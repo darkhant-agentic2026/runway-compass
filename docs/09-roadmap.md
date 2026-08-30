@@ -1525,8 +1525,8 @@ feature set and status.
 
 ## Status after M10
 
-**Nearly met — the `project_coach` tool-catalogue review and the `README.md` refresh are
-what's left of the checklist above; everything else on it has shipped.**
+**Nearly met — the `project_coach` tool-catalogue review is what's left of the checklist
+above; everything else on it has shipped.**
 
 **Agent review.** The catalogue review closed for `task_teacher` — trimmed for tools that no
 longer earn their place — while `project_coach`'s own pass is the one item still open. The
@@ -1595,11 +1595,19 @@ cards and a project's or task's first-appearance description now play an entranc
 (fade-in, letter-by-letter reveal, staggered content reveal) — never on a board's own first
 load, only when a card or description appears while its page is already open.
 
+**README and licensing.** `README.md` is now written for someone evaluating or deploying the
+system rather than tracking its construction: milestone and status framing is gone entirely,
+replaced by a screenshot of a guided exercise, an architecture section built around
+`docs/images/runway-compass-infra.png` and a table of the GCP services and what each one
+does, an explanation of the agent surface and `build_roadmap_workflow`'s graph, and a
+step-by-step GCP deploy guide that points into `infra/terraform/RUNBOOK.md` for the two
+human bootstrap steps. Images live in `docs/images/`. The repository carries an Apache-2.0
+`LICENSE`, which it previously had none of.
+
 **Not yet done:** the `project_coach` instruction/tool-catalogue review itself — trimming a
 tool that is no longer reachable or has stopped earning its place now that the M9 roadmap
 tools (`write_roadmap_brief`/`propose_roadmap_brief`/`materialize_study_plan`/
-`view_study_plan`/`revise_study_plan`) sit alongside the pre-existing board tools — and the
-`README.md` refresh, which still reads "Status: M0–M7 landed."
+`view_study_plan`/`revise_study_plan`) sit alongside the pre-existing board tools.
 
 ---
 
