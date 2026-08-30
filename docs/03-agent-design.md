@@ -506,6 +506,24 @@ case only, `build_roadmap_workflow` (`agents/research_workflow.py`) replaces the
 with four: the `topic_researcher` fan-out (shared with `research_workflow`), then
 `research_findings`, then `task_proposer_scope`, then `task_proposer` -> `plan_tailor`.
 
+```mermaid
+flowchart TB
+    Roadmap["POST /api/sessions/{sid}/roadmap<br/>(session has no task linked)"] --> Planner
+
+    subgraph BRW["build_roadmap_workflow (ADK Workflow)"]
+        direction TB
+        Planner["research_planner — LlmAgent<br/>topic -> 3-5 sub-topics"]
+        Brief["topic_researcher_brief — deterministic<br/>carries the run's own attachments onto each sub-topic"]
+        FanOut["topic_researcher x3-5 — LlmAgent, parallel_worker<br/>each sub-topic researched in its own clean context"]
+        Findings["research_findings — deterministic<br/>zips sub-topics onto the fan-out's output, no model call"]
+        Scope["task_proposer_scope — LlmAgent<br/>rewrites the request with the roadmap's total time budget stripped out"]
+        Proposer["task_proposer — LlmAgent<br/>-> ProposedTaskCollection: sized, prerequisite-linked tasks"]
+        Tailor["plan_tailor — LlmAgent<br/>orders/filters against the board + history, then write_study_plan"]
+
+        Planner --> Brief --> FanOut --> Findings --> Scope --> Proposer --> Tailor
+    end
+```
+
 | Node | Kind | Reads | Writes |
 | --- | --- | --- | --- |
 | `research_findings` | Plain Python function, `node()`-wrapped — no model call | `research_planner`'s sub-topic list (`SUBTOPICS_KEY`, its own `output_key`) and the fan-out's aggregate (its own `node_input` — `research_findings` sits directly after the fan-out so this is guaranteed) | The two zipped together, one object per sub-topic, to `RESEARCH_FINDINGS_KEY` |

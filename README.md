@@ -103,23 +103,19 @@ session. `build_roadmap_workflow`
 (`apps/api/src/coach/agents/research_workflow.py`) is the graph a whole-project ask runs —
 `POST /api/sessions/{sid}/roadmap`, on a session that isn't linked to any task:
 
-```mermaid
-flowchart TB
-    Roadmap["POST /api/sessions/{sid}/roadmap<br/>(session has no task linked)"] --> Planner
+> `research_planner` → `topic_researcher_brief` → **`topic_researcher` ×3-5, in parallel** →
+> `research_findings` → `task_proposer_scope` → `task_proposer` → `plan_tailor`
 
-    subgraph BRW["build_roadmap_workflow (ADK Workflow)"]
-        direction TB
-        Planner["research_planner — LlmAgent<br/>topic -> 3-5 sub-topics"]
-        Brief["topic_researcher_brief — deterministic<br/>carries the run's own attachments onto each sub-topic"]
-        FanOut["topic_researcher x3-5 — LlmAgent, parallel_worker<br/>each sub-topic researched in its own clean context"]
-        Findings["research_findings — deterministic<br/>zips sub-topics onto the fan-out's output, no model call"]
-        Scope["task_proposer_scope — LlmAgent<br/>rewrites the request with the roadmap's total time budget stripped out"]
-        Proposer["task_proposer — LlmAgent<br/>-> ProposedTaskCollection: sized, prerequisite-linked tasks"]
-        Tailor["plan_tailor — LlmAgent<br/>orders/filters against the board + history, then write_study_plan"]
-
-        Planner --> Brief --> FanOut --> Findings --> Scope --> Proposer --> Tailor
-    end
-```
+`research_planner` splits the goal into 3-5 sub-topics narrow enough to research
+independently. `topic_researcher_brief`, a plain function with no model call, copies the
+run's uploads onto each one, so no branch researches blind to a file the learner attached.
+The `topic_researcher` fan-out then researches each sub-topic concurrently, every branch in
+its own clean context and driving its own tool loop. `research_findings`, also
+deterministic, zips the sub-topics back onto what each branch found. `task_proposer_scope`
+rewrites the learner's original request with their total time budget removed;
+`task_proposer` groups the findings into sized, prerequisite-linked tasks; and
+`plan_tailor` — the only node that sees both the budget and the existing board — decides
+ordering and inclusion, then makes the pipeline's single write.
 
 Two constraints behind that ordering:
 
@@ -135,9 +131,10 @@ Two constraints behind that ordering:
   per-sitting preference alone; only `plan_tailor`, at the very end, judges whether the full
   set of tasks fits the time the learner actually has.
 
-See [03-agent-design.md](docs/03-agent-design.md#the-research-pipeline-since-m9) for the
-rest of the pipeline, including the task-scoped `research_workflow` this one shares its
-planner and fan-out with.
+[03-agent-design.md](docs/03-agent-design.md#the-taskless-case-task_proposer-and-plan_tailor-replace-reviewer_writer)
+has the graph as a diagram and every node's inputs and outputs, alongside
+[the task-scoped `research_workflow`](docs/03-agent-design.md#the-research-pipeline-since-m9)
+this one shares its planner and fan-out with.
 
 ## Documentation
 
