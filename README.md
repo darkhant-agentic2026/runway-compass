@@ -54,7 +54,7 @@ See [07-infra-deploy.md](docs/07-infra-deploy.md) for the toolchain a dev machin
 
 ## Architecture
 
-![Runway Compass infrastructure: a laptop talking to a single Cloud Run service (coach-api) that fronts the React SPA, a /ws WebSocket, a /api REST surface, and an OIDC-only /internal/* surface; coach-api reads/writes Firestore and Cloud Storage and calls Vertex AI (Gemini 3.7 Flash); Cloud Scheduler ticks /internal/tick every 15 minutes, which enqueues Cloud Tasks that call /internal/{id}/exec; Identity Platform handles sign-in and calls a blockSignup Cloud Function on beforeCreate.](docs/images/runway-compass-infra.png)
+![Runway Compass infrastructure: a laptop talking to a single Cloud Run service (coach-api) that fronts the React SPA, a /ws WebSocket, a /api REST surface, and an OIDC-only /internal/* surface; coach-api reads/writes Firestore and Cloud Storage and calls Vertex AI (Gemini 3.7 Flash); Cloud Scheduler ticks /internal/tick every 15 minutes, which enqueues Cloud Tasks that call /internal/{id}/exec; Identity Platform handles sign-in and calls a blockSignup Cloud Function on beforeCreate.](docs/images/runway-compass-infra2.png)
 
 One Cloud Run service, `coach-api`, runs everything. That is mostly a choice about IAM:
 splitting the REST API, the WebSocket, and the scheduler endpoints into separate services
